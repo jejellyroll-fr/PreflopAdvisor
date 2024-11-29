@@ -1,125 +1,199 @@
-10#!/usr/bin/env python3
+#!/usr/bin/env python3
 
-import tkinter as tk
-from tkinter import ttk
-from configparser import ConfigParser
+import logging
+from PySide6.QtWidgets import (
+    QWidget,
+    QLabel,
+    QGridLayout,
+    QApplication,
+    QMainWindow,
+    QSizePolicy,
+)
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 
-INFO_FONT = ("Helvetica", 15)
-INFO_FONT = ("Helvetica", 20)
-RESULT_FONT = ("Helvetica", 10)
-RESULT_FONT = ("Helvetica", 12)
+# Configuration du logger
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-class TableEntry(tk.Frame):
-    def __init__(self, root, width, height):
-        tk.Frame.__init__(self, root)
-        self.config(height=height, width=width)
-        self.grid_propagate(False)
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
-        self.info_text = tk.StringVar()
-        self.left_results = tk.StringVar()
-        self.right_results = tk.StringVar()
-        self.label = tk.Label(
-            self, textvariable=self.info_text, font=INFO_FONT)
-        self.label.grid(row=0, column=0)
-        self.label_left = tk.Label(
-            self, textvariable=self.left_results, font=RESULT_FONT)
-        self.label_left.grid(
-            row=0, column=0)
-        self.label_right = tk.Label(
-            self, textvariable=self.right_results, font=RESULT_FONT)
-        self.label_right.grid(
-            row=0, column=1)
+
+class TableEntry(QWidget):
+    """
+    Widget personnalisé représentant une entrée de table avec des informations
+    affichées dans un layout flexible et responsif, avec un thème sombre.
+    """
+
+    def __init__(self, root, width=100, height=100):
+        super().__init__(root)
+
+        logging.info("Initialisation d'un widget TableEntry")
+
+        # Layout principal
+        self.layout = QGridLayout(self)
+        self.layout.setContentsMargins(5, 5, 5, 5)
+        self.layout.setSpacing(5)
+
+        # Variables de texte
+        self.info_text = QLabel("", self)
+        self.info_text.setAlignment(Qt.AlignCenter)
+        self.info_text.setFont(QFont("Helvetica", 20))
+        self.info_text.setWordWrap(True)
+
+        self.label_left = QLabel("", self)
+        self.label_left.setFont(QFont("Helvetica", 12))
+        self.label_left.setAlignment(Qt.AlignCenter)
+
+        self.label_right = QLabel("", self)
+        self.label_right.setFont(QFont("Helvetica", 12))
+        self.label_right.setAlignment(Qt.AlignCenter)
+
+        # Ajout des widgets au layout
+        self.layout.addWidget(self.info_text, 0, 0, 1, 2)  # Ligne entière
+        self.layout.addWidget(self.label_left, 1, 0)  # Colonne de gauche
+        self.layout.addWidget(self.label_right, 1, 1)  # Colonne de droite
+
+        # Responsivité
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.resize(width, height)  # Taille initiale
+
+        # Style sombre
+        self.setStyleSheet("""
+            QWidget {
+                border: 1px solid #555555;
+                border-radius: 5px;
+                background-color: #1e1e1e;
+                color: white;
+            }
+            QLabel {
+                background-color: transparent;
+                color: white;
+            }
+        """)
+
+        logging.info("TableEntry initialisé avec une taille par défaut (%d, %d)", width, height)
+
+    def resizeEvent(self, event):
+        """
+        Ajuste la taille de la police en fonction de la taille du widget.
+        """
+        width = self.width()
+        font_size_info = max(10, width // 15)
+        font_size_labels = max(8, width // 25)
+
+        logging.debug("ResizeEvent déclenché : largeur = %d, taille des polices ajustée", width)
+
+        self.info_text.setFont(QFont("Helvetica", font_size_info))
+        self.label_left.setFont(QFont("Helvetica", font_size_labels))
+        self.label_right.setFont(QFont("Helvetica", font_size_labels))
+        super().resizeEvent(event)
 
     def set_description_label(self, text=""):
-        self.info_text.set(text)
-        self.label.grid()
+        """
+        Affiche une description dans le champ principal.
+        """
+        self.info_text.setText(text)
+        self.info_text.show()
+        logging.info("Description mise à jour : %s", text)
 
     def set_result_label(self, results):
-        if len(results) == 1:
-            self.right_results.set(self.convert_result_to_str(results[0]))
-            if int(results[0][1]) > 50:
-                self.label_right.config(background="linen")
-        elif len(results) == 2:
-            self.left_results.set(self.convert_result_to_str(results[0]))
-            if int(results[0][1]) > 50:
-                self.label_left.config(background="linen")
-            self.right_results.set(self.convert_result_to_str(results[1]))
-            if int(results[1][1]) > 50:
-                self.label_right.config(background="linen")
-
-        self.label_left.grid(row=0, column=0, sticky="we", padx=1)
-        self.label_right.grid(row=0, column=1, sticky="we", padx=1)
-
-        return
+        """
+        Affiche une liste de résultats formatée dans le champ principal.
+        """
+        if not self.validate_results(results):
+            logging.error("Les résultats fournis sont invalides : %s", results)
+            self.info_text.setText("Invalid Results")
+            return
+        formatted_results = "\n".join(
+            [" ".join(map(str, result)) if isinstance(result, (list, tuple)) else str(result) for result in results]
+        )
+        self.info_text.setText(formatted_results)
+        logging.info("Résultats affichés : %s", formatted_results)
 
     def convert_result_to_str(self, result):
-        s = "\n"
-        return s.join(result)
+        """
+        Convertit un résultat en une chaîne multi-lignes.
+        """
+        return "\n".join(result)
 
     def clear_entry(self):
-        self.label.grid_forget()
-        self.label_left.grid_forget()
-        self.label_right.grid_forget()
+        """
+        Réinitialise tous les champs du widget.
+        """
+        self.info_text.setText("")
+        self.label_left.setText("")
+        self.label_right.setText("")
+        self.label_left.setStyleSheet("background-color: none;")
+        self.label_right.setStyleSheet("background-color: none;")
+        logging.info("TableEntry réinitialisé")
 
-        self.info_text.set("")
-        self.left_results.set("")
-        self.right_results.set("")
+    def validate_results(self, results):
+        """
+        Valide les résultats pour s'assurer qu'ils peuvent être affichés.
+        """
+        if not isinstance(results, list):
+            logging.debug("Validation échouée : les résultats ne sont pas une liste")
+            return False
+        for result in results:
+            if not isinstance(result, (list, tuple)):
+                logging.debug("Validation échouée : un des éléments n'est ni une liste ni un tuple")
+                return False
+        logging.debug("Validation réussie pour les résultats : %s", results)
+        return True
 
-        default_bg = self.label.cget('bg')
-        self.label_right.config(background=default_bg)
-        self.label_left.config(background=default_bg)
-        # self.label.config(background="#40E0D0")
 
+def test():
+    """
+    Fonction de test pour valider le fonctionnement du widget TableEntry avec un thème sombre.
+    """
+    logging.info("Démarrage de l'application de test")
+    app = QApplication([])
 
-def test(root):
-    configs = ConfigParser()
-    configs.read("../config.ini")
-    settings = configs["Output"]
-    # for c in range(12):
-    #     for r in range(10):
-    #         #entry_frame = ttk.Frame(root, height=100, width=100)
-    #         # entry_frame.grid_propagate(False)
-    #         data_entry = DataEntry(root, settings, " ", "100", "+123")
-    #         data_entry.grid(row=r, column=c)
-    #         w = ttk.Separator(data_entry).grid(row=0, column=1)
-    #         q = ttk.Separator(data_entry, orient=tk.HORIZONTAL).grid(
-    #             row=1, column=0)
+    # Fenêtre principale pour tester TableEntry
+    window = QMainWindow()
+    central_widget = QWidget()
+    layout = QGridLayout(central_widget)
+    layout.setContentsMargins(10, 10, 10, 10)
+    layout.setSpacing(10)
 
-    table_entry = TableEntry(root, 100, 100)
-    # table_entry.grid_propagate(False)
-    table_entry.clear_entry()
-    table_entry.set_description_label(("Helvetica", "15"), "UTG")
-    table_entry.grid(row=2, column=0)
-    ttk.Separator(root).grid(row=1, column=0,
-                             columnspan=5, sticky="ew")
-    ttk.Separator(root, orient=tk.VERTICAL).grid(
-        row=0, column=1, rowspan=3, sticky="sn")
-    table_entry1 = TableEntry(root, 100, 100)
-    table_entry1.clear_entry()
+    # Ajout de plusieurs TableEntry pour tester
+    logging.info("Création et ajout de widgets TableEntry à la fenêtre principale")
+    table_entry = TableEntry(central_widget)
+    table_entry.set_description_label("UTG")
+    layout.addWidget(table_entry, 0, 0)
+
+    table_entry1 = TableEntry(central_widget)
     table_entry1.set_result_label([[" ", "100", "+23"]])
-    table_entry1.grid(row=2, column=2)
-    # table_entry1.set_description_label(("Helvetica", "15"), "UTG")
-    ttk.Separator(root, orient=tk.VERTICAL).grid(
-        row=0, column=3, rowspan=3, sticky="sn")
-    table_entry2 = TableEntry(root, 100, 100)
-    table_entry2.clear_entry()
-    table_entry2.set_result_label(
-        [["Flatt ", "100", "+23"], ["3 bet ", "150", "+23"]])
-    table_entry2.grid(row=2, column=4)
+    layout.addWidget(table_entry1, 0, 1)
 
-    table_entry3 = TableEntry(root, 100, 100)
-    table_entry3.clear_entry()
-    table_entry3.set_description_label(("Helvetica", "15"), "UTG")
-    table_entry3.grid(row=0, column=4)
+    table_entry2 = TableEntry(central_widget)
+    table_entry2.set_result_label([["Flatt ", "100", "+23"], ["3 bet ", "150", "+23"]])
+    layout.addWidget(table_entry2, 1, 0)
 
-    table_entry4 = TableEntry(root, 100, 100)
-    table_entry4.clear_entry()
+    table_entry3 = TableEntry(central_widget)
+    table_entry3.set_description_label("BB")
+    layout.addWidget(table_entry3, 1, 1)
+
+    table_entry4 = TableEntry(central_widget)
     table_entry4.set_result_label([["Raise", "100", "+23"]])
-    table_entry4.grid(row=3, column=4)
+    layout.addWidget(table_entry4, 2, 0)
+
+    # Ajouter des stretchs pour une meilleure responsivité
+    layout.setRowStretch(0, 1)
+    layout.setRowStretch(1, 1)
+    layout.setRowStretch(2, 1)
+    layout.setColumnStretch(0, 1)
+    layout.setColumnStretch(1, 1)
+
+    window.setCentralWidget(central_widget)
+    window.setWindowTitle("Table Entry Test - Dark Theme")
+    window.resize(800, 600)  # Taille initiale
+    window.setMinimumSize(400, 300)  # Taille minimale
+    window.setStyleSheet("background-color: #1e1e1e; color: white;")  # Thème sombre pour toute la fenêtre
+    window.show()
+
+    logging.info("Fenêtre principale affichée")
+    app.exec()
+    logging.info("Application de test terminée")
 
 
-if (__name__ == '__main__'):
-    root = tk.Tk()
-    test(root)
-    root.mainloop()
+if __name__ == "__main__":
+    test()

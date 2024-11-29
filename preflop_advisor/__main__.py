@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 
-import tkinter as tk
+import sys
+from PySide6.QtWidgets import QApplication
 from preflop_advisor.gui import MainWindow
 
 
 def main():
-    root = tk.Tk()
-    MainWindow(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    ui = MainWindow()  # Create MainWindow directly
+    ui.show()  # Show the MainWindow
+    sys.exit(app.exec())  # Run the application
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
