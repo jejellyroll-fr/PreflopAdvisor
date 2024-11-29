@@ -30,11 +30,9 @@ class TreeReader:
         """
         logging.info("Initialisation du TreeReader pour la main: %s et la position: %s", hand, position)
 
-        self.full_position_list = configs["Positions"].split(",")
+        self.full_position_list = [pos.strip() for pos in configs["Positions"].split(",")]
         self.position_list = []
-        self.num_players = tree_infos.get(
-            "plrs", len(self.full_position_list)
-        )  # Par défaut, utilise toutes les positions
+        self.num_players = int(tree_infos.get("plrs", len(self.full_position_list)))  # Assurez-vous que c'est un entier
         self.init_position_list(self.num_players, self.full_position_list)
 
         self.hand = hand
@@ -44,8 +42,9 @@ class TreeReader:
         self.tree_infos = tree_infos
 
         # Vérification que le dossier du tree existe
-        if not os.path.isdir(self.tree_infos.get("folder", "")):
-            logging.error("Le dossier spécifié pour l'arbre est introuvable : %s", self.tree_infos.get("folder"))
+        tree_folder = self.tree_infos.get("folder", "")
+        if not os.path.isdir(tree_folder):
+            logging.error("Le dossier spécifié pour l'arbre est introuvable : %s", tree_folder)
             raise FileNotFoundError("Le dossier du tree est introuvable.")
 
         self.action_processor = ActionProcessor(self.position_list, self.tree_infos, configs)
@@ -60,6 +59,13 @@ class TreeReader:
         :param positions: Liste complète des positions.
         """
         logging.debug("Initialisation des positions pour %d joueurs", num_players)
+        if num_players > len(positions):
+            logging.warning(
+                "Nombre de joueurs (%d) dépasse le nombre de positions disponibles (%d). Utilisation du nombre maximum disponible.",
+                num_players,
+                len(positions),
+            )
+            num_players = len(positions)
         self.position_list = positions[:num_players]
         self.position_list.reverse()
         logging.info("Liste des positions active : %s", self.position_list)
@@ -191,6 +197,119 @@ class TreeReader:
         if self.position_list.index(position) > self.position_list.index(fi_position):
             return self.action_processor.get_results(self.hand, [(fi_position, "Raise")], position)
         return self.action_processor.get_results(self.hand, [(position, "Raise"), (fi_position, "Raise")], position)
+
+    def get_vs_4bet(self, position, reraise_position):
+        """
+        Récupère les résultats pour le scénario "vs 4bet".
+
+        :param position: Position analysée.
+        :param reraise_position: Position qui fait le 4bet.
+        :return: Liste des résultats.
+        """
+        pos_index = self.position_list.index(position)
+        # Les mêmes positions ou UTG où il n'y a pas de 4bet possible
+        if position == reraise_position or pos_index == 0:
+            return []
+        if pos_index > self.position_list.index(reraise_position):
+            # Nous avons fait une 3bet et faisons face à une 4bet de l'ouvreuse
+            results = self.action_processor.get_results(
+                self.hand,
+                [(reraise_position, "Raise"), (position, "Raise"), (reraise_position, "Raise")],
+                position,
+            )
+        else:
+            # Nous faisons face à une 4bet après une ouverture et une 3bet
+            opener = self.position_list[pos_index - 1]
+            results = self.action_processor.get_results(
+                self.hand,
+                [(opener, "Raise"), (position, "Raise"), (reraise_position, "Raise")],
+                position,
+            )
+        return results
+
+    def get_4bet(self, position, threebet_position):
+        """
+        Récupère les résultats pour le scénario "4bet".
+
+        :param position: Position analysée.
+        :param threebet_position: Position qui fait la 3bet.
+        :return: Liste des résultats.
+        """
+        pos_index = self.position_list.index(position)
+        threebet_pos_index = self.position_list.index(threebet_position)
+
+        if position == threebet_position:
+            return []
+        if pos_index > threebet_pos_index:  # cold4bet spot
+            if threebet_pos_index == 0:  # vs UTG il n'y a pas de cold4bet
+                return []
+            else:
+                results = self.action_processor.get_results(
+                    self.hand,
+                    [
+                        (self.position_list[threebet_pos_index - 1], "Raise"),
+                        (threebet_position, "Raise"),
+                    ],
+                    position,
+                )
+        else:  # std face 3bet spot after open
+            results = self.action_processor.get_results(
+                self.hand,
+                [
+                    (position, "Raise"),
+                    (threebet_position, "Raise"),
+                ],
+                position,
+            )
+        return results
+
+    def get_squeeze(self, position, rfi_position):
+        """
+        Récupère les résultats pour le scénario "squeeze".
+
+        :param position: Position analysée.
+        :param rfi_position: Position du first in.
+        :return: Liste des résultats.
+        """
+        pos_index = self.position_list.index(position)
+        rfi_index = self.position_list.index(rfi_position)
+
+        if pos_index <= rfi_index + 1:  # il doit y avoir au moins un joueur entre rfi et le caller
+            return []
+
+        results = self.action_processor.get_results(
+            self.hand,
+            [
+                (rfi_position, "Raise"),
+                (self.position_list[rfi_index + 1], "Call"),
+            ],
+            position,
+        )
+        return results
+
+    def get_vs_squeeze(self, position, squeeze_position):
+        """
+        Récupère les résultats pour le scénario "vs squeeze".
+
+        :param position: Position analysée.
+        :param squeeze_position: Position du squeezeur.
+        :return: Liste des résultats.
+        """
+        pos_index = self.position_list.index(position)
+        squeeze_index = self.position_list.index(squeeze_position)
+
+        if squeeze_index <= pos_index + 1:  # le squeezeur doit être au moins deux positions après
+            return []
+
+        results = self.action_processor.get_results(
+            self.hand,
+            [
+                (position, "Raise"),
+                (self.position_list[pos_index + 1], "Call"),
+            ],
+            position,
+        )
+        return results
 
 
 def test():
