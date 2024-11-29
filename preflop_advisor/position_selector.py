@@ -10,20 +10,23 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QSizePolicy,
 )
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QColor
+import sys
+import os
 
-
-# Configuration du logger
+# Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 class PositionSelector(QWidget):
     """
-    Widget de sélection de position.
+    Position selection widget.
     """
 
     def __init__(self, parent, position_config, update_output):
         super().__init__(parent)
-        logging.info("Initialisation de PositionSelector")
+        logging.info("Initializing PositionSelector")
 
         self.update_output = update_output
         self.position_list = [pos.strip() for pos in position_config["PositionList"].split(",")]
@@ -43,22 +46,22 @@ class PositionSelector(QWidget):
         self.layout.setSpacing(self.button_pad)
         self.layout.setContentsMargins(10, 10, 10, 10)
 
-        # Création des boutons
+        # Create buttons
         self.button_list = [self.create_button(row) for row in range(len(self.position_list))]
 
-        # Désactiver les boutons inactifs
+        # Disable inactive buttons
         for item in self.position_inactive_list:
             if item in self.position_list:
                 self.deactivate_button(self.convert_position_name_to_index(item))
 
-        # Sélection par défaut
+        # Default selection
         self.select_button(self.current_position)
 
-        logging.info("PositionSelector initialisé avec %d positions", len(self.position_list))
+        logging.info("PositionSelector initialized with %d positions", len(self.position_list))
 
     def create_button(self, row):
         """
-        Crée un bouton pour une position.
+        Creates a button for a position.
         """
         button = QPushButton(self.position_list[row], self)
         button.setFixedSize(self.button_width, self.button_height)
@@ -77,12 +80,12 @@ class PositionSelector(QWidget):
         """)
         button.clicked.connect(self.on_button_clicked(row))
         self.layout.addWidget(button)
-        logging.debug("Bouton créé pour %s", self.position_list[row])
+        logging.debug("Button created for %s", self.position_list[row])
         return button
 
     def on_button_clicked(self, row):
         """
-        Retourne une fonction d'événement pour gérer les clics sur les boutons.
+        Returns an event handler function to handle button clicks.
         """
 
         def event_handler():
@@ -92,15 +95,13 @@ class PositionSelector(QWidget):
 
     def process_button_clicked(self, row):
         """
-        Gère le clic sur un bouton et met à jour la position sélectionnée.
+        Handles button clicks and updates the selected position.
         """
         if row == self.current_position:
-            logging.debug("Bouton déjà sélectionné : %s", self.position_list[row])
+            logging.debug("Button already selected: %s", self.position_list[row])
             return
 
-        logging.info(
-            "Changement de position : %s -> %s", self.position_list[self.current_position], self.position_list[row]
-        )
+        logging.info("Changing position: %s -> %s", self.position_list[self.current_position], self.position_list[row])
 
         self.deselect_button(self.current_position)
         self.current_position = row
@@ -109,9 +110,9 @@ class PositionSelector(QWidget):
 
     def deselect_button(self, row):
         """
-        Désélectionne un bouton.
+        Deselects a button.
         """
-        logging.debug("Désélection du bouton : %s", self.position_list[row])
+        logging.debug("Deselecting button: %s", self.position_list[row])
         button = self.button_list[row]
         button.setStyleSheet(f"""
             QPushButton {{
@@ -125,9 +126,9 @@ class PositionSelector(QWidget):
 
     def select_button(self, row):
         """
-        Sélectionne un bouton.
+        Selects a button.
         """
-        logging.debug("Sélection du bouton : %s", self.position_list[row])
+        logging.debug("Selecting button: %s", self.position_list[row])
         button = self.button_list[row]
         button.setStyleSheet(f"""
             QPushButton {{
@@ -141,22 +142,22 @@ class PositionSelector(QWidget):
 
     def position_changed(self):
         """
-        Notifie le changement de position.
+        Notifies the position change.
         """
         self.update_output()
 
     def get_position(self):
         """
-        Retourne la position sélectionnée.
+        Returns the selected position.
         """
-        logging.info("Position actuelle : %s", self.position_list[self.current_position])
+        logging.info("Current position: %s", self.position_list[self.current_position])
         return self.position_list[self.current_position]
 
     def update_active_positions(self, positions, inactive_positions):
         """
-        Active ou désactive les positions en fonction des listes fournies.
+        Activates or deactivates positions based on the provided lists.
         """
-        logging.info("Mise à jour des positions actives et inactives")
+        logging.info("Updating active and inactive positions")
         self.active_positions = positions
         self.inactive_positions = inactive_positions
 
@@ -173,46 +174,44 @@ class PositionSelector(QWidget):
 
     def convert_position_name_to_index(self, name):
         """
-        Convertit un nom de position en index.
+        Converts a position name to its index.
         """
         return self.position_list.index(name)
 
     def deactivate_button(self, index):
         """
-        Désactive un bouton.
+        Disables a button.
         """
-        logging.debug("Désactivation du bouton : %s", self.position_list[index])
+        logging.debug("Disabling button: %s", self.position_list[index])
         self.button_list[index].setEnabled(False)
 
     def activate_button(self, index):
         """
-        Active un bouton.
+        Enables a button.
         """
-        logging.debug("Activation du bouton : %s", self.position_list[index])
+        logging.debug("Enabling button: %s", self.position_list[index])
         self.button_list[index].setEnabled(True)
 
 
 class TestWindow(QMainWindow):
     """
-    Fenêtre principale pour tester PositionSelector avec une configuration par défaut si nécessaire.
+    Main window to test PositionSelector with a default configuration if necessary.
     """
 
     def __init__(self):
         super().__init__()
-        logging.info("Initialisation de la fenêtre principale")
+        logging.info("Initializing main window")
         self.setWindowTitle("Position Selector - Dark Theme")
         self.setMinimumSize(600, 200)
 
         configs = ConfigParser()
         config_path = "config.ini"
         if not configs.read(config_path):
-            logging.warning("Fichier de configuration introuvable : %s", config_path)
+            logging.warning("Configuration file not found: %s", config_path)
 
-        # Vérifiez si la section `PositionSelector` existe, sinon appliquez des valeurs par défaut
+        # Check if the `PositionSelector` section exists, otherwise apply default values
         if "PositionSelector" not in configs:
-            logging.warning(
-                "Section 'PositionSelector' manquante dans config.ini. Utilisation des paramètres par défaut."
-            )
+            logging.warning("Section 'PositionSelector' missing in config.ini. Using default settings.")
             settings = {
                 "PositionList": "X,UTG,MP,CO,BU,SB,BB",
                 "PositionInactive": "MP,SB",
@@ -232,30 +231,30 @@ class TestWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         def update_output():
-            logging.info("Position sélectionnée : %s", selector.get_position())
+            logging.info("Selected position: %s", selector.get_position())
 
         selector = PositionSelector(central_widget, settings, update_output)
-        selector.setStyleSheet("background-color: #121212; color: white;")  # Thème sombre
+        selector.setStyleSheet("background-color: #121212; color: white;")  # Dark theme
 
-        # Ajouter le selector dans le layout principal
+        # Add the selector to the main layout
         layout = QHBoxLayout(central_widget)
         layout.addWidget(selector)
 
-        logging.info("TestWindow initialisé avec succès")
+        logging.info("TestWindow initialized successfully")
 
 
 def main():
     """
-    Point d'entrée de l'application.
+    Entry point of the application.
     """
-    logging.info("Démarrage de l'application")
+    logging.info("Starting application")
     app = QApplication([])
 
     window = TestWindow()
     window.show()
 
     app.exec()
-    logging.info("Application terminée")
+    logging.info("Application terminated")
 
 
 if __name__ == "__main__":

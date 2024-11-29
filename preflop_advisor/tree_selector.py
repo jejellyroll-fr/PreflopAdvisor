@@ -10,49 +10,50 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QSizePolicy,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QPoint
+from PySide6.QtGui import QPixmap
 import os
 import sys
 import logging
 
-# Configuration du logger
+# Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Ajouter le répertoire du projet à sys.path
+# Add the project directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 class TreeSelector(QWidget):
     """
-    Widget permettant de sélectionner un arbre parmi une liste définie dans les configurations.
+    Widget allowing the selection of a tree from a list defined in the configurations.
     """
 
     def __init__(self, root, tree_selector_settings, tree_configs, tree_tooltips, update_output):
         super().__init__(root)
-        self.root = root  # Enregistrer le parent pour accéder aux autres composants
+        self.root = root  # Store the parent to access other components
         self.update_output = update_output
         self.num_trees = int(tree_selector_settings.get("NumTrees", 5))
         self.fontsize = int(tree_selector_settings.get("FontSize", 12))
         self.font = tree_selector_settings.get("Font", "Arial")
         self.trees = []
 
-        logging.info("Initialisation du TreeSelector avec %d arbres.", self.num_trees)
+        logging.info("Initializing TreeSelector with %d trees.", self.num_trees)
 
-        # Traiter les informations des arbres
+        # Process tree information
         self.process_tree_infos(tree_configs)
 
-        # Layout principal
+        # Main layout
         self.layout = QVBoxLayout(self)
-        self.setStyleSheet("background-color: #1e1e1e; color: white;")  # Thème sombre
+        self.setStyleSheet("background-color: #1e1e1e; color: white;")  # Dark theme
 
-        # Label pour afficher la sélection actuelle
+        # Label to display the current selection
         self.label = QLabel("Select a Tree")
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.label.setStyleSheet("font-size: 16px; font-weight: bold;")
         self.layout.addWidget(self.label)
 
-        # Créer une liste déroulante (QComboBox)
+        # Create a dropdown list (QComboBox)
         self.dropdown = QComboBox()
         self.dropdown.setStyleSheet(f"""
             QComboBox {{
@@ -75,35 +76,35 @@ class TreeSelector(QWidget):
         """)
         self.dropdown.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # Ajouter les options dans le QComboBox
+        # Add options to the QComboBox
         for tree in self.trees:
             self.dropdown.addItem(
                 f"{tree['plrs']}-max {tree['bb']}bb {tree['game']} {tree['infos']}",
                 tree,
             )
-        logging.info("Arbres chargés dans le sélecteur : %s", self.trees)
+        logging.info("Trees loaded into selector: %s", self.trees)
 
-        # Connecter le signal pour gérer les changements de sélection
+        # Connect the signal to handle selection changes
         self.dropdown.currentIndexChanged.connect(self.on_tree_selected)
 
-        # Ajouter le QComboBox au layout
+        # Add the QComboBox to the layout
         self.layout.addWidget(self.dropdown)
 
-        # Sélectionner l'arbre par défaut
+        # Select the default tree
         default_tree = int(tree_selector_settings.get("DefaultTree", 0))
         self.dropdown.setCurrentIndex(default_tree)
         self.current_tree = self.trees[default_tree] if self.trees else None
 
-        # Déclencher l'action associée au changement
+        # Trigger the action associated with the change
         self.on_tree_selected(default_tree)
 
     def process_tree_infos(self, tree_infos):
         """
-        Traiter les informations des arbres à partir des configurations.
+        Processes tree information from the configurations.
 
-        :param tree_infos: Section contenant les configurations des arbres.
+        :param tree_infos: Section containing tree configurations.
         """
-        logging.info("Traitement des informations des arbres...")
+        logging.info("Processing tree information...")
         for index, table in enumerate(tree_infos):
             infos = tree_infos[table].split(",")
             table_dic = {
@@ -115,35 +116,35 @@ class TreeSelector(QWidget):
                 "infos": infos[4].strip(),
             }
             self.trees.append(table_dic)
-        logging.info("Informations des arbres traitées : %s", self.trees)
+        logging.info("Processed tree information: %s", self.trees)
 
     def on_tree_selected(self, index):
         """
-        Gestion du changement de sélection dans le QComboBox.
+        Handles selection changes in the QComboBox.
 
-        :param index: Index sélectionné.
+        :param index: Selected index.
         """
         if index < 0 or index >= len(self.trees):
-            logging.warning("Index sélectionné invalide : %d", index)
+            logging.warning("Invalid selected index: %d", index)
             return
         self.current_tree = self.trees[index]
         self.label.setText(f"Selected: {self.current_tree['game']} {self.current_tree['infos']}")
-        logging.info("Arbre sélectionné : %s", self.current_tree)
+        logging.info("Selected tree: %s", self.current_tree)
         self.tree_changed()
 
     def tree_changed(self):
         """
-        Callback appelé lorsque l'arbre sélectionné change.
+        Callback called when the selected tree changes.
         """
-        logging.info("Changement d'arbre détecté.")
+        logging.info("Tree change detected.")
         if callable(self.update_output):
             self.update_output()
 
-        # Mettre à jour le PositionSelector si disponible
+        # Update the PositionSelector if available
         if hasattr(self.root, "position_selector"):
             num_players = self.current_tree["plrs"]
 
-            # Mapping des positions en fonction du nombre de joueurs
+            # Mapping of positions based on the number of players
             positions_map = {
                 2: (["SB", "BB"], []),
                 3: (["BU", "SB", "BB"], []),
@@ -155,31 +156,31 @@ class TreeSelector(QWidget):
             positions, inactive_positions = positions_map.get(num_players, ([], []))
 
             logging.info(
-                "Mise à jour des positions pour %d joueurs : positions = %s, inactives = %s",
+                "Updating positions for %d players: positions = %s, inactive = %s",
                 num_players,
                 positions,
                 inactive_positions,
             )
 
-            # Mise à jour des positions
+            # Update positions
             self.root.position_selector.update_active_positions(positions, inactive_positions)
 
     def get_tree_infos(self):
         """
-        Récupère les informations de l'arbre sélectionné.
+        Retrieves information of the selected tree.
 
-        :return: Dictionnaire contenant les informations de l'arbre actuel.
+        :return: Dictionary containing current tree information.
         """
         return self.current_tree
 
 
-# Classe pour simuler le PositionSelector dans les tests
+# Class to simulate PositionSelector in tests
 class MockPositionSelector:
     def update_active_positions(self, positions, inactive_positions):
-        logging.info("Positions mises à jour : %s, inactives : %s", positions, inactive_positions)
+        logging.info("Positions updated: %s, inactive: %s", positions, inactive_positions)
 
 
-# Classe de test pour remplacer MainWindow
+# Test class to replace MainWindow
 class MockMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -188,12 +189,12 @@ class MockMainWindow(QMainWindow):
 
 def test():
     """
-    Fonction de test pour TreeSelector.
+    Test function for TreeSelector.
     """
-    logging.info("Démarrage du test TreeSelector.")
+    logging.info("Starting TreeSelector test.")
     app = QApplication([])
 
-    # Charger les configurations
+    # Load configurations
     configs = ConfigParser()
     config_path = os.path.dirname(__file__)
     configs.read(os.path.join(config_path, "config.ini"))
@@ -212,7 +213,7 @@ def test():
     root.show()
 
     app.exec()
-    logging.info("Test TreeSelector terminé.")
+    logging.info("TreeSelector test completed.")
 
 
 if __name__ == "__main__":

@@ -30,26 +30,26 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.configs = ConfigParser()
 
-        # Chargement du fichier config.ini
+        # Load the config.ini file
         config_path = os.path.join(
             os.path.dirname(os.path.abspath(inspect.getsourcefile(lambda: 0))),
             "config.ini",
         )
         if not os.path.exists(config_path):
-            raise FileNotFoundError(f"Fichier de configuration introuvable : {config_path}")
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
         self.configs.read(config_path)
 
         self.setWindowTitle("Preflop Advisor based on Monker")
 
-        # Initialisation des widgets principaux
+        # Initialize main widgets
         central_widget = QWidget()
         main_layout = QGridLayout()
-        main_layout.setSpacing(5)  # Réduction de l'espacement global
-        main_layout.setContentsMargins(10, 10, 10, 10)  # Marges autour du layout
+        main_layout.setSpacing(5)  # Reduce overall spacing
+        main_layout.setContentsMargins(10, 10, 10, 10)  # Margins around the layout
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
-        # Frames pour l'entrée et la sortie
+        # Frames for input and output
         self.input_frame = QGroupBox("Input")
         self.output_frame = QGroupBox("Output")
         self.input_layout = QVBoxLayout()
@@ -57,14 +57,14 @@ class MainWindow(QMainWindow):
         self.input_frame.setLayout(self.input_layout)
         self.output_frame.setLayout(self.output_layout)
 
-        # Charger les paramètres pour chaque composant
+        # Load settings for each component
         card_selector_settings = self._get_section_config("CardSelector")
         tree_selector_settings = self._get_section_config("TreeSelector")
         position_selector_settings = self._get_section_config("PositionSelector")
         output_settings = self._get_section_config("Output")
         tree_reader_settings = self._get_section_config("TreeReader")
 
-        # Initialisation des composants
+        # Initialize components
         self.position_selector = PositionSelector(
             self.input_frame, position_selector_settings, self.update_output_frame
         )
@@ -79,22 +79,22 @@ class MainWindow(QMainWindow):
         self.rand_button = RandomButton(self.input_frame, position_selector_settings)
         self.output = OutputFrame(self.output_frame, output_settings, tree_reader_settings)
 
-        # Assembler les layouts
+        # Assemble layouts
         self.assemble_layouts()
 
-        # Ajouter les frames dans le layout principal
+        # Add frames to the main layout
         main_layout.addWidget(self.input_frame, 0, 0, 1, 1)
         main_layout.addWidget(self.output_frame, 0, 1, 1, 1)
 
-        # Gérer les proportions de redimensionnement
-        main_layout.setColumnStretch(0, 3)  # Étirement de la colonne gauche (input)
-        main_layout.setColumnStretch(1, 7)  # Étirement de la colonne droite (output)
+        # Set resizing proportions
+        main_layout.setColumnStretch(0, 3)  # Stretch for the left column (input)
+        main_layout.setColumnStretch(1, 7)  # Stretch for the right column (output)
 
-        # Mettre à jour le position_selector avec le TreeSelector par défaut
+        # Update position_selector with the default TreeSelector
         self.tree_selector.tree_changed()
 
     def assemble_layouts(self):
-        # Ajout des labels explicatifs
+        # Add descriptive labels
         label_hand = QLabel("Choose your hand:")
         label_hand.setAlignment(Qt.AlignLeft)
         label_hand.setStyleSheet("font-size: 16px; font-weight: bold; padding: 5px;")
@@ -111,13 +111,13 @@ class MainWindow(QMainWindow):
         label_position.setAlignment(Qt.AlignLeft)
         label_position.setStyleSheet("font-size: 14px; padding: 5px;")
 
-        # S'assurer que les composants et les cadres peuvent être redimensionnés
+        # Ensure components and frames can be resized
         self.input_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.output_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Ajouter les composants au layout input avec proportions ajustées
+        # Add components to the input layout with adjusted proportions
         self.input_layout.addWidget(label_hand)
-        self.input_layout.addWidget(self.card_selector, stretch=8)  # Plus d'espace vertical
+        self.input_layout.addWidget(self.card_selector, stretch=8)  # More vertical space
         self.input_layout.addWidget(label_tree)
         self.input_layout.addWidget(self.tree_selector, stretch=1)
         self.input_layout.addWidget(label_random)
@@ -125,30 +125,30 @@ class MainWindow(QMainWindow):
         self.input_layout.addWidget(label_position)
         self.input_layout.addWidget(self.position_selector, stretch=1)
 
-        # Ajouter le composant output
+        # Add the output component
         self.output_layout.addWidget(self.output)
 
     def update_output_frame(self):
-        """Mise à jour de l'interface en fonction des sélections."""
+        """Update the interface based on selections."""
         try:
-            hand = self.card_selector.get_selected_hand()  # Récupère la main sélectionnée
-            position = self.position_selector.get_position()  # Récupère la position sélectionnée
-            tree_info = self.tree_selector.get_tree_infos()  # Récupère les infos de l'arbre
+            hand = self.card_selector.get_selected_hand()  # Get the selected hand
+            position = self.position_selector.get_position()  # Get the selected position
+            tree_info = self.tree_selector.get_tree_infos()  # Get the tree information
             if not position:
                 raise ValueError("Position not selected or invalid.")
             if hand and position and tree_info:
                 self.output.update_output_frame(hand, position, tree_info)
         except AttributeError as e:
-            print(f"Erreur dans update_output_frame: {e}")
+            print(f"Error in update_output_frame: {e}")
         except ValueError as e:
             print(f"Invalid value: {e}")
 
     def _get_section_config(self, section):
-        """Helper pour récupérer une section de configuration sous forme de dict."""
+        """Helper to retrieve a configuration section as a dictionary."""
         default_configs = {
             "CardSelector": {
                 "NumCards": 4,
-                "ButtonHeight": 90,  # Augmenter encore la hauteur des boutons
+                "ButtonHeight": 90,  # Further increase button height
                 "ButtonWidth": 50,
                 "ButtonPad": 5,
                 "Background": "white",
@@ -186,7 +186,7 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication([])
     window = MainWindow()
-    window.resize(1200, 800)  # Taille initiale de la fenêtre
-    window.setMinimumSize(800, 600)  # Taille minimale
+    window.resize(1200, 800)  # Initial window size
+    window.setMinimumSize(800, 600)  # Minimum size
     window.show()
     app.exec()

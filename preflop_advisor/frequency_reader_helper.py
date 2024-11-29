@@ -268,7 +268,8 @@ def main():
             return
 
     position_list = configs["Positions"].split(",")
-    tree_folder = "/path/to/tree/folder"  # Replace with your tree folder path
+    tree_folder = os.path.join(os.path.expanduser("~"), "Documents", "GitHub", "PreflopAdvisor", "ranges")
+    print(f"patht to tress: {tree_folder}")
     tree_infos = {"folder": tree_folder, "NumPlayers": len(position_list)}
 
     # Load weights from a pickle file if available

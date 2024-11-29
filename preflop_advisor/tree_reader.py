@@ -2,37 +2,279 @@
 
 import os
 from configparser import ConfigParser
+from collections import OrderedDict
 import logging
 import sys
+import re
 
-# Ajout du répertoire parent pour permettre les imports relatifs
+# Add the parent directory to the path for relative imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from preflop_advisor.tree_reader_helpers import ActionProcessor
+from preflop_advisor.hand_convert_helper import convert_hand
 
-# Configuration du logger
+# Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Global cache for file reads
+CACHE = OrderedDict()
+
+
+class ActionProcessor:
+    """
+    Class to process actions and interact with poker range files.
+    """
+
+    def __init__(self, position_list, tree_infos, configs):
+        """
+        Initializes the ActionProcessor with positions, tree information, and configurations.
+
+        :param position_list: List of active positions.
+        :param tree_infos: Information about the range tree.
+        :param configs: Application configurations.
+        """
+        self.position_list = position_list
+        self.tree_infos = tree_infos
+        self.configs = configs
+        self.path = tree_infos["folder"]
+        self.cache_size = int(self.configs.get("CacheSize", 100))
+
+        # Add missing keys to configurations with default values
+        self.configs.setdefault("Fold", "0")
+        self.configs.setdefault("Call", "1")
+        self.configs.setdefault("RaisePot", "2")
+        self.configs.setdefault("All_In", "3")
+        self.configs.setdefault("Ending", ".rng")
+        self.configs.setdefault("RaiseSizeList", "2.5,3.0,4.0")
+        self.configs.setdefault("ValidActions", "Fold,Call,Raise")
+
+        # Dynamic raise sizes
+        for raise_size in self.configs["RaiseSizeList"].split(","):
+            raise_size = raise_size.strip()
+            # Extract the numeric part
+            numeric_part = re.findall(r"\d+\.?\d*", raise_size)
+            if numeric_part:
+                numeric_value = float(numeric_part[0])
+                key = f"Raise{int(numeric_value * 100)}"
+                self.configs.setdefault(key, key)
+            else:
+                logging.error(f"Invalid raise size format: {raise_size}")
+                continue
+
+        logging.info("ActionProcessor initialized with the following configurations: %s", self.configs)
+
+    def read_file_into_hash(self, filename):
+        """
+        Reads a range file and returns its content as a dictionary.
+
+        :param filename: Path to the file to read.
+        :return: Dictionary containing hands and their associated information.
+        """
+        logging.info("Reading file and creating hash: %s", filename)
+        hand_info_hash = {}
+        try:
+            with open(filename, "r") as file:
+                lines = file.readlines()
+                for i in range(0, len(lines), 2):
+                    hand = lines[i].strip()
+                    if i + 1 < len(lines):
+                        info = lines[i + 1].strip()
+                        hand_info_hash[hand] = info
+        except FileNotFoundError:
+            logging.error("Specified file not found: %s", filename)
+        except Exception as e:
+            logging.error("Error reading file %s: %s", filename, str(e))
+        return hand_info_hash
+
+    def get_action_sequence(self, action_list):
+        """
+        Generates a complete action sequence by filling in with 'Fold'.
+
+        :param action_list: List of actions to analyze.
+        :return: Complete list of actions.
+        """
+        logging.debug("Generating action sequence for: %s", action_list)
+        full_action_list = []
+        start_index = 0
+        position_already_folded = []
+
+        for action in action_list:
+            for index in range(len(self.position_list)):
+                position_index = (index + start_index) % len(self.position_list)
+                position = self.position_list[position_index]
+                if position != action[0]:
+                    if position not in position_already_folded:
+                        full_action_list.append((position, "Fold"))
+                        position_already_folded.append(position)
+                else:
+                    full_action_list.append((position, action[1]))
+                    start_index = position_index + 1
+                    break
+        logging.debug("Complete action sequence generated: %s", full_action_list)
+        return full_action_list
+
+    def get_results(self, hand, action_before_list, position):
+        """
+        Retrieves results for a given hand and action sequence.
+
+        :param hand: Hand to analyze.
+        :param action_before_list: Actions taken before the current position.
+        :param position: Current position.
+        :return: Results as a list.
+        """
+        if position not in self.position_list:
+            logging.error("%s is not a valid position in the selected tree.", position)
+            return []
+
+        hand = convert_hand(hand)
+        logging.info("Analyzing results for hand: %s and position: %s", hand, position)
+        results = []
+
+        for action in self.configs["ValidActions"].replace(" ", "").split(","):
+            action_sequence = action_before_list + [(position, action)]
+            full_action_sequence = self.get_action_sequence(action_sequence)
+            full_action_sequence = self.find_valid_raise_sizes(full_action_sequence)
+            if self.test_action_sequence(full_action_sequence):
+                if self.cache_size == 0:
+                    result = self.read_hand(hand, full_action_sequence)
+                else:
+                    result = self.read_hand_with_cache(hand, full_action_sequence)
+                results.append(result)
+        logging.info("Results retrieved: %s", results)
+        return results
+
+    def find_valid_raise_sizes(self, full_action_sequence):
+        """
+        Determines valid raise sizes for an action sequence.
+
+        :param full_action_sequence: Complete action sequence.
+        :return: New sequence with valid raise sizes.
+        """
+        logging.debug("Finding valid raise sizes for: %s", full_action_sequence)
+        new_action_sequence = []
+        for action in full_action_sequence:
+            if action[1] != "Raise":
+                new_action_sequence.append(action)
+            else:
+                # Use the first valid raise size
+                for raise_size in self.configs["RaiseSizeList"].split(","):
+                    raise_size = raise_size.strip()
+                    # Extract the numeric part
+                    numeric_part = re.findall(r"\d+\.?\d*", raise_size)
+                    if numeric_part:
+                        numeric_value = float(numeric_part[0])
+                        key = f"Raise{int(numeric_value * 100)}"
+                        new_action_sequence.append((action[0], key))
+                        break
+        logging.debug("New sequence after adding raises: %s", new_action_sequence)
+        return new_action_sequence
+
+    def test_action_sequence(self, action_sequence):
+        """
+        Checks if a file for a given action sequence exists.
+
+        :param action_sequence: Action sequence.
+        :return: Boolean indicating file existence.
+        """
+        filename = os.path.join(self.path, self.get_filename(action_sequence))
+        exists = os.path.isfile(filename)
+        logging.debug("Testing existence of file %s: %s", filename, exists)
+        return exists
+
+    def read_hand(self, hand, action_sequence):
+        """
+        Reads hand data directly from a file.
+
+        :param hand: Hand to read.
+        :param action_sequence: Action sequence.
+        :return: Hand information.
+        """
+        filename = os.path.join(self.path, self.get_filename(action_sequence))
+        logging.info("Reading data for hand: %s from file: %s", hand, filename)
+        try:
+            with open(filename, "r") as f:
+                for line in f:
+                    if hand + "\n" in line and len(line) < 12:
+                        info_line = f.readline().strip()
+                        infos = info_line.split(";")
+                        frequency = float(infos[0])
+                        ev = float(infos[1])
+                        last_action = action_sequence[-1][1]
+                        return [last_action, frequency, ev]
+        except FileNotFoundError:
+            logging.error("File not found: %s", filename)
+        return ["", 0, 0]
+
+    def read_hand_with_cache(self, hand, action_sequence):
+        """
+        Reads hand data using a cache.
+
+        :param hand: Hand to read.
+        :param action_sequence: Action sequence.
+        :return: Hand information.
+        """
+        filename = os.path.join(self.path, self.get_filename(action_sequence))
+        logging.info("Reading data for hand: %s with cache from file: %s", hand, filename)
+        try:
+            if filename not in CACHE:
+                if len(CACHE) >= self.cache_size:
+                    CACHE.popitem(last=False)
+                CACHE[filename] = self.read_file_into_hash(filename)
+
+            hand_info = CACHE[filename].get(hand)
+            if not hand_info:
+                logging.error("Hand %s not found in file %s", hand, filename)
+                return ["", 0, 0]
+
+            infos = hand_info.split(";")
+            frequency = float(infos[0])
+            ev = float(infos[1])
+            last_action = action_sequence[-1][1]
+            return [last_action, frequency, ev]
+        except FileNotFoundError:
+            logging.error("File not found: %s", filename)
+        return ["", 0, 0]
+
+    def get_filename(self, action_sequence):
+        """
+        Generates a filename based on the action sequence.
+
+        :param action_sequence: Action sequence.
+        :return: Filename.
+        """
+        filename = ""
+        for position, action in action_sequence:
+            # Handle action keys
+            if action.startswith("Raise"):
+                if action not in self.configs:
+                    self.configs[action] = action
+            if action not in self.configs:
+                logging.error("Missing key for action '%s' in configurations.", action)
+                return ""
+            filename += f".{self.configs[action]}"
+        filename = filename.lstrip(".") + self.configs["Ending"]
+        logging.debug("Generated filename: %s", filename)
+        return filename
 
 
 class TreeReader:
     """
-    Classe pour lire et traiter les arbres de décision de ranges de poker.
+    Class to read and process poker range decision trees.
     """
 
     def __init__(self, hand, position, tree_infos, configs):
         """
-        Initialise le TreeReader avec les informations nécessaires.
+        Initializes the TreeReader with necessary information.
 
-        :param hand: La main à analyser.
-        :param position: La position à analyser.
-        :param tree_infos: Informations sur l'arbre des ranges.
-        :param configs: Configuration générale du TreeReader.
+        :param hand: The hand to analyze.
+        :param position: The position to analyze.
+        :param tree_infos: Information about the range tree.
+        :param configs: General configuration for the TreeReader.
         """
-        logging.info("Initialisation du TreeReader pour la main: %s et la position: %s", hand, position)
+        logging.info("Initializing TreeReader for hand: %s and position: %s", hand, position)
 
         self.full_position_list = [pos.strip() for pos in configs["Positions"].split(",")]
         self.position_list = []
-        self.num_players = int(tree_infos.get("plrs", len(self.full_position_list)))  # Assurez-vous que c'est un entier
+        self.num_players = int(tree_infos.get("plrs", len(self.full_position_list)))  # Ensure it's an integer
         self.init_position_list(self.num_players, self.full_position_list)
 
         self.hand = hand
@@ -41,40 +283,40 @@ class TreeReader:
         self.configs = configs
         self.tree_infos = tree_infos
 
-        # Vérification que le dossier du tree existe
+        # Verify that the tree folder exists
         tree_folder = self.tree_infos.get("folder", "")
         if not os.path.isdir(tree_folder):
-            logging.error("Le dossier spécifié pour l'arbre est introuvable : %s", tree_folder)
-            raise FileNotFoundError("Le dossier du tree est introuvable.")
+            logging.error("Specified tree folder not found: %s", tree_folder)
+            raise FileNotFoundError("Tree folder not found.")
 
         self.action_processor = ActionProcessor(self.position_list, self.tree_infos, configs)
         self.results = []
-        logging.info("TreeReader initialisé avec succès.")
+        logging.info("TreeReader initialized successfully.")
 
     def init_position_list(self, num_players, positions):
         """
-        Initialise la liste des positions en fonction du nombre de joueurs.
+        Initializes the position list based on the number of players.
 
-        :param num_players: Nombre de joueurs actifs.
-        :param positions: Liste complète des positions.
+        :param num_players: Number of active players.
+        :param positions: Complete list of positions.
         """
-        logging.debug("Initialisation des positions pour %d joueurs", num_players)
+        logging.debug("Initializing positions for %d players", num_players)
         if num_players > len(positions):
             logging.warning(
-                "Nombre de joueurs (%d) dépasse le nombre de positions disponibles (%d). Utilisation du nombre maximum disponible.",
+                "Number of players (%d) exceeds available positions (%d). Using maximum available.",
                 num_players,
                 len(positions),
             )
             num_players = len(positions)
         self.position_list = positions[:num_players]
         self.position_list.reverse()
-        logging.info("Liste des positions active : %s", self.position_list)
+        logging.info("Active position list: %s", self.position_list)
 
     def fill_default_results(self):
         """
-        Remplit les résultats par défaut pour toutes les positions et scénarios.
+        Fills default results for all positions and scenarios.
         """
-        logging.info("Remplissage des résultats par défaut.")
+        logging.info("Filling default results.")
         row = [{"isInfo": True, "Text": "X"}, {"isInfo": True, "Text": "FI"}]
         row.extend({"isInfo": True, "Text": "vs " + position} for position in self.position_list)
         self.results.append(row)
@@ -94,36 +336,36 @@ class TreeReader:
             for column_pos in self.position_list:
                 row.append({"isInfo": False, "Results": self.get_vs_first_in(row_pos, column_pos)})
             self.results.append(row)
-        logging.info("Résultats par défaut remplis avec succès.")
+        logging.info("Default results filled successfully.")
 
     def get_results(self):
         """
-        Récupère les résultats pour les scénarios définis dans le TreeReader.
+        Retrieves results for the scenarios defined in the TreeReader.
 
-        :return: Liste des résultats.
+        :return: List of results.
         """
-        logging.info("Récupération des résultats.")
+        logging.info("Retrieving results.")
         self.results = []
         if self.position:
             self.fill_position_results()
         else:
             self.fill_default_results()
 
-        # Validation des résultats
+        # Validate results
         for row in self.results:
             if not isinstance(row, list):
-                logging.warning("Format de ligne invalide : %s", row)
+                logging.warning("Invalid row format: %s", row)
                 continue
             for cell in row:
                 if not isinstance(cell, dict) or "isInfo" not in cell:
-                    logging.warning("Format de cellule invalide : %s", cell)
+                    logging.warning("Invalid cell format: %s", cell)
         return self.results
 
     def fill_position_results(self):
         """
-        Remplit les résultats pour une position spécifique.
+        Fills results for a specific position.
         """
-        logging.info("Remplissage des résultats pour la position spécifique : %s", self.position)
+        logging.info("Filling results for specific position: %s", self.position)
         pos = self.position
         row = [{"isInfo": True, "Text": pos}]
         row.extend({"isInfo": True, "Text": "vs " + position} for position in self.position_list)
@@ -156,9 +398,9 @@ class TreeReader:
 
     def add_special_lines(self, pos):
         """
-        Ajoute des lignes spéciales pour les scénarios spécifiques (squeeze, 4bet, etc.).
+        Adds special lines for specific scenarios (squeeze, 4bet, etc.).
         """
-        logging.info("Ajout des lignes spéciales pour la position : %s", pos)
+        logging.info("Adding special lines for position: %s", pos)
         # Squeeze
         row = [{"isInfo": True, "Text": "squeeze"}]
         row.extend({"isInfo": False, "Results": self.get_squeeze(pos, column_pos)} for column_pos in self.position_list)
@@ -183,14 +425,14 @@ class TreeReader:
 
     def get_vs_first_in(self, position, fi_position):
         """
-        Récupère les résultats pour le scénario "vs first in".
+        Retrieves results for the "vs first in" scenario.
 
-        :param position: Position analysée.
-        :param fi_position: Position de l'ouverture initiale.
-        :return: Liste des résultats.
+        :param position: Analyzed position.
+        :param fi_position: Initial opening position.
+        :return: List of results.
         """
         if position not in self.position_list or fi_position not in self.position_list:
-            logging.error("Positions invalides : %s, %s", position, fi_position)
+            logging.error("Invalid positions: %s, %s", position, fi_position)
             return []
         if position == fi_position:
             return []
@@ -200,25 +442,25 @@ class TreeReader:
 
     def get_vs_4bet(self, position, reraise_position):
         """
-        Récupère les résultats pour le scénario "vs 4bet".
+        Retrieves results for the "vs 4bet" scenario.
 
-        :param position: Position analysée.
-        :param reraise_position: Position qui fait le 4bet.
-        :return: Liste des résultats.
+        :param position: Analyzed position.
+        :param reraise_position: Position making the 4bet.
+        :return: List of results.
         """
         pos_index = self.position_list.index(position)
-        # Les mêmes positions ou UTG où il n'y a pas de 4bet possible
+        # Same positions or UTG where cold 4bet is not possible
         if position == reraise_position or pos_index == 0:
             return []
         if pos_index > self.position_list.index(reraise_position):
-            # Nous avons fait une 3bet et faisons face à une 4bet de l'ouvreuse
+            # We made a 3bet and are facing a 4bet from the opener
             results = self.action_processor.get_results(
                 self.hand,
                 [(reraise_position, "Raise"), (position, "Raise"), (reraise_position, "Raise")],
                 position,
             )
         else:
-            # Nous faisons face à une 4bet après une ouverture et une 3bet
+            # We are facing a 4bet after an open and a 3bet
             opener = self.position_list[pos_index - 1]
             results = self.action_processor.get_results(
                 self.hand,
@@ -229,19 +471,19 @@ class TreeReader:
 
     def get_4bet(self, position, threebet_position):
         """
-        Récupère les résultats pour le scénario "4bet".
+        Retrieves results for the "4bet" scenario.
 
-        :param position: Position analysée.
-        :param threebet_position: Position qui fait la 3bet.
-        :return: Liste des résultats.
+        :param position: Analyzed position.
+        :param threebet_position: Position making the 3bet.
+        :return: List of results.
         """
         pos_index = self.position_list.index(position)
         threebet_pos_index = self.position_list.index(threebet_position)
 
         if position == threebet_position:
             return []
-        if pos_index > threebet_pos_index:  # cold4bet spot
-            if threebet_pos_index == 0:  # vs UTG il n'y a pas de cold4bet
+        if pos_index > threebet_pos_index:  # cold 4bet spot
+            if threebet_pos_index == 0:  # vs UTG there is no cold 4bet
                 return []
             else:
                 results = self.action_processor.get_results(
@@ -265,16 +507,16 @@ class TreeReader:
 
     def get_squeeze(self, position, rfi_position):
         """
-        Récupère les résultats pour le scénario "squeeze".
+        Retrieves results for the "squeeze" scenario.
 
-        :param position: Position analysée.
-        :param rfi_position: Position du first in.
-        :return: Liste des résultats.
+        :param position: Analyzed position.
+        :param rfi_position: Position of the first in.
+        :return: List of results.
         """
         pos_index = self.position_list.index(position)
         rfi_index = self.position_list.index(rfi_position)
 
-        if pos_index <= rfi_index + 1:  # il doit y avoir au moins un joueur entre rfi et le caller
+        if pos_index <= rfi_index + 1:  # there must be at least one player between rfi and caller
             return []
 
         results = self.action_processor.get_results(
@@ -289,16 +531,16 @@ class TreeReader:
 
     def get_vs_squeeze(self, position, squeeze_position):
         """
-        Récupère les résultats pour le scénario "vs squeeze".
+        Retrieves results for the "vs squeeze" scenario.
 
-        :param position: Position analysée.
-        :param squeeze_position: Position du squeezeur.
-        :return: Liste des résultats.
+        :param position: Analyzed position.
+        :param squeeze_position: Position of the squeezer.
+        :return: List of results.
         """
         pos_index = self.position_list.index(position)
         squeeze_index = self.position_list.index(squeeze_position)
 
-        if squeeze_index <= pos_index + 1:  # le squeezeur doit être au moins deux positions après
+        if squeeze_index <= pos_index + 1:  # the squeezer must be at least two positions after
             return []
 
         results = self.action_processor.get_results(
@@ -314,14 +556,14 @@ class TreeReader:
 
 def test():
     """
-    Fonction de test pour le TreeReader.
+    Test function for TreeReader.
     """
-    logging.info("Démarrage du test TreeReader.")
+    logging.info("Starting TreeReader test.")
     config = ConfigParser()
     config.read("config.ini")
 
     if "TreeReader" not in config:
-        logging.error("'TreeReader' section manquante dans config.ini.")
+        logging.error("'TreeReader' section missing in config.ini.")
         return
 
     tree = {"folder": "./ranges/HU-100bb-with-limp", "plrs": 2}
@@ -337,7 +579,7 @@ def test():
             for field in row:
                 print(field)
     except FileNotFoundError as e:
-        logging.error("Erreur lors de l'exécution : %s", e)
+        logging.error("Error during execution: %s", e)
 
 
 if __name__ == "__main__":

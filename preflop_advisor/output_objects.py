@@ -12,27 +12,27 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
-# Configuration du logger
+# Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 class TableEntry(QWidget):
     """
-    Widget personnalisé représentant une entrée de table avec des informations
-    affichées dans un layout flexible et responsif, avec un thème sombre.
+    Custom widget representing a table entry with information
+    displayed in a flexible and responsive layout, featuring a dark theme.
     """
 
     def __init__(self, root, width=100, height=100):
         super().__init__(root)
 
-        logging.info("Initialisation d'un widget TableEntry")
+        logging.info("Initializing a TableEntry widget")
 
-        # Layout principal
+        # Main layout
         self.layout = QGridLayout(self)
         self.layout.setContentsMargins(5, 5, 5, 5)
         self.layout.setSpacing(5)
 
-        # Variables de texte
+        # Text variables
         self.info_text = QLabel("", self)
         self.info_text.setAlignment(Qt.AlignCenter)
         self.info_text.setFont(QFont("Helvetica", 20))
@@ -46,16 +46,16 @@ class TableEntry(QWidget):
         self.label_right.setFont(QFont("Helvetica", 12))
         self.label_right.setAlignment(Qt.AlignCenter)
 
-        # Ajout des widgets au layout
-        self.layout.addWidget(self.info_text, 0, 0, 1, 2)  # Ligne entière
-        self.layout.addWidget(self.label_left, 1, 0)  # Colonne de gauche
-        self.layout.addWidget(self.label_right, 1, 1)  # Colonne de droite
+        # Add widgets to the layout
+        self.layout.addWidget(self.info_text, 0, 0, 1, 2)  # Full row
+        self.layout.addWidget(self.label_left, 1, 0)  # Left column
+        self.layout.addWidget(self.label_right, 1, 1)  # Right column
 
-        # Responsivité
+        # Responsiveness
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.resize(width, height)  # Taille initiale
+        self.resize(width, height)  # Initial size
 
-        # Style sombre
+        # Dark style
         self.setStyleSheet("""
             QWidget {
                 border: 1px solid #555555;
@@ -69,17 +69,17 @@ class TableEntry(QWidget):
             }
         """)
 
-        logging.info("TableEntry initialisé avec une taille par défaut (%d, %d)", width, height)
+        logging.info("TableEntry initialized with default size (%d, %d)", width, height)
 
     def resizeEvent(self, event):
         """
-        Ajuste la taille de la police en fonction de la taille du widget.
+        Adjusts the font size based on the widget's size.
         """
         width = self.width()
         font_size_info = max(10, width // 15)
         font_size_labels = max(8, width // 25)
 
-        logging.debug("ResizeEvent déclenché : largeur = %d, taille des polices ajustée", width)
+        logging.debug("ResizeEvent triggered: width = %d, adjusted font sizes", width)
 
         self.info_text.setFont(QFont("Helvetica", font_size_info))
         self.label_left.setFont(QFont("Helvetica", font_size_labels))
@@ -88,74 +88,74 @@ class TableEntry(QWidget):
 
     def set_description_label(self, text=""):
         """
-        Affiche une description dans le champ principal.
+        Displays a description in the main field.
         """
         self.info_text.setText(text)
         self.info_text.show()
-        logging.info("Description mise à jour : %s", text)
+        logging.info("Description updated: %s", text)
 
     def set_result_label(self, results):
         """
-        Affiche une liste de résultats formatée dans le champ principal.
+        Displays a formatted list of results in the main field.
         """
         if not self.validate_results(results):
-            logging.error("Les résultats fournis sont invalides : %s", results)
+            logging.error("Provided results are invalid: %s", results)
             self.info_text.setText("Invalid Results")
             return
         formatted_results = "\n".join(
             [" ".join(map(str, result)) if isinstance(result, (list, tuple)) else str(result) for result in results]
         )
         self.info_text.setText(formatted_results)
-        logging.info("Résultats affichés : %s", formatted_results)
+        logging.info("Results displayed: %s", formatted_results)
 
     def convert_result_to_str(self, result):
         """
-        Convertit un résultat en une chaîne multi-lignes.
+        Converts a result into a multi-line string.
         """
         return "\n".join(result)
 
     def clear_entry(self):
         """
-        Réinitialise tous les champs du widget.
+        Resets all fields of the widget.
         """
         self.info_text.setText("")
         self.label_left.setText("")
         self.label_right.setText("")
         self.label_left.setStyleSheet("background-color: none;")
         self.label_right.setStyleSheet("background-color: none;")
-        logging.info("TableEntry réinitialisé")
+        logging.info("TableEntry reset")
 
     def validate_results(self, results):
         """
-        Valide les résultats pour s'assurer qu'ils peuvent être affichés.
+        Validates the results to ensure they can be displayed.
         """
         if not isinstance(results, list):
-            logging.debug("Validation échouée : les résultats ne sont pas une liste")
+            logging.debug("Validation failed: results are not a list")
             return False
         for result in results:
             if not isinstance(result, (list, tuple)):
-                logging.debug("Validation échouée : un des éléments n'est ni une liste ni un tuple")
+                logging.debug("Validation failed: one of the elements is neither a list nor a tuple")
                 return False
-        logging.debug("Validation réussie pour les résultats : %s", results)
+        logging.debug("Validation succeeded for results: %s", results)
         return True
 
 
 def test():
     """
-    Fonction de test pour valider le fonctionnement du widget TableEntry avec un thème sombre.
+    Test function to validate the functionality of the TableEntry widget with a dark theme.
     """
-    logging.info("Démarrage de l'application de test")
+    logging.info("Starting test application")
     app = QApplication([])
 
-    # Fenêtre principale pour tester TableEntry
+    # Main window to test TableEntry
     window = QMainWindow()
     central_widget = QWidget()
     layout = QGridLayout(central_widget)
     layout.setContentsMargins(10, 10, 10, 10)
     layout.setSpacing(10)
 
-    # Ajout de plusieurs TableEntry pour tester
-    logging.info("Création et ajout de widgets TableEntry à la fenêtre principale")
+    # Add multiple TableEntry widgets for testing
+    logging.info("Creating and adding TableEntry widgets to the main window")
     table_entry = TableEntry(central_widget)
     table_entry.set_description_label("UTG")
     layout.addWidget(table_entry, 0, 0)
@@ -176,7 +176,7 @@ def test():
     table_entry4.set_result_label([["Raise", "100", "+23"]])
     layout.addWidget(table_entry4, 2, 0)
 
-    # Ajouter des stretchs pour une meilleure responsivité
+    # Add stretches for better responsiveness
     layout.setRowStretch(0, 1)
     layout.setRowStretch(1, 1)
     layout.setRowStretch(2, 1)
@@ -185,14 +185,14 @@ def test():
 
     window.setCentralWidget(central_widget)
     window.setWindowTitle("Table Entry Test - Dark Theme")
-    window.resize(800, 600)  # Taille initiale
-    window.setMinimumSize(400, 300)  # Taille minimale
-    window.setStyleSheet("background-color: #1e1e1e; color: white;")  # Thème sombre pour toute la fenêtre
+    window.resize(800, 600)  # Initial size
+    window.setMinimumSize(400, 300)  # Minimum size
+    window.setStyleSheet("background-color: #1e1e1e; color: white;")  # Dark theme for the entire window
     window.show()
 
-    logging.info("Fenêtre principale affichée")
+    logging.info("Main window displayed")
     app.exec()
-    logging.info("Application de test terminée")
+    logging.info("Test application terminated")
 
 
 if __name__ == "__main__":
