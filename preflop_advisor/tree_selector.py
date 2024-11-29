@@ -162,7 +162,7 @@ class TreeSelector(QWidget):
             )
 
             # Mise à jour des positions
-            self.root.position_selector.update_positions(positions, inactive_positions)
+            self.root.position_selector.update_active_positions(positions, inactive_positions)
 
     def get_tree_infos(self):
         """
@@ -175,7 +175,7 @@ class TreeSelector(QWidget):
 
 # Classe pour simuler le PositionSelector dans les tests
 class MockPositionSelector:
-    def update_positions(self, positions, inactive_positions):
+    def update_active_positions(self, positions, inactive_positions):
         logging.info("Positions mises à jour : %s, inactives : %s", positions, inactive_positions)
 
 

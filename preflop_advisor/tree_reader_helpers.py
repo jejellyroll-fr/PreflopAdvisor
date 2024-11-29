@@ -5,6 +5,7 @@ from configparser import ConfigParser
 from collections import OrderedDict
 import logging
 import sys
+import re
 
 # Ajout du répertoire parent au chemin pour les imports relatifs
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -35,7 +36,7 @@ class ActionProcessor:
         self.tree_infos = tree_infos
         self.configs = configs
         self.path = tree_infos["folder"]
-        self.cache_size = int(self.configs.get("CacheSize", 100))  # Taille par défaut du cache
+        self.cache_size = int(self.configs.get("CacheSize", 100))
 
         # Ajout des clés manquantes aux configurations avec des valeurs par défaut
         self.configs.setdefault("Fold", "0")
@@ -48,8 +49,16 @@ class ActionProcessor:
 
         # Dynamique des tailles de relances
         for raise_size in self.configs["RaiseSizeList"].split(","):
-            key = f"Raise{int(float(raise_size.strip()) * 100)}"
-            self.configs.setdefault(key, key)
+            raise_size = raise_size.strip()
+            # Extraction de la partie numérique
+            numeric_part = re.findall(r"\d+\.?\d*", raise_size)
+            if numeric_part:
+                numeric_value = float(numeric_part[0])
+                key = f"Raise{int(numeric_value * 100)}"
+                self.configs.setdefault(key, key)
+            else:
+                logging.error(f"Format de taille de relance invalide: {raise_size}")
+                continue
 
         logging.info("ActionProcessor initialisé avec les configurations suivantes: %s", self.configs)
 
@@ -146,9 +155,14 @@ class ActionProcessor:
             if action[1] != "Raise":
                 new_action_sequence.append(action)
             else:
+                # Utiliser la première taille de relance valide
                 for raise_size in self.configs["RaiseSizeList"].split(","):
-                    key = f"Raise{int(float(raise_size.strip()) * 100)}"
-                    if self.test_action_sequence(new_action_sequence + [(action[0], key)]):
+                    raise_size = raise_size.strip()
+                    # Extraction de la partie numérique
+                    numeric_part = re.findall(r"\d+\.?\d*", raise_size)
+                    if numeric_part:
+                        numeric_value = float(numeric_part[0])
+                        key = f"Raise{int(numeric_value * 100)}"
                         new_action_sequence.append((action[0], key))
                         break
         logging.debug("Nouvelle séquence après ajout des relances: %s", new_action_sequence)
@@ -229,6 +243,10 @@ class ActionProcessor:
         """
         filename = ""
         for position, action in action_sequence:
+            # Gestion des clés d'action
+            if action.startswith("Raise"):
+                if action not in self.configs:
+                    self.configs[action] = action
             if action not in self.configs:
                 logging.error("Clé manquante pour l'action '%s' dans les configurations.", action)
                 return ""
@@ -261,7 +279,7 @@ def test():
         logging.info("Dossier de test créé : %s", test_folder)
 
     # Création d'un fichier de test
-    test_file = os.path.join(test_folder, "test.rng")
+    test_file = os.path.join(test_folder, "0.1.rng")
     with open(test_file, "w") as f:
         f.write("AhKs\n50;0.75\nKhQd\n25;0.65\nJhTs\n15;0.45\n")
 
@@ -274,8 +292,8 @@ def test():
     action_list = [("SB", "Raise"), ("BB", "Call")]
     hand = "AhKs"
     results = action_processor.get_results(hand, action_list, "BB")
-    for result in results:
-        logging.info("Résultat: %s", result)
+    for res in results:
+        logging.info("Résultat: %s", res)
 
     # Nettoyage après le test
     os.remove(test_file)

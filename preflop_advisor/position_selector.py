@@ -7,10 +7,10 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
     QPushButton,
-    QVBoxLayout,
-    QMessageBox,
+    QHBoxLayout,
+    QSizePolicy,
 )
-from PySide6.QtCore import Qt
+
 
 # Configuration du logger
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -26,8 +26,8 @@ class PositionSelector(QWidget):
         logging.info("Initialisation de PositionSelector")
 
         self.update_output = update_output
-        self.position_list = position_config["PositionList"].split(",")
-        self.position_inactive_list = position_config["PositionInactive"].split(",")
+        self.position_list = [pos.strip() for pos in position_config["PositionList"].split(",")]
+        self.position_inactive_list = [pos.strip() for pos in position_config["PositionInactive"].split(",")]
         self.button_height = int(position_config["ButtonHeight"])
         self.button_width = int(position_config["ButtonWidth"])
         self.button_pad = int(position_config["ButtonPad"])
@@ -39,8 +39,7 @@ class PositionSelector(QWidget):
         self.default_position = int(position_config["DefaultPosition"])
         self.current_position = self.default_position
 
-        # Conteneur principal
-        self.layout = QVBoxLayout(self)
+        self.layout = QHBoxLayout(self)
         self.layout.setSpacing(self.button_pad)
         self.layout.setContentsMargins(10, 10, 10, 10)
 
@@ -63,6 +62,7 @@ class PositionSelector(QWidget):
         """
         button = QPushButton(self.position_list[row], self)
         button.setFixedSize(self.button_width, self.button_height)
+        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         button.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.background};
@@ -152,22 +152,21 @@ class PositionSelector(QWidget):
         logging.info("Position actuelle : %s", self.position_list[self.current_position])
         return self.position_list[self.current_position]
 
-    def update_active_positions(self, num_players):
+    def update_active_positions(self, positions, inactive_positions):
         """
-        Active ou désactive les positions en fonction du nombre de joueurs.
+        Active ou désactive les positions en fonction des listes fournies.
         """
-        active_positions = list(reversed(self.position_list))
-        active_positions = [active_positions[-1]] + active_positions[:num_players]
+        logging.info("Mise à jour des positions actives et inactives")
+        self.active_positions = positions
+        self.inactive_positions = inactive_positions
 
-        logging.info("Mise à jour des positions actives pour %d joueurs", num_players)
-
-        if self.get_position() not in active_positions:
+        if self.get_position() not in self.active_positions:
             self.process_button_clicked(self.default_position)
             self.current_position = self.default_position
 
         for position in self.position_list:
             index = self.convert_position_name_to_index(position)
-            if position in active_positions and position not in self.position_inactive_list:
+            if position in self.active_positions and position not in self.position_inactive_list:
                 self.activate_button(index)
             else:
                 self.deactivate_button(index)
@@ -202,7 +201,7 @@ class TestWindow(QMainWindow):
         super().__init__()
         logging.info("Initialisation de la fenêtre principale")
         self.setWindowTitle("Position Selector - Dark Theme")
-        self.setMinimumSize(400, 600)
+        self.setMinimumSize(600, 200)
 
         configs = ConfigParser()
         config_path = "config.ini"
@@ -217,10 +216,10 @@ class TestWindow(QMainWindow):
             settings = {
                 "PositionList": "X,UTG,MP,CO,BU,SB,BB",
                 "PositionInactive": "MP,SB",
-                "ButtonHeight": "40",
-                "ButtonWidth": "120",
-                "ButtonPad": "5",
-                "FontSize": "12",
+                "ButtonHeight": "60",
+                "ButtonWidth": "100",
+                "ButtonPad": "10",
+                "FontSize": "14",
                 "Font": "Helvetica",
                 "Background": "#2c2c2c",
                 "BackgroundPressed": "#444444",
@@ -237,6 +236,12 @@ class TestWindow(QMainWindow):
 
         selector = PositionSelector(central_widget, settings, update_output)
         selector.setStyleSheet("background-color: #121212; color: white;")  # Thème sombre
+
+        # Ajouter le selector dans le layout principal
+        layout = QHBoxLayout(central_widget)
+        layout.addWidget(selector)
+
+        logging.info("TestWindow initialisé avec succès")
 
 
 def main():
