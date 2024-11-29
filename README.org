@@ -49,6 +49,15 @@ Before you begin, ensure you have Python 3.x installed on your computer. You can
    pip install -r requirements.txt
    #+END_SRC
 
+   or
+
+   Use Uv:
+   #+BEGIN_SRC sh
+   uv venv
+   source .venv/bin/activate
+   uv run ./standalone.py
+   #+END_SRC
+
 5. Export your Monker Preflop trees:
    For every tree:
    - Open the Tree in Monker
