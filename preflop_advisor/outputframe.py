@@ -14,19 +14,19 @@ from PySide6.QtGui import QFont, QColor
 import sys
 import os
 
-# Logger configuration
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
 # Add the project directory to sys.path for relative imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from preflop_advisor.tree_reader import TreeReader
 
-# Constants (converted from original code)
+# Logger configuration
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Constants
 RESULT_ROWS = 7
 RESULT_COLUMNS = 8
-RESULT_HEIGHT = 70
-RESULT_WIDTH = 110
+RESULT_HEIGHT = 80
+RESULT_WIDTH = 120
 
 INFO_FONT = QFont("Helvetica", 20)
 RESULT_FONT = QFont("Helvetica", 12)
@@ -52,7 +52,7 @@ class TableEntry(QWidget):
         # Set up the main layout
         self.layout = QGridLayout(self)
         self.layout.setContentsMargins(5, 5, 5, 5)
-        self.layout.setSpacing(5)
+        self.layout.setSpacing(10)
 
         # Set the initial size
         self.setFixedSize(width, height)
@@ -72,23 +72,23 @@ class TableEntry(QWidget):
         self.label_right.setAlignment(Qt.AlignCenter)
 
         # Add widgets to the layout
-        self.layout.addWidget(self.info_text, 0, 0, 1, 2)  # Occupies the entire first row
+        self.layout.addWidget(self.info_text, 0, 0, 1, 2)
         self.layout.addWidget(self.label_left, 1, 0)
         self.layout.addWidget(self.label_right, 1, 1)
 
-        # Apply dark theme
+        # Apply light grid theme
         self.setStyleSheet(
             """
             QWidget {
-                border: 1px solid #555555;
+                border: 1px solid #d3d3d3;
                 border-radius: 5px;
-                background-color: #1e1e1e;
-                color: white;
+                background-color: 1e1e1e; 
+                color: black;
             }
             QLabel {
-                border: none;
+                border: 1px solid #d3d3d3;
                 background-color: transparent;
-                color: white;
+                color: grey;
             }
             """
         )
@@ -104,7 +104,7 @@ class TableEntry(QWidget):
 
     def set_result_label(self, results):
         """
-        Displays formatted results on the left and right sides.
+        Displays formatted results on the left and right sides with conditional coloring.
         """
         logging.info("Configuring results: %s", results)
         # Clear previous texts
@@ -113,19 +113,28 @@ class TableEntry(QWidget):
         self.label_left.setStyleSheet("")
         self.label_right.setStyleSheet("")
 
+        def apply_style(label, value):
+            try:
+                numeric_value = float(value)
+                if numeric_value > 0:
+                    label.setStyleSheet("background-color: #90EE90; color: black;")  # Vert clair
+                elif numeric_value < 0:
+                    label.setStyleSheet("background-color: #FF6347; color: black;")  # Rouge tomate
+                else:
+                    label.setStyleSheet("background-color: #e0e0e0; color: black;")  # Neutre
+            except ValueError:
+                label.setStyleSheet("background-color: #e0e0e0; color: black;")  # Neutre en cas de non numérique
+
         if len(results) == 1:
             # Display the result on the right side
             self.label_right.setText(self.convert_result_to_str(results[0]))
-            if float(results[0][1]) > 50:
-                self.label_right.setStyleSheet("background-color: linen; color: black;")
+            apply_style(self.label_right, results[0][1])
         elif len(results) == 2:
             # Display results on both sides
             self.label_left.setText(self.convert_result_to_str(results[0]))
-            if float(results[0][1]) > 50:
-                self.label_left.setStyleSheet("background-color: linen; color: black;")
+            apply_style(self.label_left, results[0][1])
             self.label_right.setText(self.convert_result_to_str(results[1]))
-            if float(results[1][1]) > 50:
-                self.label_right.setStyleSheet("background-color: linen; color: black;")
+            apply_style(self.label_right, results[1][1])
 
     def convert_result_to_str(self, result):
         """
@@ -247,6 +256,16 @@ class OutputFrame(QWidget):
                 table_entry = TableEntry(self.output_frame, RESULT_WIDTH, RESULT_HEIGHT)
                 self.table_entries[row][column] = table_entry
                 self.output_layout.addWidget(table_entry, row, column)
+
+        # Apply grid lines style
+        self.output_frame.setStyleSheet(
+            """
+            QWidget {
+                border: 1px solid #d3d3d3;
+                background-color: #3c3c3c; 
+            }
+            """
+        )
         logging.info("Results grid created")
 
     def preprocess_results(self, results):
@@ -293,9 +312,9 @@ def test():
 
     # Create a test tree
     tree = {
-        "plrs": 6,
+        "plrs": 2,
         "bb": 100,
-        "game": "Hold'em",
+        "game": "Omaha",
         "infos": "Test Game",
         "folder": "./ranges/HU-100bb-with-limp",
     }
