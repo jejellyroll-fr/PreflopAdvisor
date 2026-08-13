@@ -1,3 +1,11 @@
+[build-system]
+# Required for the project to be installed into the environment. Without it uv treats
+# this as a virtual project, the [project.scripts] console script is never created, and
+# `uv run preflop_advisor` falls back to executing the preflop_advisor/ directory --
+# which runs __main__.py with no parent package, breaking its relative imports.
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "preflop_advisor"
 version = "0.2"
@@ -47,6 +55,9 @@ exclude = ["pics", "ranges", "tests", "tests.*"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "--cov --cov-report=term-missing --cov-fail-under=85"
+markers = [
+    "slow: spawns a subprocess or otherwise takes seconds (deselect with '-m \"not slow\"')",
+]
 
 [tool.coverage.run]
 source = ["preflop_advisor"]

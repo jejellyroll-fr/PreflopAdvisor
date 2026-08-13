@@ -222,7 +222,7 @@ wheels = [
 [[package]]
 name = "preflop-advisor"
 version = "0.2"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "pyside6" },
 ]
