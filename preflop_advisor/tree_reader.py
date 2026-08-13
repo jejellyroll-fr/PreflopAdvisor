@@ -150,16 +150,19 @@ class TreeReader:
         self.results.append(row)
 
         if pos == "SB":
+            # SB limped and now faces a raise. Only BB can be the raiser, so every other
+            # column is empty. The conditional belongs around the lookup, not inside the
+            # "Results" value: nesting it there produced a dict where the display layer
+            # expects a list of [action, frequency, ev].
             row = [{"isInfo": True, "Text": "after Limp"}]
-            row.extend(
-                {
-                    "isInfo": False,
-                    "Results": self.action_processor.get_results(self.hand, [("SB", "Call"), ("BB", "Raise")], pos)
-                    if column_pos == "BB"
-                    else {"isInfo": False, "Results": []},
-                }
-                for column_pos in self.position_list
-            )
+            for column_pos in self.position_list:
+                if column_pos == "BB":
+                    results = self.action_processor.get_results(
+                        self.hand, [("SB", "Call"), ("BB", "Raise")], pos
+                    )
+                else:
+                    results = []
+                row.append({"isInfo": False, "Results": results})
             self.results.append(row)
 
         self.add_special_lines(pos)

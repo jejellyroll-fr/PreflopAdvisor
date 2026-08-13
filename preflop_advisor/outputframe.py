@@ -29,6 +29,14 @@ RESULT_COLUMNS = 8
 RESULT_HEIGHT = 80
 RESULT_WIDTH = 120
 
+# Monker exports EVs in chips where the big blind is worth 2000 -- folding in the BB is
+# reported as -2000, i.e. -1bb. Overridable through [Output] ChipsPerBB for trees
+# exported under a different convention.
+CHIPS_PER_BB = 2000.0
+
+# A TableEntry has two value slots (left and right).
+MAX_DISPLAYED_ACTIONS = 2
+
 INFO_FONT = QFont("Helvetica", 20)
 RESULT_FONT = QFont("Helvetica", 12)
 
@@ -270,31 +278,40 @@ class OutputFrame(QWidget):
         logging.info("Results grid created")
 
     def preprocess_results(self, results):
-        logging.info("Preprocessing results: %s", results)
-        if len(results) == 0:
+        """Formats solver results for display: frequency in %, EV in big blinds.
+
+        Entries are addressed by action name rather than by position. Folding is the
+        baseline the other actions are compared against, so it is used for the EV
+        adjustment and never shown as a column of its own. Indexing by position broke as
+        soon as a node had no Fold file: the first real action was consumed as the fold
+        baseline and disappeared from the display.
+        """
+        logging.debug("Preprocessing results: %s", results)
+        if not results:
             return []
 
-        fold_ev = results[0][2] if self.output_configs.get("AdjustFoldEV", "no") == "yes" else 0
-        results = results[1:]
+        adjust = str(self.output_configs.get("AdjustFoldEV", "no")).strip().lower() == "yes"
+        fold_ev = 0.0
+        if adjust:
+            fold_ev = next((entry[2] for entry in results if entry[0] == "Fold"), 0.0)
 
-        if len(results) == 0:
-            return []
+        chips_per_bb = float(self.output_configs.get("ChipsPerBB", CHIPS_PER_BB))
+        displayed = [entry for entry in results if entry[0] != "Fold"]
+        if len(displayed) > MAX_DISPLAYED_ACTIONS:
+            logging.debug(
+                "%d actions available, showing the first %d",
+                len(displayed),
+                MAX_DISPLAYED_ACTIONS,
+            )
 
-        new_entry1 = [
-            results[0][0],
-            f"{results[0][1] * 100:.0f}",
-            f"{(results[0][2] - fold_ev) / 2000:.2f}",
-        ]
-        if len(results) >= 2:
-            new_entry2 = [
-                results[1][0],
-                f"{results[1][1] * 100:.0f}",
-                f"{(results[1][2] - fold_ev) / 2000:.2f}",
+        return [
+            [
+                action,
+                f"{frequency * 100:.0f}",
+                f"{(ev - fold_ev) / chips_per_bb:.2f}",
             ]
-            logging.info("Preprocessed results: %s", [new_entry1, new_entry2])
-            return [new_entry1, new_entry2]
-        logging.info("Preprocessed results: %s", [new_entry1])
-        return [new_entry1]
+            for action, frequency, ev in displayed[:MAX_DISPLAYED_ACTIONS]
+        ]
 
 
 def test():

@@ -42,6 +42,11 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Preflop Advisor based on Monker")
 
+        # Components notify through callbacks fired from their own constructors, so the
+        # first notifications arrive before every component exists. Refuse to refresh
+        # until the window is fully assembled.
+        self._ready = False
+
         # Initialize main widgets
         central_widget = QWidget()
         main_layout = QGridLayout()
@@ -91,7 +96,8 @@ class MainWindow(QMainWindow):
         main_layout.setColumnStretch(0, 3)  # Stretch for the left column (input)
         main_layout.setColumnStretch(1, 7)  # Stretch for the right column (output)
 
-        # Update position_selector with the default TreeSelector
+        # Every component exists: allow refreshes and render the default selection.
+        self._ready = True
         self.tree_selector.tree_changed()
 
     def assemble_layouts(self):
@@ -131,6 +137,8 @@ class MainWindow(QMainWindow):
 
     def update_output_frame(self):
         """Update the interface based on selections."""
+        if not self._ready:
+            return
         try:
             tree_infos = self.tree_selector.get_tree_infos()
             if not tree_infos:

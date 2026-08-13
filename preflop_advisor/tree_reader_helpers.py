@@ -2,21 +2,33 @@
 
 import logging
 import os
-import re
-import sys
 from collections import OrderedDict
 from configparser import ConfigParser
 
-# Add the parent directory to the path for relative imports
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+from preflop_advisor.errors import InvalidRaiseSizing
 from preflop_advisor.hand_convert_helper import convert_hand
 
-# Logger configuration
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 # Global cache for file reads
 CACHE = OrderedDict()
+
+# Default Monker codes, used when the configuration does not supply them.
+DEFAULT_ACTION_CODES = {
+    "fold": "0",
+    "call": "1",
+    "raisepot": "2",
+    "all_in": "3",
+}
+DEFAULT_RAISE_SIZE_LIST = "RaisePot"
+DEFAULT_VALID_ACTIONS = "Fold, Call, Raise"
+DEFAULT_ENDING = ".rng"
+
+# Keys of the [TreeReader] section that drive the reader itself and are therefore not
+# action codes.
+_META_KEYS = frozenset(
+    {"positions", "raisesizelist", "validactions", "cachesize", "ending", "gametype"}
+)
 
 
 class ActionProcessor:
@@ -48,31 +60,112 @@ class ActionProcessor:
                 if os.path.isdir(candidate2):
                     self.path = candidate2
                     self.tree_infos["folder"] = self.path
-        self.cache_size = int(self.configs.get("CacheSize", 100))
 
-        # Add missing keys to configurations with default values
-        self.configs.setdefault("Fold", "0")
-        self.configs.setdefault("Call", "1")
-        self.configs.setdefault("RaisePot", "2")
-        self.configs.setdefault("All_In", "3")
-        self.configs.setdefault("Ending", ".rng")
-        self.configs.setdefault("RaiseSizeList", "2.5,3.0,4.0")
-        self.configs.setdefault("ValidActions", "Fold,Call,Raise")
+        # ConfigParser lowercases option names while the rest of the code writes them in
+        # CamelCase. Normalize once here rather than depending on the exact type of
+        # `configs` (SectionProxy or plain dict).
+        self._settings = {str(key).lower(): value for key, value in dict(configs).items()}
 
-        # Dynamic raise sizes
-        for raise_size in self.configs["RaiseSizeList"].split(","):
-            raise_size = raise_size.strip()
-            # Extract the numeric part
-            numeric_part = re.findall(r"\d+\.?\d*", raise_size)
-            if numeric_part:
-                numeric_value = float(numeric_part[0])
-                key = f"Raise{int(numeric_value * 100)}"
-                self.configs.setdefault(key, key)
-            else:
-                logging.error(f"Invalid raise size format: {raise_size}")
+        self.cache_size = int(self._setting("CacheSize", 100))
+        self.ending = self._setting("Ending", DEFAULT_ENDING)
+        self.valid_actions = [
+            action.strip()
+            for action in self._setting("ValidActions", DEFAULT_VALID_ACTIONS).split(",")
+            if action.strip()
+        ]
+        self.action_codes = self._build_action_codes()
+        self.raise_size_keys = self._build_raise_size_keys()
+        self._nodes = self._index_tree_nodes()
+
+        logger.debug(
+            "ActionProcessor ready: %s, sizings=%s, %d indexed nodes",
+            self.path,
+            self.raise_size_keys,
+            len(self._nodes),
+        )
+
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
+
+    def _setting(self, name, default=None):
+        """Read a setting regardless of key casing."""
+        return self._settings.get(name.lower(), default)
+
+    def _build_action_codes(self):
+        """Map every action name to the numeric code used in range file names."""
+        codes = dict(DEFAULT_ACTION_CODES)
+        for key, value in self._settings.items():
+            if key not in _META_KEYS:
+                codes[key] = value
+        return codes
+
+    def _build_raise_size_keys(self):
+        """Order the candidate raise sizings declared in ``RaiseSizeList``.
+
+        Each entry of the list *is* the name of a configuration key: ``Raise75`` must
+        exist and hold the matching Monker code (``40075``). An unknown entry is a
+        configuration error, not a value to invent -- that silent auto-fill is exactly
+        what used to make the application go mute.
+        """
+        raw = self._setting("RaiseSizeList", DEFAULT_RAISE_SIZE_LIST)
+        keys, unknown = [], []
+        for entry in raw.split(","):
+            entry = entry.strip()
+            if not entry:
                 continue
+            if entry.lower() in self.action_codes:
+                keys.append(entry)
+            else:
+                unknown.append(entry)
 
-        logging.info("ActionProcessor initialized with the following configurations: %s", self.configs)
+        if unknown:
+            available = sorted(k for k in self.action_codes if k not in DEFAULT_ACTION_CODES)
+            raise InvalidRaiseSizing(
+                f"RaiseSizeList references unknown sizings: {', '.join(unknown)}. "
+                f"Declare them in [TreeReader] together with their Monker code "
+                f"(known sizings: {', '.join(available) or 'none'})."
+            )
+        if not keys:
+            raise InvalidRaiseSizing("RaiseSizeList is empty: no raise sizing declared.")
+        return keys
+
+    # ------------------------------------------------------------------
+    # Tree index
+    # ------------------------------------------------------------------
+
+    def _index_tree_nodes(self):
+        """Index every reachable node of the tree.
+
+        An intermediate node does not always own a file, but it always prefixes the
+        files of its descendants, so every prefix is recorded. This makes testing a line
+        of play an O(1) lookup instead of one disk access per displayed cell.
+        """
+        nodes = set()
+        try:
+            entries = os.listdir(self.path)
+        except OSError as error:
+            logger.warning("Range folder unreadable (%s): %s", self.path, error)
+            return nodes
+
+        for name in entries:
+            if not name.endswith(self.ending):
+                continue
+            parts = name[: -len(self.ending)].split(".")
+            for depth in range(1, len(parts) + 1):
+                nodes.add(".".join(parts[:depth]))
+        return nodes
+
+    def _stem(self, action_sequence):
+        """File name of a sequence, without the extension."""
+        return ".".join(self.action_codes[action.lower()] for _, action in action_sequence)
+
+    def has_node(self, action_sequence):
+        """Whether an action sequence maps to a line that exists in the tree."""
+        try:
+            return self._stem(action_sequence) in self._nodes
+        except KeyError:
+            return False
 
     def read_file_into_hash(self, filename):
         """
@@ -81,7 +174,7 @@ class ActionProcessor:
         :param filename: Path to the file to read.
         :return: Dictionary containing hands and their associated information.
         """
-        logging.info("Reading file and creating hash: %s", filename)
+        logger.debug("Reading file and creating hash: %s", filename)
         hand_info_hash = {}
         try:
             with open(filename, "r") as file:
@@ -92,9 +185,9 @@ class ActionProcessor:
                         info = lines[i + 1].strip()
                         hand_info_hash[hand] = info
         except FileNotFoundError:
-            logging.error("Specified file not found: %s", filename)
-        except Exception as e:
-            logging.error("Error reading file %s: %s", filename, str(e))
+            logger.error("Specified file not found: %s", filename)
+        except OSError as error:
+            logger.error("Error reading file %s: %s", filename, error)
         return hand_info_hash
 
     def get_action_sequence(self, action_list):
@@ -104,7 +197,7 @@ class ActionProcessor:
         :param action_list: List of actions to analyze.
         :return: Complete list of actions.
         """
-        logging.debug("Generating action sequence for: %s", action_list)
+        logger.debug("Generating action sequence for: %s", action_list)
         full_action_list = []
         start_index = 0
         position_already_folded = []
@@ -121,7 +214,7 @@ class ActionProcessor:
                     full_action_list.append((position, action[1]))
                     start_index = position_index + 1
                     break
-        logging.debug("Complete action sequence generated: %s", full_action_list)
+        logger.debug("Complete action sequence generated: %s", full_action_list)
         return full_action_list
 
     def get_results(self, hand, action_before_list, position):
@@ -134,14 +227,14 @@ class ActionProcessor:
         :return: Results as a list.
         """
         if position not in self.position_list:
-            logging.error("%s is not a valid position in the selected tree.", position)
+            logger.error("%s is not a valid position in the selected tree.", position)
             return []
 
         hand = convert_hand(hand)
-        logging.info("Analyzing results for hand: %s and position: %s", hand, position)
+        logger.debug("Analyzing results for hand: %s and position: %s", hand, position)
         results = []
 
-        for action in self.configs["ValidActions"].replace(" ", "").split(","):
+        for action in self.valid_actions:
             action_sequence = action_before_list + [(position, action)]
             full_action_sequence = self.get_action_sequence(action_sequence)
             full_action_sequence = self.find_valid_raise_sizes(full_action_sequence)
@@ -151,34 +244,41 @@ class ActionProcessor:
                 else:
                     result = self.read_hand_with_cache(hand, full_action_sequence)
                 results.append(result)
-        logging.info("Results retrieved: %s", results)
+        logger.debug("Results retrieved: %s", results)
         return results
 
     def find_valid_raise_sizes(self, full_action_sequence):
         """
-        Determines valid raise sizes for an action sequence.
+        Substitutes every generic 'Raise' by a sizing that exists in this tree.
+
+        Each entry of ``RaiseSizeList`` is tried in order and kept as soon as the
+        resulting line of play is present in the tree. Probing matters because trees do
+        not all use the same sizings: taking the first entry unconditionally yields a
+        file name that does not exist, and the cell silently comes back empty.
 
         :param full_action_sequence: Complete action sequence.
-        :return: New sequence with valid raise sizes.
+        :return: New sequence with concrete raise sizings.
         """
-        logging.debug("Finding valid raise sizes for: %s", full_action_sequence)
-        new_action_sequence = []
-        for action in full_action_sequence:
-            if action[1] != "Raise":
-                new_action_sequence.append(action)
+        resolved = []
+        for position, action in full_action_sequence:
+            if action != "Raise":
+                resolved.append((position, action))
+                continue
+
+            for size_key in self.raise_size_keys:
+                if self.has_node(resolved + [(position, size_key)]):
+                    resolved.append((position, size_key))
+                    break
             else:
-                # Use the first valid raise size
-                for raise_size in self.configs["RaiseSizeList"].split(","):
-                    raise_size = raise_size.strip()
-                    # Extract the numeric part
-                    numeric_part = re.findall(r"\d+\.?\d*", raise_size)
-                    if numeric_part:
-                        numeric_value = float(numeric_part[0])
-                        key = f"Raise{int(numeric_value * 100)}"
-                        new_action_sequence.append((action[0], key))
-                        break
-        logging.debug("New sequence after adding raises: %s", new_action_sequence)
-        return new_action_sequence
+                # No sizing leads anywhere; keep the first one so the caller still gets a
+                # well-formed sequence, and let test_action_sequence reject it.
+                logger.debug(
+                    "No valid raise sizing for %s after %s in %s", position, resolved, self.path
+                )
+                resolved.append((position, self.raise_size_keys[0]))
+
+        logger.debug("Sequence after sizing resolution: %s", resolved)
+        return resolved
 
     def test_action_sequence(self, action_sequence):
         """
@@ -189,7 +289,7 @@ class ActionProcessor:
         """
         filename = os.path.join(self.path, self.get_filename(action_sequence))
         exists = os.path.isfile(filename)
-        logging.debug("Testing existence of file %s: %s", filename, exists)
+        logger.debug("Testing existence of file %s: %s", filename, exists)
         return exists
 
     def read_hand(self, hand, action_sequence):
@@ -201,20 +301,34 @@ class ActionProcessor:
         :return: Hand information.
         """
         filename = os.path.join(self.path, self.get_filename(action_sequence))
-        logging.info("Reading data for hand: %s from file: %s", hand, filename)
+        logger.debug("Reading data for hand: %s from file: %s", hand, filename)
         try:
-            with open(filename, "r") as f:
-                for line in f:
-                    if hand + "\n" in line and len(line) < 12:
-                        info_line = f.readline().strip()
-                        infos = info_line.split(";")
-                        frequency = float(infos[0])
-                        ev = float(infos[1])
-                        last_action = action_sequence[-1][1]
-                        return [last_action, frequency, ev]
+            with open(filename, "r") as handle:
+                # Range files are strict line pairs: hand, then "frequency;ev". Read them
+                # as pairs and compare hands for equality -- a substring match would let
+                # "AA(2A)" be found inside a longer line, and the previous length guard
+                # silently excluded the longer PLO5 hand strings.
+                for line in handle:
+                    info_line = handle.readline()
+                    if not info_line:
+                        break
+                    if line.strip() == hand:
+                        return self._parse_entry(info_line, action_sequence, filename)
         except FileNotFoundError:
-            logging.error("File not found: %s", filename)
-        return ["", 0, 0]
+            logger.error("File not found: %s", filename)
+        except OSError as error:
+            logger.error("Error reading file %s: %s", filename, error)
+        return ["", 0.0, 0.0]
+
+    def _parse_entry(self, info_line, action_sequence, filename):
+        """Turn a ``frequency;ev`` line into a ``[action, frequency, ev]`` result."""
+        infos = info_line.strip().split(";")
+        last_action = action_sequence[-1][1]
+        try:
+            return [last_action, float(infos[0]), float(infos[1])]
+        except (IndexError, ValueError):
+            logger.error("Malformed entry %r in %s", info_line.strip(), filename)
+            return ["", 0.0, 0.0]
 
     def read_hand_with_cache(self, hand, action_sequence):
         """
@@ -225,46 +339,34 @@ class ActionProcessor:
         :return: Hand information.
         """
         filename = os.path.join(self.path, self.get_filename(action_sequence))
-        logging.info("Reading data for hand: %s with cache from file: %s", hand, filename)
-        try:
-            if filename not in CACHE:
-                if len(CACHE) >= self.cache_size:
-                    CACHE.popitem(last=False)
-                CACHE[filename] = self.read_file_into_hash(filename)
+        logger.debug("Reading data for hand: %s with cache from file: %s", hand, filename)
 
-            hand_info = CACHE[filename].get(hand)
-            if not hand_info:
-                logging.error("Hand %s not found in file %s", hand, filename)
-                return ["", 0, 0]
+        if filename not in CACHE:
+            if len(CACHE) >= self.cache_size:
+                CACHE.popitem(last=False)
+            CACHE[filename] = self.read_file_into_hash(filename)
 
-            infos = hand_info.split(";")
-            frequency = float(infos[0])
-            ev = float(infos[1])
-            last_action = action_sequence[-1][1]
-            return [last_action, frequency, ev]
-        except FileNotFoundError:
-            logging.error("File not found: %s", filename)
-        return ["", 0, 0]
+        hand_info = CACHE[filename].get(hand)
+        if hand_info is None:
+            logger.debug("Hand %s not found in file %s", hand, filename)
+            return ["", 0.0, 0.0]
+
+        return self._parse_entry(hand_info, action_sequence, filename)
 
     def get_filename(self, action_sequence):
         """
         Generates a filename based on the action sequence.
 
         :param action_sequence: Action sequence.
-        :return: Filename.
+        :return: Filename, or "" if an action has no configured code.
         """
-        filename = ""
-        for position, action in action_sequence:
-            # Handle action keys
-            if action.startswith("Raise"):
-                if action not in self.configs:
-                    self.configs[action] = action
-            if action not in self.configs:
-                logging.error("Missing key for action '%s' in configurations.", action)
-                return ""
-            filename += f".{self.configs[action]}"
-        filename = filename.lstrip(".") + self.configs["Ending"]
-        logging.debug("Generated filename: %s", filename)
+        try:
+            stem = self._stem(action_sequence)
+        except KeyError as error:
+            logger.error("Missing code for action %s in configuration.", error)
+            return ""
+        filename = stem + self.ending
+        logger.debug("Generated filename: %s", filename)
         return filename
 
 
