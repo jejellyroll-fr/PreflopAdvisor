@@ -44,18 +44,16 @@ Before you begin, ensure you have Python 3.x installed on your computer. You can
    cd path\to\PreflopAdvisor
    #+END_SRC
 
-4. Install the Required Dependencies:
+4. Install Dependencies & Run with uv:
    #+BEGIN_SRC sh
-   pip install -r requirements.txt
-   #+END_SRC
+   # Install all dependencies and setup environment
+   uv sync
 
-   or
+   # Run the application
+   uv run preflop_advisor
 
-   Use Uv:
-   #+BEGIN_SRC sh
-   uv venv
-   source .venv/bin/activate
-   uv run ./standalone.py
+   # Or run tests
+   uv run --extra test pytest
    #+END_SRC
 
 5. Export your Monker Preflop trees:
@@ -95,6 +93,8 @@ Before you begin, ensure you have Python 3.x installed on your computer. You can
 * Usage
 
 #+begin_src sh
+uv run preflop_advisor
+# or
 python standalone.py
 #+end_src
 
