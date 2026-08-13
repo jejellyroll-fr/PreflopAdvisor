@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Standalone report of preflop action frequencies, aggregated over whole ranges.
+
+Not part of the application: it was used to generate the tooltip overviews shipped in
+popup-pics/. Run it as ``python scripts/frequency_report.py [range-folder]``.
+"""
 
 import itertools
 import os
@@ -20,10 +25,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Add the parent directory to sys.path to access the preflop_advisor module
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# This script lives outside the package, so make the repository importable.
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, PROJECT_ROOT)
 
-# Import necessary modules from the preflop_advisor package
 from preflop_advisor.tree_reader_helpers import ActionProcessor
 
 # Global constants
@@ -169,7 +174,7 @@ def calculate_hand_weights(hand):
     all_suits = itertools.product(SUITS, repeat=len(ranks))
     all_combos = [sorted([ranks[i] + suit for i, suit in enumerate(combo)]) for combo in all_suits]
     all_combos.sort()
-    all_combos = list(all_combos for all_combos, _ in itertools.groupby(all_combos))
+    all_combos = [combo for combo, _ in itertools.groupby(all_combos)]
     all_combos = ["".join(combo) for combo in all_combos if len(set(combo)) == len(ranks)]
     weight_adjust = len(all_combos)
     return weight_adjust
@@ -248,7 +253,7 @@ def format_cell(cell):
 
 def main():
     app = QApplication([])
-    config_path = "config.ini"
+    config_path = os.path.join(PROJECT_ROOT, "preflop_advisor", "config.ini")
 
     # Load the configuration file
     config = ConfigParser()
@@ -267,9 +272,9 @@ def main():
             print(f"Error: '{key}' is missing in the 'TreeReader' section of config.ini")
             return
 
-    position_list = configs["Positions"].split(",")
-    tree_folder = os.path.join(os.path.expanduser("~"), "Documents", "GitHub", "PreflopAdvisor", "ranges")
-    print(f"patht to tress: {tree_folder}")
+    position_list = [position.strip() for position in configs["Positions"].split(",")]
+    tree_folder = sys.argv[1] if len(sys.argv) > 1 else os.path.join(PROJECT_ROOT, "ranges")
+    print(f"Reading ranges from: {tree_folder}")
     tree_infos = {"folder": tree_folder, "NumPlayers": len(position_list)}
 
     # Load weights from a pickle file if available

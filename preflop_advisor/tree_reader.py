@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 
 import logging
-import os
-import sys
-from configparser import ConfigParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from .errors import RangeFolderNotFound
+from .paths import resolve_range_folder
+from .settings import normalize
+from .tree_reader_helpers import ActionProcessor
 
-from preflop_advisor.tree_reader_helpers import ActionProcessor
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 
 class TreeReader:
@@ -26,9 +24,13 @@ class TreeReader:
         :param tree_infos: Information about the range tree.
         :param configs: General configuration for the TreeReader.
         """
-        logging.info("Initializing TreeReader for hand: %s and position: %s", hand, position)
+        logger.debug("Initializing TreeReader for hand: %s and position: %s", hand, position)
 
-        self.full_position_list = [pos.strip() for pos in configs["Positions"].split(",")]
+        settings = normalize(configs)
+        positions = settings.get("positions")
+        if positions is None:
+            raise KeyError("Positions missing from the TreeReader configuration")
+        self.full_position_list = [pos.strip() for pos in positions.split(",")]
         self.position_list = []
         self.num_players = int(tree_infos.get("plrs", len(self.full_position_list)))  # Ensure it's an integer
         self.init_position_list(self.num_players, self.full_position_list)
@@ -39,27 +41,15 @@ class TreeReader:
         self.configs = configs
         self.tree_infos = tree_infos
 
-        # Verify that the tree folder exists (support relative paths and repo fallback)
-        tree_folder = self.tree_infos.get("folder", "")
-        if not os.path.isdir(tree_folder):
-            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-            candidate = os.path.join(project_root, tree_folder)
-            if os.path.isdir(candidate):
-                tree_folder = candidate
-                self.tree_infos["folder"] = tree_folder
-            else:
-                basename = os.path.basename(tree_folder.rstrip("/\\"))
-                candidate2 = os.path.join(project_root, "ranges", basename)
-                if os.path.isdir(candidate2):
-                    tree_folder = candidate2
-                    self.tree_infos["folder"] = tree_folder
-                else:
-                    logging.error("Specified tree folder not found: %s", tree_folder)
-                    raise FileNotFoundError(f"Tree folder not found: {tree_folder}")
+        configured_folder = self.tree_infos.get("folder", "")
+        tree_folder = resolve_range_folder(configured_folder)
+        if tree_folder is None:
+            raise RangeFolderNotFound(f"Tree folder not found: {configured_folder}")
+        self.tree_infos["folder"] = tree_folder
 
         self.action_processor = ActionProcessor(self.position_list, self.tree_infos, configs)
         self.results = []
-        logging.info("TreeReader initialized successfully.")
+        logger.debug("TreeReader initialized successfully.")
 
     def init_position_list(self, num_players, positions):
         """
@@ -68,9 +58,9 @@ class TreeReader:
         :param num_players: Number of active players.
         :param positions: Complete list of positions.
         """
-        logging.debug("Initializing positions for %d players", num_players)
+        logger.debug("Initializing positions for %d players", num_players)
         if num_players > len(positions):
-            logging.warning(
+            logger.warning(
                 "Number of players (%d) exceeds available positions (%d). Using maximum available.",
                 num_players,
                 len(positions),
@@ -78,13 +68,13 @@ class TreeReader:
             num_players = len(positions)
         self.position_list = positions[:num_players]
         self.position_list.reverse()
-        logging.info("Active position list: %s", self.position_list)
+        logger.debug("Active position list: %s", self.position_list)
 
     def fill_default_results(self):
         """
         Fills default results for all positions and scenarios.
         """
-        logging.info("Filling default results.")
+        logger.debug("Filling default results.")
         row = [{"isInfo": True, "Text": "X"}, {"isInfo": True, "Text": "FI"}]
         row.extend({"isInfo": True, "Text": "vs " + position} for position in self.position_list)
         self.results.append(row)
@@ -104,7 +94,7 @@ class TreeReader:
             for column_pos in self.position_list:
                 row.append({"isInfo": False, "Results": self.get_vs_first_in(row_pos, column_pos)})
             self.results.append(row)
-        logging.info("Default results filled successfully.")
+        logger.debug("Default results filled successfully.")
 
     def get_results(self):
         """
@@ -112,7 +102,7 @@ class TreeReader:
 
         :return: List of results.
         """
-        logging.info("Retrieving results.")
+        logger.debug("Retrieving results.")
         self.results = []
         if self.position:
             self.fill_position_results()
@@ -122,18 +112,18 @@ class TreeReader:
         # Validate results
         for row in self.results:
             if not isinstance(row, list):
-                logging.warning("Invalid row format: %s", row)
+                logger.warning("Invalid row format: %s", row)
                 continue
             for cell in row:
                 if not isinstance(cell, dict) or "isInfo" not in cell:
-                    logging.warning("Invalid cell format: %s", cell)
+                    logger.warning("Invalid cell format: %s", cell)
         return self.results
 
     def fill_position_results(self):
         """
         Fills results for a specific position.
         """
-        logging.info("Filling results for specific position: %s", self.position)
+        logger.debug("Filling results for specific position: %s", self.position)
         pos = self.position
         row = [{"isInfo": True, "Text": pos}]
         row.extend({"isInfo": True, "Text": "vs " + position} for position in self.position_list)
@@ -150,16 +140,17 @@ class TreeReader:
         self.results.append(row)
 
         if pos == "SB":
+            # SB limped and now faces a raise. Only BB can be the raiser, so every other
+            # column is empty. The conditional belongs around the lookup, not inside the
+            # "Results" value: nesting it there produced a dict where the display layer
+            # expects a list of [action, frequency, ev].
             row = [{"isInfo": True, "Text": "after Limp"}]
-            row.extend(
-                {
-                    "isInfo": False,
-                    "Results": self.action_processor.get_results(self.hand, [("SB", "Call"), ("BB", "Raise")], pos)
-                    if column_pos == "BB"
-                    else {"isInfo": False, "Results": []},
-                }
-                for column_pos in self.position_list
-            )
+            for column_pos in self.position_list:
+                if column_pos == "BB":
+                    results = self.action_processor.get_results(self.hand, [("SB", "Call"), ("BB", "Raise")], pos)
+                else:
+                    results = []
+                row.append({"isInfo": False, "Results": results})
             self.results.append(row)
 
         self.add_special_lines(pos)
@@ -168,7 +159,7 @@ class TreeReader:
         """
         Adds special lines for specific scenarios (squeeze, 4bet, etc.).
         """
-        logging.info("Adding special lines for position: %s", pos)
+        logger.debug("Adding special lines for position: %s", pos)
         # Squeeze
         row = [{"isInfo": True, "Text": "squeeze"}]
         row.extend({"isInfo": False, "Results": self.get_squeeze(pos, column_pos)} for column_pos in self.position_list)
@@ -191,6 +182,22 @@ class TreeReader:
         )
         self.results.append(row)
 
+    def seat_indices(self, *positions):
+        """
+        Returns the seat indices of the given positions, ordered from earliest to latest.
+
+        Returns ``None`` if any position is not seated in the current tree, which lets
+        callers bail out instead of raising ``ValueError`` from ``list.index``.
+
+        :param positions: Position names to look up.
+        :return: List of indices, or None.
+        """
+        try:
+            return [self.position_list.index(position) for position in positions]
+        except ValueError:
+            logger.warning("Positions %s not all seated in %s", list(positions), self.position_list)
+            return None
+
     def get_vs_first_in(self, position, fi_position):
         """
         Retrieves results for the "vs first in" scenario.
@@ -199,12 +206,12 @@ class TreeReader:
         :param fi_position: Initial opening position.
         :return: List of results.
         """
-        if position not in self.position_list or fi_position not in self.position_list:
-            logging.error("Invalid positions: %s, %s", position, fi_position)
+        indices = self.seat_indices(position, fi_position)
+        if indices is None:
             return []
         if position == fi_position:
             return []
-        if self.position_list.index(position) > self.position_list.index(fi_position):
+        if indices[0] > indices[1]:
             return self.action_processor.get_results(self.hand, [(fi_position, "Raise")], position)
         return self.action_processor.get_results(self.hand, [(position, "Raise"), (fi_position, "Raise")], position)
 
@@ -216,7 +223,10 @@ class TreeReader:
         :param reraise_position: Position making the 4bet.
         :return: List of results.
         """
-        pos_index = self.position_list.index(position)
+        indices = self.seat_indices(position, reraise_position)
+        if indices is None:
+            return []
+        pos_index = indices[0]
         # Same positions or UTG where cold 4bet is not possible
         if position == reraise_position or pos_index == 0:
             return []
@@ -245,8 +255,10 @@ class TreeReader:
         :param threebet_position: Position making the 3bet.
         :return: List of results.
         """
-        pos_index = self.position_list.index(position)
-        threebet_pos_index = self.position_list.index(threebet_position)
+        indices = self.seat_indices(position, threebet_position)
+        if indices is None:
+            return []
+        pos_index, threebet_pos_index = indices
 
         if position == threebet_position:
             return []
@@ -281,8 +293,10 @@ class TreeReader:
         :param rfi_position: Position of the first in.
         :return: List of results.
         """
-        pos_index = self.position_list.index(position)
-        rfi_index = self.position_list.index(rfi_position)
+        indices = self.seat_indices(position, rfi_position)
+        if indices is None:
+            return []
+        pos_index, rfi_index = indices
 
         if pos_index <= rfi_index + 1:  # there must be at least one player between rfi and caller
             return []
@@ -305,50 +319,24 @@ class TreeReader:
         :param squeeze_position: Position of the squeezer.
         :return: List of results.
         """
-        pos_index = self.position_list.index(position)
-        squeeze_index = self.position_list.index(squeeze_position)
+        indices = self.seat_indices(position, squeeze_position)
+        if indices is None:
+            return []
+        pos_index, squeeze_index = indices
 
         if squeeze_index <= pos_index + 1:  # the squeezer must be at least two positions after
             return []
 
+        # We opened, a seat behind us called, and the squeezer 3bet on top. The
+        # squeezer's raise is what we are facing, so it has to close the sequence --
+        # mirroring get_vs_4bet, which ends with the 4bettor's raise.
         results = self.action_processor.get_results(
             self.hand,
             [
                 (position, "Raise"),
                 (self.position_list[pos_index + 1], "Call"),
+                (squeeze_position, "Raise"),
             ],
             position,
         )
         return results
-
-
-def test():
-    """
-    Test function for TreeReader.
-    """
-    logging.info("Starting TreeReader test.")
-    config = ConfigParser()
-    config.read("config.ini")
-
-    if "TreeReader" not in config:
-        logging.error("'TreeReader' section missing in config.ini.")
-        return
-
-    tree = {"folder": "./ranges/HU-100bb-with-limp", "plrs": 2}
-    configs = config["TreeReader"]
-    hand = "AhKs4h3s"
-
-    try:
-        tree_reader = TreeReader(hand, "X", tree, configs)
-        tree_reader.fill_default_results()
-
-        for row in tree_reader.results:
-            print("---------------------------------------------------------------------------")
-            for field in row:
-                print(field)
-    except FileNotFoundError as e:
-        logging.error("Error during execution: %s", e)
-
-
-if __name__ == "__main__":
-    test()

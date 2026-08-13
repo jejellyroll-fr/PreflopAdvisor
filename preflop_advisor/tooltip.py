@@ -4,11 +4,20 @@ import logging
 import os
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-# Logger configuration
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+from . import theme
+
+logger = logging.getLogger(__name__)
+
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+POPUP_DIRNAME = "popup-pics"
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp")
+
+# Gap between the anchor widget and the tooltip, and the largest an image may render.
+TOOLTIP_GAP = 4
+MAX_IMAGE_SIZE = 400
 
 
 class CreateToolTip(QWidget):
@@ -22,125 +31,123 @@ class CreateToolTip(QWidget):
 
         :param parent: The parent widget.
         :param text: Text or image path to display.
-        :param pic: Indicates if the tooltip contains an image.
+        :param pic: Force image rendering even if the path cannot be resolved.
         """
         super().__init__(parent)
+        self.setWindowFlags(Qt.ToolTip)
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(5, 5, 5, 5)
+
         self.text = text
         self.pic = pic
-        self.setWindowFlags(Qt.ToolTip)  # Set the widget as a tooltip
+        self.set_content(text, pic)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
+    def set_content(self, text, pic=False):
+        """Replaces what the tooltip shows.
 
-        # Check if the text is a path to an image (including relative / popup-pics fallback)
-        img_path = self.text
-        if not os.path.exists(img_path):
-            pkg_path = os.path.join(os.path.dirname(__file__), img_path)
-            if os.path.exists(pkg_path):
-                img_path = pkg_path
-            else:
-                basename = os.path.basename(img_path)
-                popup_path = os.path.join(os.path.dirname(__file__), "popup-pics", basename)
-                if os.path.exists(popup_path):
-                    img_path = popup_path
+        One instance is reused for the lifetime of its owner. Building a new tooltip
+        widget on every selection change leaked a top-level window each time, and left
+        the previous one able to reappear.
+        """
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
-        if os.path.exists(img_path) and any(img_path.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".bmp")) or os.path.exists(img_path):
+        self.text = text
+        self.pic = pic
+
+        image_path = self.resolve_image(text)
+        if image_path:
             self.pic = True
-            self.text = img_path
+            self.text = image_path
 
         if not self.pic:
-            # Text tooltip
-            logging.info("Creating a text tooltip: '%s'", self.text)
+            logger.debug("Creating a text tooltip: '%s'", self.text)
             label = QLabel(self.text, self)
-            label.setStyleSheet("""
-                QLabel {
-                    background-color: #3c3c3c;
-                    color: white;
-                    border: 1px solid #555555;
+            label.setWordWrap(True)
+            label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {theme.SURFACE_RAISED};
+                    color: {theme.TEXT_PRIMARY};
+                    border: 1px solid {theme.BORDER};
                     padding: 5px;
                     border-radius: 3px;
-                }
+                }}
             """)
-            layout.addWidget(label)
+            self._layout.addWidget(label)
         else:
-            # Image tooltip
-            logging.info("Creating an image tooltip: '%s'", self.text)
+            logger.debug("Creating an image tooltip: '%s'", self.text)
             pixmap = QPixmap(self.text)
             if not pixmap.isNull():
-                pixmap = pixmap.scaled(400, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap = pixmap.scaled(MAX_IMAGE_SIZE, MAX_IMAGE_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 img_label = QLabel(self)
                 img_label.setPixmap(pixmap)
-                layout.addWidget(img_label)
+                self._layout.addWidget(img_label)
             else:
-                logging.error("The specified image could not be loaded: '%s'", self.text)
+                logger.error("The specified image could not be loaded: '%s'", self.text)
 
         self.adjustSize()
 
+    @staticmethod
+    def resolve_image(text):
+        """Path of the image this tooltip should show, or ``None`` for a text tooltip.
+
+        Tooltips are configured as either literal text or an image path, so the two have
+        to be told apart. The path is looked up as given, then relative to the package,
+        then under ``popup-pics/`` -- config.ini ships absolute paths from whoever
+        generated the overviews.
+
+        The previous condition read ``exists(p) and is_image(p) or exists(p)``, which by
+        precedence is just ``exists(p)``: any text matching an existing filename was
+        rendered as an image.
+        """
+        if not text:
+            return None
+
+        candidates = [
+            text,
+            os.path.join(PACKAGE_DIR, text),
+            os.path.join(PACKAGE_DIR, POPUP_DIRNAME, os.path.basename(text)),
+        ]
+        for candidate in candidates:
+            if candidate.lower().endswith(IMAGE_EXTENSIONS) and os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def placement_for(self, widget, screen_area):
+        """Top-left corner to show at: just below the widget, kept on screen.
+
+        The old placement was a fixed ``QPoint(200, -300)`` offset, which threw the
+        tooltip over the results grid regardless of where the widget actually was, and
+        off-screen entirely for a window near an edge.
+        """
+        anchor = widget.mapToGlobal(QPoint(0, widget.height() + TOOLTIP_GAP))
+        x = min(max(anchor.x(), screen_area.left()), max(screen_area.right() - self.width(), screen_area.left()))
+
+        y = anchor.y()
+        if y + self.height() > screen_area.bottom():
+            # No room underneath: flip above the widget.
+            y = widget.mapToGlobal(QPoint(0, 0)).y() - self.height() - TOOLTIP_GAP
+        y = min(max(y, screen_area.top()), max(screen_area.bottom() - self.height(), screen_area.top()))
+        return QPoint(x, y)
+
     def show_tooltip(self, widget):
         """
-        Displays the tooltip at a position relative to the widget.
+        Displays the tooltip next to a widget, without leaving the screen.
 
         :param widget: The widget relative to which to display the tooltip.
         """
-        pos = widget.mapToGlobal(QPoint(200, -300))  # Offset for tooltip position
-        logging.info("Displaying tooltip at position: %s", pos)
-        self.move(pos)
+        self.adjustSize()
+        screen = QGuiApplication.screenAt(widget.mapToGlobal(QPoint(0, 0))) or QGuiApplication.primaryScreen()
+        self.move(self.placement_for(widget, screen.availableGeometry()))
         self.show()
+        self.raise_()
 
     def hide_tooltip(self):
         """
         Hides the tooltip.
         """
-        logging.info("Hiding tooltip")
+        logger.debug("Hiding tooltip")
         self.hide()
-
-
-class MainWindow(QMainWindow):
-    """
-    Main window containing buttons with tooltips.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Custom Tooltip Example")
-        self.setStyleSheet("background-color: #121212; color: white;")  # Dark theme
-
-        # Central widget
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
-
-        # Buttons
-        btn1 = QPushButton("Button 1")
-        btn1.setFixedSize(120, 40)
-        layout.addWidget(btn1)
-
-        btn2 = QPushButton("Button 2")
-        btn2.setFixedSize(120, 40)
-        layout.addWidget(btn2)
-
-        # Custom tooltips
-        self.tooltip1 = CreateToolTip(self, "Mouse over Button 1")
-        self.tooltip2 = CreateToolTip(self, "Mouse over Button 2")
-
-        # Button events
-        btn1.enterEvent = lambda event: self.tooltip1.show_tooltip(btn1)
-        btn1.leaveEvent = lambda event: self.tooltip1.hide_tooltip()
-
-        btn2.enterEvent = lambda event: self.tooltip2.show_tooltip(btn2)
-        btn2.leaveEvent = lambda event: self.tooltip2.hide_tooltip()
-
-        logging.info("Main window initialized with two buttons.")
-
-
-if __name__ == "__main__":
-    logging.info("Starting the application")
-    app = QApplication([])
-
-    # Create the main window
-    window = MainWindow()
-    window.resize(600, 400)
-    window.show()
-
-    app.exec()
-    logging.info("Application terminated")
