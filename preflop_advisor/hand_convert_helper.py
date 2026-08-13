@@ -27,6 +27,9 @@ RANK_ORDER = {
 }
 RANKS = list("AKQJT98765432")  # List of card ranks
 SUITS = list("cdhs")  # List of suits
+# Order in which suits are grouped when normalizing a hand. Only affects the tie-break
+# between equal-ranked cards, but is pinned down so output stays reproducible.
+SUIT_GROUPING_ORDER = ("s", "d", "h", "c")
 
 # Converts a 4-card hand like "AsAcTh3d" to Monker tree format
 # Added support for 2-card NL hands
@@ -93,46 +96,26 @@ def convert_omaha_hand(hand):
             logging.error(f"Hand: {hand} cannot be converted...invalid suits")
             return hand
 
-    # Create a list of cards
+    # Group cards by suit, in a fixed suit order so the result stays deterministic
+    # before the rank sorting below.
     cards = [hand[0:2], hand[2:4], hand[4:6], hand[6:8]]
-    # Count cards by suit
-    suit_count = {"s": 0, "d": 0, "h": 0, "c": 0}
-    for s in suit_count:
-        for card_s in suits:
-            if card_s == s:
-                suit_count[s] += 1
+    cards_by_suit = {suit: [card for card in cards if card[1] == suit] for suit in SUIT_GROUPING_ORDER}
 
-    # Classify cards by suit
+    # Classify cards by how many share their suit
     cards_single_suit = []
     cards_two_suited = []  # Nested lists for suits appearing twice
     cards_three_suited = []  # List of cards for suits appearing three times
     cards_four_suited = []  # List of cards for suits appearing four times
 
-    for s in suit_count:
-        if suit_count[s] == 0:
-            continue
-        elif suit_count[s] == 1:
-            # One card of this suit
-            for card in cards:
-                if card[1] == s:
-                    cards_single_suit.append(card)
-        elif suit_count[s] == 2:
-            # Two cards of this suit
-            two_suits = []
-            for card in cards:
-                if card[1] == s:
-                    two_suits.append(card)
-            cards_two_suited.append(two_suits)
-        elif suit_count[s] == 3:
-            # Three cards of this suit
-            for card in cards:
-                if card[1] == s:
-                    cards_three_suited.append(card)
-        elif suit_count[s] == 4:
-            # Four cards of this suit
-            for card in cards:
-                if card[1] == s:
-                    cards_four_suited.append(card)
+    for suited_cards in cards_by_suit.values():
+        if len(suited_cards) == 1:
+            cards_single_suit.extend(suited_cards)
+        elif len(suited_cards) == 2:
+            cards_two_suited.append(suited_cards)
+        elif len(suited_cards) == 3:
+            cards_three_suited.extend(suited_cards)
+        elif len(suited_cards) == 4:
+            cards_four_suited.extend(suited_cards)
 
     # Build the converted hand
     return_hand = ""
@@ -170,25 +153,21 @@ def convert_omaha5_hand(hand):
         logging.error(f"Omaha Hand: {hand} cannot be converted")
         return hand
 
-    # Create a list of cards
+    # Ranks held in each suit, each group sorted from low to high
     cards = [hand[i : i + 2] for i in range(0, len(hand), 2)]
-    # Dictionary of cards by suit
-    suit_ranks = {"s": [], "d": [], "h": [], "c": []}
-    for s in suit_ranks:
-        for card in cards:
-            if card[1] == s:
-                suit_ranks[s].append(card[0])
-    for s in suit_ranks:
-        suit_ranks[s] = sorted(suit_ranks[s], key=lambda x: RANK_ORDER[x])
+    suit_ranks = {
+        suit: sorted((card[0] for card in cards if card[1] == suit), key=lambda x: RANK_ORDER[x])
+        for suit in SUIT_GROUPING_ORDER
+    }
 
     # Classify cards
     unsuited_cards = []
     suited_cards = []
-    for s in suit_ranks:
-        if len(suit_ranks[s]) == 1:
-            unsuited_cards.append(suit_ranks[s][0])
-        elif len(suit_ranks[s]) > 1:
-            suited_cards.append(suit_ranks[s])
+    for ranks_of_suit in suit_ranks.values():
+        if len(ranks_of_suit) == 1:
+            unsuited_cards.append(ranks_of_suit[0])
+        elif len(ranks_of_suit) > 1:
+            suited_cards.append(ranks_of_suit)
 
     # Build the result string
     unsuited_string = "".join(sorted(unsuited_cards, key=lambda x: RANK_ORDER[x]))

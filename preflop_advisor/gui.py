@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import inspect
+import logging
 import os
 import sys
 from configparser import ConfigParser
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from preflop_advisor.card_selector import CardSelector
+from preflop_advisor.errors import PreflopAdvisorError
 from preflop_advisor.outputframe import OutputFrame
 from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.randomizer import RandomButton
@@ -139,27 +141,38 @@ class MainWindow(QMainWindow):
         """Update the interface based on selections."""
         if not self._ready:
             return
+
+        tree_infos = self.tree_selector.get_tree_infos()
+        if not tree_infos:
+            return
+
+        # Adapt card count and active positions based on tree
+        self.update_card_and_position_selector(tree_infos)
+
+        position = self.position_selector.get_position()
+        hand = self.card_selector.get_selected_hand()
+        if not self.hand_matches_game(hand, tree_infos["game"]):
+            return
+
         try:
-            tree_infos = self.tree_selector.get_tree_infos()
-            if not tree_infos:
-                return
-            game = tree_infos["game"]
+            self.output.update_output_frame(hand, position, tree_infos)
+        except PreflopAdvisorError as error:
+            # Configuration and range-folder problems are the user's to fix, so they
+            # belong on screen rather than swallowed into stdout.
+            self.report_error(str(error))
+        except OSError as error:
+            self.report_error(f"Could not read the range files: {error}")
 
-            # Adapt card count and active positions based on tree
-            self.update_card_and_position_selector(tree_infos)
+    @staticmethod
+    def hand_matches_game(hand, game):
+        """Whether a selected hand has the right number of cards for the game."""
+        expected = {"NL": 4, "PLO": 8, "PLO8": 8, "PLO5": 10}.get(game)
+        return expected is not None and len(hand) == expected
 
-            position = self.position_selector.get_position()
-            hand = self.card_selector.get_selected_hand()
-
-            # Validate hand length matches game type
-            if (len(hand) == 4 and game == "NL"
-                    or len(hand) == 8 and game in ["PLO", "PLO8"]
-                    or len(hand) == 10 and game == "PLO5"):
-                self.output.update_output_frame(hand, position, tree_infos)
-        except AttributeError as e:
-            print(f"Error in update_output_frame: {e}")
-        except Exception as e:
-            print(f"Error: {e}")
+    def report_error(self, message):
+        """Surface a problem to the user instead of failing silently."""
+        logging.error(message)
+        self.statusBar().showMessage(message, 10000)
 
     def update_card_and_position_selector(self, tree_infos):
         """Adapt card count and active positions based on the selected tree."""

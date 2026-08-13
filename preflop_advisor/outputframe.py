@@ -325,8 +325,8 @@ def test():
     config_path = os.path.dirname(__file__)
     configs.read(os.path.join(config_path, "config.ini"))
 
-    output_configs = configs["Output"] if "Output" in configs else {}
-    tree_reader_configs = configs["TreeReader"] if "TreeReader" in configs else {}
+    output_configs = configs["Output"] if configs.has_section("Output") else {}
+    tree_reader_configs = configs["TreeReader"] if configs.has_section("TreeReader") else {}
 
     # Create a test tree
     tree = {

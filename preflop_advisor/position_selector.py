@@ -156,16 +156,21 @@ class PositionSelector(QWidget):
         logging.info("Current position: %s", self.position_list[self.current_position])
         return self.position_list[self.current_position]
 
+    def get_active_positions(self, num_players):
+        """
+        Returns the positions that can be selected for a given table size.
+
+        Seats are filled from the blinds backwards, and the overview entry (the last of
+        the configured list once reversed) is always available.
+        """
+        reversed_positions = list(reversed(self.position_list))
+        return [reversed_positions[-1]] + reversed_positions[:num_players]
+
     def update_active_positions(self, num_players):
         """
         Activates or deactivates positions based on the number of players.
         """
-        active_positions = list(reversed(self.position_list))
-        active_positions = [active_positions[-1]] + active_positions[:num_players]
-
-        if self.get_position() not in active_positions:
-            self.process_button_clicked(self.default_position)
-            self.current_position = self.default_position
+        active_positions = self.get_active_positions(num_players)
 
         for position in self.position_list:
             index = self.convert_position_name_to_index(position)
@@ -173,6 +178,15 @@ class PositionSelector(QWidget):
                 self.activate_button(index)
             else:
                 self.deactivate_button(index)
+
+        if self.get_position() not in active_positions:
+            # Fall back to the default seat without going through
+            # process_button_clicked: that path notifies listeners, which refresh the
+            # output, which calls back into this method.
+            self.deselect_button(self.current_position)
+            self.current_position = self.default_position
+            self.select_button(self.current_position)
+            self.position_changed()
 
     def convert_position_name_to_index(self, name):
         """

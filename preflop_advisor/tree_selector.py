@@ -190,7 +190,7 @@ def test():
 
     tree_selector_settings = configs["TreeSelector"]
     tree_configs = configs["TreeInfos"]
-    tree_tooltips = configs["TreeToolTips"] if "TreeToolTips" in configs else {}
+    tree_tooltips = configs["TreeToolTips"] if configs.has_section("TreeToolTips") else {}
 
     root = MockMainWindow()
 

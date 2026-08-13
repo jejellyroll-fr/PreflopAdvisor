@@ -9,6 +9,7 @@ preflop_advisor = "preflop_advisor.__main__:main"
 
 [project.optional-dependencies]
 test = ["pytest>=8.3.2", "pytest-qt>=4.0.2", "pytest-cov>=5.0.0"]
+dev = ["pytest>=8.3.2", "pytest-qt>=4.0.2", "pytest-cov>=5.0.0", "ruff>=0.6.0"]
 build = ["pyinstaller>=6.9.0", "wheel>=0.40.0"]
 build-linux = ["python-appimage==1.2.7"]
 windows = ["pywin32==306", "configparser"]
@@ -34,13 +35,28 @@ ignore = [
     "E731", # Do not assign a `lambda` expression, use a `def`
     "E713", # Test for membership should be `not in`
     "LOG015", # Root logger usage
+    "EXE001", # Shebangs are kept as documentation; modules are run via -m, not directly
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["*"]
-exclude = ["pics", "ranges"]
+exclude = ["pics", "ranges", "tests", "tests.*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = "--cov --cov-report=term-missing --cov-fail-under=85"
+
+[tool.coverage.run]
+source = ["preflop_advisor"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    # Module-level demo entry points kept for manual inspection; they instantiate a
+    # QApplication and block, so they are not exercised by the suite.
+    "^def test\\(\\):",
+    "^def main\\(\\):",
+]

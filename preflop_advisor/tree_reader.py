@@ -194,6 +194,24 @@ class TreeReader:
         )
         self.results.append(row)
 
+    def seat_indices(self, *positions):
+        """
+        Returns the seat indices of the given positions, ordered from earliest to latest.
+
+        Returns ``None`` if any position is not seated in the current tree, which lets
+        callers bail out instead of raising ``ValueError`` from ``list.index``.
+
+        :param positions: Position names to look up.
+        :return: List of indices, or None.
+        """
+        try:
+            return [self.position_list.index(position) for position in positions]
+        except ValueError:
+            logging.warning(
+                "Positions %s not all seated in %s", list(positions), self.position_list
+            )
+            return None
+
     def get_vs_first_in(self, position, fi_position):
         """
         Retrieves results for the "vs first in" scenario.
@@ -202,12 +220,12 @@ class TreeReader:
         :param fi_position: Initial opening position.
         :return: List of results.
         """
-        if position not in self.position_list or fi_position not in self.position_list:
-            logging.error("Invalid positions: %s, %s", position, fi_position)
+        indices = self.seat_indices(position, fi_position)
+        if indices is None:
             return []
         if position == fi_position:
             return []
-        if self.position_list.index(position) > self.position_list.index(fi_position):
+        if indices[0] > indices[1]:
             return self.action_processor.get_results(self.hand, [(fi_position, "Raise")], position)
         return self.action_processor.get_results(self.hand, [(position, "Raise"), (fi_position, "Raise")], position)
 
@@ -219,7 +237,10 @@ class TreeReader:
         :param reraise_position: Position making the 4bet.
         :return: List of results.
         """
-        pos_index = self.position_list.index(position)
+        indices = self.seat_indices(position, reraise_position)
+        if indices is None:
+            return []
+        pos_index = indices[0]
         # Same positions or UTG where cold 4bet is not possible
         if position == reraise_position or pos_index == 0:
             return []
@@ -248,8 +269,10 @@ class TreeReader:
         :param threebet_position: Position making the 3bet.
         :return: List of results.
         """
-        pos_index = self.position_list.index(position)
-        threebet_pos_index = self.position_list.index(threebet_position)
+        indices = self.seat_indices(position, threebet_position)
+        if indices is None:
+            return []
+        pos_index, threebet_pos_index = indices
 
         if position == threebet_position:
             return []
@@ -284,8 +307,10 @@ class TreeReader:
         :param rfi_position: Position of the first in.
         :return: List of results.
         """
-        pos_index = self.position_list.index(position)
-        rfi_index = self.position_list.index(rfi_position)
+        indices = self.seat_indices(position, rfi_position)
+        if indices is None:
+            return []
+        pos_index, rfi_index = indices
 
         if pos_index <= rfi_index + 1:  # there must be at least one player between rfi and caller
             return []
@@ -308,17 +333,23 @@ class TreeReader:
         :param squeeze_position: Position of the squeezer.
         :return: List of results.
         """
-        pos_index = self.position_list.index(position)
-        squeeze_index = self.position_list.index(squeeze_position)
+        indices = self.seat_indices(position, squeeze_position)
+        if indices is None:
+            return []
+        pos_index, squeeze_index = indices
 
         if squeeze_index <= pos_index + 1:  # the squeezer must be at least two positions after
             return []
 
+        # We opened, a seat behind us called, and the squeezer 3bet on top. The
+        # squeezer's raise is what we are facing, so it has to close the sequence --
+        # mirroring get_vs_4bet, which ends with the 4bettor's raise.
         results = self.action_processor.get_results(
             self.hand,
             [
                 (position, "Raise"),
                 (self.position_list[pos_index + 1], "Call"),
+                (squeeze_position, "Raise"),
             ],
             position,
         )

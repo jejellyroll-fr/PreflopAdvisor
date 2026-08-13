@@ -32,13 +32,12 @@ hiddenimports = [
     'preflop_advisor.position_selector',
     'preflop_advisor.tree_selector',
     'preflop_advisor.outputframe',
-    'preflop_advisor.output_objects',
     'preflop_advisor.randomizer',
     'preflop_advisor.tooltip',
     'preflop_advisor.tree_reader',
     'preflop_advisor.tree_reader_helpers',
     'preflop_advisor.hand_convert_helper',
-    'preflop_advisor.frequency_reader_helper',
+    'preflop_advisor.errors',
 ]
 
 a = Analysis(

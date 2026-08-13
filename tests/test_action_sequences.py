@@ -9,6 +9,7 @@ import os
 
 import pytest
 
+from preflop_advisor.errors import InvalidRaiseSizing
 from preflop_advisor.tree_reader_helpers import ActionProcessor
 
 from .conftest import REFERENCE_HAND
@@ -186,3 +187,102 @@ def test_missing_file_degrades_gracefully(synthetic_tree, tree_configs):
     missing = os.path.join(processor.path, "does-not-exist.rng")
 
     assert processor.read_file_into_hash(missing) == {}
+
+
+# --------------------------------------------------------------------------------------
+# Degraded configuration and data
+# --------------------------------------------------------------------------------------
+
+
+def test_unknown_raise_sizing_is_rejected_loudly(hu_tree, tree_configs):
+    """An undeclared sizing is a config error, not a value to invent.
+
+    Auto-filling the key is what made every raise silently resolve to a file that does
+    not exist.
+    """
+    settings = dict(tree_configs) | {"raisesizelist": "Raise42"}
+
+    with pytest.raises(InvalidRaiseSizing, match="Raise42"):
+        ActionProcessor(HU_POSITIONS, dict(hu_tree), settings)
+
+
+def test_empty_raise_sizing_list_is_rejected(hu_tree, tree_configs):
+    settings = dict(tree_configs) | {"raisesizelist": "  ,  "}
+
+    with pytest.raises(InvalidRaiseSizing):
+        ActionProcessor(HU_POSITIONS, dict(hu_tree), settings)
+
+
+def test_settings_are_read_case_insensitively(hu_tree):
+    """ConfigParser lowercases option names; callers write them in CamelCase."""
+    processor = ActionProcessor(
+        HU_POSITIONS,
+        dict(hu_tree),
+        {"Fold": "0", "Call": "1", "RaisePot": "2", "RaiseSizeList": "RaisePot", "CacheSize": "7"},
+    )
+
+    assert processor.cache_size == 7
+    assert processor.raise_size_keys == ["RaisePot"]
+
+
+def test_the_callers_configuration_is_not_mutated(hu_tree, tree_configs):
+    """ActionProcessor used to write fabricated keys back into the shared section."""
+    before = dict(tree_configs)
+
+    ActionProcessor(HU_POSITIONS, dict(hu_tree), tree_configs)
+
+    assert dict(tree_configs) == before
+
+
+def test_results_for_an_unseated_position_are_empty(hu_processor):
+    assert hu_processor.get_results(REFERENCE_HAND, [], "UTG") == []
+
+
+def test_filename_is_empty_when_an_action_has_no_code(hu_processor):
+    assert hu_processor.get_filename([("SB", "Teleport")]) == ""
+
+
+def test_has_node_rejects_unknown_actions(hu_processor):
+    assert hu_processor.has_node([("SB", "Teleport")]) is False
+
+
+def test_unreadable_range_folder_yields_an_empty_index(hu_tree, tree_configs, tmp_path):
+    tree = dict(hu_tree, folder=str(tmp_path / "nope"))
+    processor = ActionProcessor(HU_POSITIONS, tree, tree_configs)
+
+    assert processor._nodes == set()
+    assert processor.find_valid_raise_sizes([("SB", "Raise")]) == [("SB", "Raise75")]
+
+
+def test_malformed_entries_do_not_raise(tmp_path, hu_tree, tree_configs):
+    folder = tmp_path / "broken"
+    folder.mkdir()
+    (folder / "2.rng").write_text("(3K)(4A)\nnot-a-number;nope\n")
+    processor = ActionProcessor(
+        HU_POSITIONS, dict(hu_tree, folder=str(folder)), dict(tree_configs) | {"cachesize": "0"}
+    )
+
+    assert processor.read_hand("(3K)(4A)", [("SB", "RaisePot")]) == ["", 0.0, 0.0]
+
+
+def test_hand_absent_from_the_file_returns_a_neutral_result(synthetic_tree, tree_configs):
+    processor = ActionProcessor(HU_POSITIONS, synthetic_tree, tree_configs)
+
+    assert processor.read_hand("(2K)(9A)", [("SB", "RaisePot")]) == ["", 0.0, 0.0]
+    assert processor.read_hand_with_cache("(2K)(9A)", [("SB", "RaisePot")]) == ["", 0.0, 0.0]
+
+
+def test_cache_evicts_the_least_recently_inserted_file(synthetic_tree, tree_configs):
+    from preflop_advisor.tree_reader_helpers import CACHE
+
+    CACHE.clear()
+    processor = ActionProcessor(
+        HU_POSITIONS, synthetic_tree, dict(tree_configs) | {"cachesize": "2"}
+    )
+
+    for sequence in ([("SB", "Fold")], [("SB", "Call")], [("SB", "RaisePot")]):
+        processor.read_hand_with_cache("(3K)(4A)", sequence)
+
+    assert len(CACHE) == 2
+    assert not any(name.endswith("0.rng") for name in CACHE)
+    CACHE.clear()

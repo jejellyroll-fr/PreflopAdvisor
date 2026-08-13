@@ -63,8 +63,7 @@ def _write_range_file(folder, stem, entries):
     """Write a .rng file in Monker format: ``hand`` / ``freq;ev`` line pairs."""
     path = os.path.join(folder, f"{stem}.rng")
     with open(path, "w") as handle:
-        for hand, (frequency, ev) in entries.items():
-            handle.write(f"{hand}\n{frequency};{ev}\n")
+        handle.writelines(f"{hand}\n{frequency};{ev}\n" for hand, (frequency, ev) in entries.items())
     return path
 
 

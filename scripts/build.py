@@ -39,7 +39,7 @@ def build(clean_first=True):
     ]
 
     print(f"   Executing: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT, check=False)
 
     if result.returncode == 0:
         print("\n✅ Build succeeded!")
