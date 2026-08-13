@@ -2,6 +2,29 @@
 
 > Analyse de la branche `feature/pyside` (commit `d680503`) — 3 370 lignes Python, PySide6, 7 tests, 53 % de couverture nominale.
 
+## Statut — plan exécuté sur `feat/solver-fixes`
+
+Les six phases sont livrées. Résultat : **7 → 228 tests**, **53 % → 94 % de couverture** (seuil bloquant à 90 %), et le taux de remplissage de la grille passe de **3 % à 37 %** des cellules de données.
+
+| Phase | Commit | État |
+|---|---|---|
+| 0–1 — Oracles + réparation du cœur solver | `eb02a80` | ✅ |
+| 2 — Non-régression, couverture, CI | `0b3b5ea`, `58987e2` | ✅ |
+| 3 — Assainissement architectural | `69c0dfc` | ✅ |
+| — Correctif packaging (hors plan) | `089c917` | ✅ |
+| 4 — UI/UX | `51df237` | ✅ |
+| 5 — Outillage et documentation | `20989f3` | ✅ |
+
+**Écarts par rapport au plan initial**, tous documentés dans les commits :
+
+- **`get_vs_squeeze` construisait une séquence sans squeeze** (§ risque « hypothèses de lignes de jeu ») — découvert en écrivant les tests de la phase 2, corrigé par symétrie avec `get_vs_4bet`. **À faire valider** : la correction est structurelle, pas vérifiée contre des données solver, faute d'arbre 6-max dans le dépôt.
+- **`tooltip.py` : `exists(p) and is_image(p) or exists(p)`** se réduit à `exists(p)` par précédence — le test d'extension ne s'exécutait jamais.
+- **Absence de `[build-system]`** : le projet n'était jamais installé, donc `uv run preflop_advisor` échouait. Hors périmètre du plan initial, corrigé en `089c917`.
+- **`CHIPS_PER_BB = 2000` confirmé** contre les données réelles (folder en BB = −1 bb exactement), pas seulement supposé.
+- La correction de `PositionInactive` (prévue en 4.6) a été avancée en phase 2, où elle relevait de la non-régression.
+
+**Restant / non traité** : les en-têtes figés au scroll (§ 4.4) ne sont pas implémentés — la grille tient désormais à l'écran sans scroll dans les cas courants, le besoin est donc marginal.
+
 ---
 
 ## 1. Verdict
