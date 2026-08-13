@@ -305,34 +305,3 @@ def move_plo5_postflop_file(work_path, inputfilename, outputfilename):
     with open(output_file, "w") as range_file:
         range_file.writelines(f"{item['combo']},{item['weight']},{item['ev'] * 1000}\n" for item in hands)
     logger.debug(f"Converted post-flop file written: {output_file}")
-
-
-def test():
-    """
-    Test function to verify the proper functioning of various functions.
-    """
-    # Test converting a 5-card Omaha hand
-    logger.debug("Testing conversion of a 5-card Omaha hand")
-    print(convert_hand("Ad8s7h2c4c"))  # Example: "Ad8s7h2c4c"
-
-    # Test sorting a Monker hand
-    logger.debug("Testing sorting of a Monker hand")
-    print(sort_monker_2_hand("(98)(T7)"))  # Example: "(98)(T7)"
-    print(sort_monker_2_hand("(QA)(3A)"))  # Example: "(QA)(3A)"
-
-    # Replace hands in a specific file (path to be adjusted)
-    # logger.debug("Replacing hands in a specific file")
-    # replace_monker_2_hands("/media/johann/MONKER/monker-beta/ranges/Omaha/6-way/40bb/0.0.rng")
-
-    # Replace hands in all files within a directory (path to be adjusted)
-    # logger.debug("Replacing hands in all files within a directory")
-    # replace_all_monker_2_files("/home/johann/monker-beta/ranges/Omaha5/6-way/100bb/")
-
-    # Convert PLO5 post-flop files (paths and filenames to be adjusted)
-    # logger.debug("Converting PLO5 post-flop files")
-    # move_plo5_postflop_file("/home/johann/monker-beta/ranges", "CHECK", "CHECK.csv")
-    # move_plo5_postflop_file("/home/johann/monker-beta/ranges", "BET75", "BET75.csv")
-
-
-if __name__ == "__main__":
-    test()

@@ -3,7 +3,6 @@
 import logging
 import os
 from collections import OrderedDict
-from configparser import ConfigParser
 
 from .errors import InvalidRaiseSizing
 from .hand_convert_helper import convert_hand
@@ -364,51 +363,3 @@ class ActionProcessor:
         filename = stem + self.ending
         logger.debug("Generated filename: %s", filename)
         return filename
-
-
-def test():
-    """
-    Test function for ActionProcessor.
-    """
-    logger.debug("Starting test for ActionProcessor.")
-    config = ConfigParser()
-    config.read("config.ini")
-
-    if "TreeReader" not in config:
-        logger.error("'TreeReader' section missing in config.ini")
-        return
-
-    configs = config["TreeReader"]
-    tree_infos = {"folder": "./ranges/HU-100bb-with-limp"}
-    position_list = ["SB", "BB"]
-
-    # Verify test folder
-    test_folder = tree_infos["folder"]
-    if not os.path.exists(test_folder):
-        os.makedirs(test_folder)
-        logger.debug("Test folder created: %s", test_folder)
-
-    # Create a test file
-    test_file = os.path.join(test_folder, "0.1.rng")
-    with open(test_file, "w") as f:
-        f.write("AhKs\n50;0.75\nKhQd\n25;0.65\nJhTs\n15;0.45\n")
-
-    # Initialize and read
-    action_processor = ActionProcessor(position_list, tree_infos, configs)
-    result = action_processor.read_file_into_hash(test_file)
-    logger.debug("Content of the read file: %s", result)
-
-    # Test retrieving results
-    action_list = [("SB", "Raise"), ("BB", "Call")]
-    hand = "AhKs"
-    results = action_processor.get_results(hand, action_list, "BB")
-    for res in results:
-        logger.debug("Result: %s", res)
-
-    # Cleanup after test
-    os.remove(test_file)
-    logger.debug("Test completed. Test file removed.")
-
-
-if __name__ == "__main__":
-    test()

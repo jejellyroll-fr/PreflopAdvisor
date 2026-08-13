@@ -5,9 +5,15 @@ import os
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+from . import theme
 
 logger = logging.getLogger(__name__)
+
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+POPUP_DIRNAME = "popup-pics"
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp")
 
 
 class CreateToolTip(QWidget):
@@ -31,38 +37,23 @@ class CreateToolTip(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        # Check if the text is a path to an image (including relative / popup-pics fallback)
-        img_path = self.text
-        if not os.path.exists(img_path):
-            pkg_path = os.path.join(os.path.dirname(__file__), img_path)
-            if os.path.exists(pkg_path):
-                img_path = pkg_path
-            else:
-                basename = os.path.basename(img_path)
-                popup_path = os.path.join(os.path.dirname(__file__), "popup-pics", basename)
-                if os.path.exists(popup_path):
-                    img_path = popup_path
-
-        if (
-            os.path.exists(img_path)
-            and any(img_path.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".bmp"))
-            or os.path.exists(img_path)
-        ):
+        image_path = self.resolve_image(text)
+        if image_path:
             self.pic = True
-            self.text = img_path
+            self.text = image_path
 
         if not self.pic:
             # Text tooltip
             logger.debug("Creating a text tooltip: '%s'", self.text)
             label = QLabel(self.text, self)
-            label.setStyleSheet("""
-                QLabel {
-                    background-color: #3c3c3c;
-                    color: white;
-                    border: 1px solid #555555;
+            label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {theme.SURFACE_RAISED};
+                    color: {theme.TEXT_PRIMARY};
+                    border: 1px solid {theme.BORDER};
                     padding: 5px;
                     border-radius: 3px;
-                }
+                }}
             """)
             layout.addWidget(label)
         else:
@@ -78,6 +69,32 @@ class CreateToolTip(QWidget):
                 logger.error("The specified image could not be loaded: '%s'", self.text)
 
         self.adjustSize()
+
+    @staticmethod
+    def resolve_image(text):
+        """Path of the image this tooltip should show, or ``None`` for a text tooltip.
+
+        Tooltips are configured as either literal text or an image path, so the two have
+        to be told apart. The path is looked up as given, then relative to the package,
+        then under ``popup-pics/`` -- config.ini ships absolute paths from whoever
+        generated the overviews.
+
+        The previous condition read ``exists(p) and is_image(p) or exists(p)``, which by
+        precedence is just ``exists(p)``: any text matching an existing filename was
+        rendered as an image.
+        """
+        if not text:
+            return None
+
+        candidates = [
+            text,
+            os.path.join(PACKAGE_DIR, text),
+            os.path.join(PACKAGE_DIR, POPUP_DIRNAME, os.path.basename(text)),
+        ]
+        for candidate in candidates:
+            if candidate.lower().endswith(IMAGE_EXTENSIONS) and os.path.isfile(candidate):
+                return candidate
+        return None
 
     def show_tooltip(self, widget):
         """
@@ -96,54 +113,3 @@ class CreateToolTip(QWidget):
         """
         logger.debug("Hiding tooltip")
         self.hide()
-
-
-class MainWindow(QMainWindow):
-    """
-    Main window containing buttons with tooltips.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Custom Tooltip Example")
-        self.setStyleSheet("background-color: #121212; color: white;")  # Dark theme
-
-        # Central widget
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
-
-        # Buttons
-        btn1 = QPushButton("Button 1")
-        btn1.setFixedSize(120, 40)
-        layout.addWidget(btn1)
-
-        btn2 = QPushButton("Button 2")
-        btn2.setFixedSize(120, 40)
-        layout.addWidget(btn2)
-
-        # Custom tooltips
-        self.tooltip1 = CreateToolTip(self, "Mouse over Button 1")
-        self.tooltip2 = CreateToolTip(self, "Mouse over Button 2")
-
-        # Button events
-        btn1.enterEvent = lambda event: self.tooltip1.show_tooltip(btn1)
-        btn1.leaveEvent = lambda event: self.tooltip1.hide_tooltip()
-
-        btn2.enterEvent = lambda event: self.tooltip2.show_tooltip(btn2)
-        btn2.leaveEvent = lambda event: self.tooltip2.hide_tooltip()
-
-        logger.debug("Main window initialized with two buttons.")
-
-
-if __name__ == "__main__":
-    logger.debug("Starting the application")
-    app = QApplication([])
-
-    # Create the main window
-    window = MainWindow()
-    window.resize(600, 400)
-    window.show()
-
-    app.exec()
-    logger.debug("Application terminated")

@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 
 import logging
-from configparser import ConfigParser
 from random import randint
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication,
-    QMainWindow,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -78,26 +75,3 @@ class RandomButton(QWidget):
         button_height = self.size().height() * 0.4
         self.button.setFixedSize(max(50, int(button_width)), max(30, int(button_height)))
         super().resizeEvent(event)
-
-
-def test():
-    """Launches the widget on its own to check its behaviour."""
-    app = QApplication([])
-
-    configs = ConfigParser()
-    settings = configs["PositionSelector"] if configs.has_section("PositionSelector") else {}
-
-    window = QMainWindow()
-    rand_button = RandomButton(window, settings)
-    rand_button.rollChanged.connect(lambda value: print("rolled", value))
-    window.setCentralWidget(rand_button)
-    window.setWindowTitle("Random Button Test")
-    window.resize(400, 200)
-    window.setStyleSheet(theme.APPLICATION_QSS)
-    window.show()
-
-    app.exec()
-
-
-if __name__ == "__main__":
-    test()

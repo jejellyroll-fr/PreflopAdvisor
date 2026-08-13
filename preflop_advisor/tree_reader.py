@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import logging
-from configparser import ConfigParser
 
 from .errors import RangeFolderNotFound
 from .paths import resolve_range_folder
@@ -342,35 +341,3 @@ class TreeReader:
             position,
         )
         return results
-
-
-def test():
-    """
-    Test function for TreeReader.
-    """
-    logger.debug("Starting TreeReader test.")
-    config = ConfigParser()
-    config.read("config.ini")
-
-    if "TreeReader" not in config:
-        logger.error("'TreeReader' section missing in config.ini.")
-        return
-
-    tree = {"folder": "./ranges/HU-100bb-with-limp", "plrs": 2}
-    configs = config["TreeReader"]
-    hand = "AhKs4h3s"
-
-    try:
-        tree_reader = TreeReader(hand, "X", tree, configs)
-        tree_reader.fill_default_results()
-
-        for row in tree_reader.results:
-            print("---------------------------------------------------------------------------")
-            for field in row:
-                print(field)
-    except FileNotFoundError as e:
-        logger.error("Error during execution: %s", e)
-
-
-if __name__ == "__main__":
-    test()

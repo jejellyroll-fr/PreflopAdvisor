@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 
 import logging
-import os
-import sys
-from configparser import ConfigParser
 
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication,
     QGridLayout,
-    QMainWindow,
     QPushButton,
     QSizePolicy,
     QWidget,
@@ -200,43 +195,3 @@ class CardSelector(QWidget):
                 button = self.button_list[col][row]
                 button.setFixedSize(max(button_width, 10), max(button_height, 10))
         logger.debug("Button sizes updated: width = %d, height = %d", button_width, button_height)
-
-
-def test():
-    """
-    Main test function to validate the CardSelector interface.
-    """
-    logger.debug("Starting CardSelector test")
-    # Load the configuration file
-    configs = ConfigParser()
-    config_path = os.path.join(os.path.dirname(__file__), "config.ini")
-    if not os.path.exists(config_path):
-        logger.error("Error: config.ini not found at %s", config_path)
-        return
-
-    configs.read(config_path)
-    if "CardSelector" not in configs:
-        logger.error("Error: 'CardSelector' section not found in config.ini")
-        return
-
-    card_selector_settings = configs["CardSelector"]
-
-    def update_output():
-        selected_hand = card_selector.get_selected_hand()
-        logger.debug("Output updated: %s", selected_hand)
-        print("Cards Selected:", selected_hand)
-
-    app = QApplication(sys.argv)
-    main_window = QMainWindow()
-    card_selector = CardSelector(card_selector_settings)
-    card_selector.handChanged.connect(lambda _: update_output())
-    main_window.setCentralWidget(card_selector)
-    main_window.setStyleSheet("background-color: #1e1e1e; color: white;")  # Dark theme
-    main_window.setWindowTitle("Card Selector - Dark Theme")
-    main_window.show()
-    logger.debug("Main window displayed")
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    test()

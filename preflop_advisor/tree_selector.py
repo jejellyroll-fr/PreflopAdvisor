@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 
 import logging
-import os
-from configparser import ConfigParser
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication,
     QComboBox,
     QLabel,
-    QMainWindow,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -144,41 +140,3 @@ class TreeSelector(QWidget):
         :return: Dictionary containing current tree information.
         """
         return self.current_tree
-
-
-class MockMainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-
-
-def test():
-    """
-    Test function for TreeSelector.
-    """
-    logger.debug("Starting TreeSelector test.")
-    app = QApplication([])
-
-    # Load configurations
-    configs = ConfigParser()
-    config_path = os.path.dirname(__file__)
-    configs.read(os.path.join(config_path, "config.ini"))
-
-    tree_selector_settings = configs["TreeSelector"]
-    tree_configs = configs["TreeInfos"]
-    tree_tooltips = configs["TreeToolTips"] if configs.has_section("TreeToolTips") else {}
-
-    root = MockMainWindow()
-
-    tree_selector = TreeSelector(root, tree_selector_settings, tree_configs, tree_tooltips)
-    tree_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    root.setCentralWidget(tree_selector)
-    root.setWindowTitle("Tree Selector Test")
-    root.resize(800, 600)
-    root.show()
-
-    app.exec()
-    logger.debug("TreeSelector test completed.")
-
-
-if __name__ == "__main__":
-    test()

@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 
 import logging
-from configparser import ConfigParser
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QApplication,
     QHBoxLayout,
-    QMainWindow,
     QPushButton,
     QSizePolicy,
     QWidget,
@@ -176,72 +173,3 @@ class PositionSelector(QWidget):
         """
         logger.debug("Enabling button: %s", self.position_list[index])
         self.button_list[index].setEnabled(True)
-
-
-class TestWindow(QMainWindow):
-    """
-    Main window to test PositionSelector with a default configuration if necessary.
-    """
-
-    def __init__(self):
-        super().__init__()
-        logger.debug("Initializing main window")
-        self.setWindowTitle("Position Selector - Dark Theme")
-        self.setMinimumSize(600, 200)
-
-        configs = ConfigParser()
-        config_path = "config.ini"
-        if not configs.read(config_path):
-            logger.warning("Configuration file not found: %s", config_path)
-
-        # Check if the `PositionSelector` section exists, otherwise apply default values
-        if "PositionSelector" not in configs:
-            logger.warning("Section 'PositionSelector' missing in config.ini. Using default settings.")
-            settings = {
-                "PositionList": "X,UTG,MP,CO,BU,SB,BB",
-                "PositionInactive": "MP,SB",
-                "ButtonHeight": "60",
-                "ButtonWidth": "100",
-                "ButtonPad": "10",
-                "FontSize": "14",
-                "Font": "Helvetica",
-                "Background": "#2c2c2c",
-                "BackgroundPressed": "#444444",
-                "DefaultPosition": "0",
-            }
-        else:
-            settings = configs["PositionSelector"]
-
-        central_widget = QWidget(self)
-        self.setCentralWidget(central_widget)
-
-        def update_output():
-            logger.debug("Selected position: %s", selector.get_position())
-
-        selector = PositionSelector(central_widget, settings)
-        selector.positionChanged.connect(lambda _: update_output())
-        selector.setStyleSheet("background-color: #121212; color: white;")  # Dark theme
-
-        # Add the selector to the main layout
-        layout = QHBoxLayout(central_widget)
-        layout.addWidget(selector)
-
-        logger.debug("TestWindow initialized successfully")
-
-
-def main():
-    """
-    Entry point of the application.
-    """
-    logger.debug("Starting application")
-    app = QApplication([])
-
-    window = TestWindow()
-    window.show()
-
-    app.exec()
-    logger.debug("Application terminated")
-
-
-if __name__ == "__main__":
-    main()

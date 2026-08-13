@@ -54,7 +54,7 @@ exclude = ["pics", "ranges", "tests", "tests.*"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-addopts = "--cov --cov-report=term-missing --cov-fail-under=85"
+addopts = "--cov --cov-report=term-missing --cov-fail-under=90"
 markers = [
     "slow: spawns a subprocess or otherwise takes seconds (deselect with '-m \"not slow\"')",
 ]
