@@ -75,6 +75,11 @@ class TableEntry(QWidget):
         self.label_right = QLabel("", self)
         self.label_right.setAlignment(Qt.AlignCenter)
 
+        # Action tiles fill their half of the cell, so the colour tint covers a readable
+        # area instead of hugging the text.
+        for label in (self.label_left, self.label_right):
+            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         self.layout.addWidget(self.info_text, 0, 0, 1, 2)
         self.layout.addWidget(self.label_left, 1, 0)
         self.layout.addWidget(self.label_right, 1, 1)
@@ -82,6 +87,11 @@ class TableEntry(QWidget):
         # Cells grow with the window instead of being pinned to a fixed pixel size.
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(MIN_CELL_WIDTH, MIN_CELL_HEIGHT)
+
+        # A QWidget subclass does not paint the border or background from its own
+        # stylesheet unless it is told to. Without this the cells have no outline at all
+        # and the grid reads as boxes floating in space rather than a table.
+        self.setAttribute(Qt.WA_StyledBackground, True)
 
         self.setStyleSheet(
             f"""

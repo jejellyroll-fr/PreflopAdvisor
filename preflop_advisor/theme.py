@@ -23,6 +23,10 @@ TEXT_PRIMARY = "#f0f0f0"
 TEXT_SECONDARY = "#b0b0b0"
 TEXT_MUTED = "#6e6e6e"
 
+# Marks the one active choice. Enabled-but-unselected and selected were only a shade
+# apart, so which seat was actually being shown had to be read off the output header.
+ACCENT = "#4a90d9"
+
 # Semantic colours for EV. Deliberately not red/green alone: the pairing is also
 # separated by lightness, and every cell repeats the action name in text, so the
 # information survives for red-green colour blindness.
@@ -171,18 +175,36 @@ def card_button_qss(suit, selected=False):
 
 
 def position_button_qss(selected=False, font_size=14):
-    """Stylesheet for one seat button of the position selector."""
+    """Stylesheet for one seat button of the position selector.
+
+    Three states have to be distinguishable at a glance: selected, available, and
+    unavailable for this table size.
+    """
+    if selected:
+        return f"""
+            QPushButton {{
+                background-color: {ACCENT};
+                color: #ffffff;
+                border: 1px solid {ACCENT};
+                border-radius: 5px;
+                font-size: {font_size}px;
+                font-weight: bold;
+            }}
+        """
     return f"""
         QPushButton {{
-            background-color: {SURFACE_PRESSED if selected else SURFACE};
+            background-color: {SURFACE};
             color: {TEXT_PRIMARY};
-            border: 1px solid {BORDER_STRONG if selected else BORDER};
+            border: 1px solid {BORDER};
             border-radius: 5px;
             font-size: {font_size}px;
-            font-weight: {"bold" if selected else "normal"};
+        }}
+        QPushButton:hover {{
+            background-color: {SURFACE_RAISED};
         }}
         QPushButton:disabled {{
             color: {TEXT_MUTED};
+            background-color: {BACKGROUND};
             border-color: {SURFACE};
         }}
     """

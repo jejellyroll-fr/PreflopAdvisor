@@ -92,6 +92,46 @@ def test_cells_are_not_pinned_to_a_fixed_size(qtbot):
     assert entry.maximumWidth() > 1000, "cells must be able to grow with the window"
 
 
+def rendered(entry, size=(120, 90)):
+    """Renders a cell and returns its image, so styling can be checked as pixels."""
+    from PySide6.QtGui import QPixmap
+
+    entry.resize(*size)
+    pixmap = QPixmap(entry.size())
+    entry.render(pixmap)
+    return pixmap.toImage()
+
+
+def test_cells_actually_paint_their_border(qtbot):
+    """Asserting the stylesheet string is not enough: Qt may never paint it.
+
+    A QWidget subclass ignores border and background from its own stylesheet unless
+    WA_StyledBackground is set. The cells had a correct-looking stylesheet and rendered
+    no outline at all, so the grid read as boxes floating in space.
+    """
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.set_description_label("4bet")
+
+    image = rendered(entry)
+
+    assert image.pixelColor(60, 0).name() == theme.BORDER, "top edge is not painted"
+    assert image.pixelColor(0, 45).name() == theme.BORDER, "left edge is not painted"
+    assert image.pixelColor(60, 45).name() == theme.SURFACE, "cell body is not painted"
+
+
+def test_an_action_tile_fills_its_half_of_the_cell(qtbot):
+    """The tint has to cover a readable area, not just hug the text."""
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.set_result_label([["Call", "40", "1.20"], ["Raise100", "60", "2.50"]])
+    entry.resize(160, 120)
+    entry.layout.activate()  # geometry only settles once the layout runs
+
+    assert entry.label_left.width() > 60, "tile does not span its half of the cell"
+    assert entry.label_left.height() > 80, "tile does not span the cell height"
+
+
 # --------------------------------------------------------------------------------------
 # Cell rendering
 # --------------------------------------------------------------------------------------
@@ -237,6 +277,22 @@ def test_no_stylesheet_declares_a_colour_without_a_hash():
 
     for value in (theme.APPLICATION_QSS, theme.card_button_qss("h"), theme.position_button_qss()):
         assert not re.search(r":\s*[0-9a-fA-F]{6}\s*;", value)
+
+
+def test_a_selected_seat_is_clearly_distinct_from_an_available_one(qtbot, raw_config):
+    """Selected and merely-enabled used to differ by one shade of grey."""
+    from preflop_advisor.position_selector import PositionSelector
+
+    selector = PositionSelector(None, raw_config["PositionSelector"])
+    qtbot.addWidget(selector)
+    selector.update_active_positions(2)
+    selector.process_button_clicked(selector.convert_position_name_to_index("SB"))
+
+    selected = selector.button_list[selector.convert_position_name_to_index("SB")]
+    available = selector.button_list[selector.convert_position_name_to_index("BB")]
+
+    assert theme.ACCENT in selected.styleSheet()
+    assert theme.ACCENT not in available.styleSheet()
 
 
 @pytest.mark.parametrize("action,expected_key", [("Raise100", "raise"), ("Raise75", "raise"), ("Call", "call")])
