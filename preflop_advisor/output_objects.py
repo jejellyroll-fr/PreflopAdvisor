@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 
 import logging
-from PySide6.QtWidgets import (
-    QWidget,
-    QLabel,
-    QGridLayout,
-    QApplication,
-    QMainWindow,
-    QSizePolicy,
-)
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QApplication,
+    QGridLayout,
+    QLabel,
+    QMainWindow,
+    QSizePolicy,
+    QWidget,
+)
 
 # Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")

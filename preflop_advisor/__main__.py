@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import sys
+
 from PySide6.QtWidgets import QApplication
+
 from preflop_advisor.gui import MainWindow
 
 

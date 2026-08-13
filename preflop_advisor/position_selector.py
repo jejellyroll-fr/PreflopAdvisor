@@ -2,18 +2,15 @@
 
 import logging
 from configparser import ConfigParser
+
 from PySide6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
-    QPushButton,
     QHBoxLayout,
+    QMainWindow,
+    QPushButton,
     QSizePolicy,
+    QWidget,
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QColor
-import sys
-import os
 
 # Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -153,21 +150,20 @@ class PositionSelector(QWidget):
         logging.info("Current position: %s", self.position_list[self.current_position])
         return self.position_list[self.current_position]
 
-    def update_active_positions(self, positions, inactive_positions):
+    def update_active_positions(self, num_players):
         """
-        Activates or deactivates positions based on the provided lists.
+        Activates or deactivates positions based on the number of players.
         """
-        logging.info("Updating active and inactive positions")
-        self.active_positions = positions
-        self.inactive_positions = inactive_positions
+        active_positions = list(reversed(self.position_list))
+        active_positions = [active_positions[-1]] + active_positions[:num_players]
 
-        if self.get_position() not in self.active_positions:
+        if self.get_position() not in active_positions:
             self.process_button_clicked(self.default_position)
             self.current_position = self.default_position
 
         for position in self.position_list:
             index = self.convert_position_name_to_index(position)
-            if position in self.active_positions and position not in self.position_inactive_list:
+            if position in active_positions and position not in self.position_inactive_list:
                 self.activate_button(index)
             else:
                 self.deactivate_button(index)

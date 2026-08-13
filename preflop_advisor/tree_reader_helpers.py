@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-import os
-from configparser import ConfigParser
-from collections import OrderedDict
 import logging
-import sys
+import os
 import re
+import sys
+from collections import OrderedDict
+from configparser import ConfigParser
 
 # Add the parent directory to the path for relative imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -36,6 +36,18 @@ class ActionProcessor:
         self.tree_infos = tree_infos
         self.configs = configs
         self.path = tree_infos["folder"]
+        if not os.path.isdir(self.path):
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            candidate = os.path.join(project_root, self.path)
+            if os.path.isdir(candidate):
+                self.path = candidate
+                self.tree_infos["folder"] = self.path
+            else:
+                basename = os.path.basename(self.path.rstrip("/\\"))
+                candidate2 = os.path.join(project_root, "ranges", basename)
+                if os.path.isdir(candidate2):
+                    self.path = candidate2
+                    self.tree_infos["folder"] = self.path
         self.cache_size = int(self.configs.get("CacheSize", 100))
 
         # Add missing keys to configurations with default values

@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 
 import logging
-from PySide6.QtWidgets import (
-    QWidget,
-    QLabel,
-    QGridLayout,
-    QVBoxLayout,
-    QApplication,
-    QScrollArea,
-)
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QColor
-import sys
 import os
+import sys
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import (
+    QApplication,
+    QGridLayout,
+    QLabel,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 # Add the project directory to sys.path for relative imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -273,7 +274,7 @@ class OutputFrame(QWidget):
         if len(results) == 0:
             return []
 
-        fold_ev = float(results[0][2]) if self.output_configs.get("AdjustFoldEV", "no") == "yes" else 0
+        fold_ev = results[0][2] if self.output_configs.get("AdjustFoldEV", "no") == "yes" else 0
         results = results[1:]
 
         if len(results) == 0:
@@ -281,14 +282,14 @@ class OutputFrame(QWidget):
 
         new_entry1 = [
             results[0][0],
-            "{0:.0f}".format(float(results[0][1]) * 100),
-            "{0:.2f}".format((float(results[0][2]) - fold_ev) / 2000),
+            f"{results[0][1] * 100:.0f}",
+            f"{(results[0][2] - fold_ev) / 2000:.2f}",
         ]
         if len(results) >= 2:
             new_entry2 = [
                 results[1][0],
-                "{0:.0f}".format(float(results[1][1]) * 100),
-                "{0:.2f}".format((float(results[1][2]) - fold_ev) / 2000),
+                f"{results[1][1] * 100:.0f}",
+                f"{(results[1][2] - fold_ev) / 2000:.2f}",
             ]
             logging.info("Preprocessed results: %s", [new_entry1, new_entry2])
             return [new_entry1, new_entry2]

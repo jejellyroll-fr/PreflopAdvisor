@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
-import logging
-import re
 import glob
 import json
+import logging
 import os
+import re
 
 # Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -324,8 +324,7 @@ def move_plo5_postflop_file(work_path, inputfilename, outputfilename):
     hands = data["items"]
     output_file = os.path.join(work_path, outputfilename)
     with open(output_file, "w") as range_file:
-        for item in hands:
-            range_file.write(f"{item['combo']},{item['weight']},{item['ev']*1000}\n")
+        range_file.writelines(f"{item['combo']},{item['weight']},{item['ev']*1000}\n" for item in hands)
     logging.info(f"Converted post-flop file written: {output_file}")
 
 

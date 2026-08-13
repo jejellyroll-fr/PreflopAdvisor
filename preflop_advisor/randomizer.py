@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 
 import logging
+import os
+import sys
 from configparser import ConfigParser
 from random import randint
+
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
-    QWidget,
     QPushButton,
     QVBoxLayout,
-    QHBoxLayout,
-    QSizePolicy,
+    QWidget,
 )
-from PySide6.QtCore import Qt
-import sys
-import os
 
 # Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")

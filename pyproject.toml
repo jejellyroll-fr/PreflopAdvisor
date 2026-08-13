@@ -1,8 +1,11 @@
 [project]
 name = "preflop_advisor"
 version = "0.2"
-requires-python = ">=3.10,<4.0"
-dependencies = ["pyside6==6.8.0.2"]
+requires-python = ">=3.10"
+dependencies = ["pyside6>=6.8.0.2"]
+
+[project.scripts]
+preflop_advisor = "preflop_advisor.__main__:main"
 
 [project.optional-dependencies]
 test = ["pytest>=8.3.2", "pytest-qt>=4.0.2", "pytest-cov>=5.0.0"]
@@ -30,9 +33,14 @@ ignore = [
     "E401", # Multiple imports on one line"
     "E731", # Do not assign a `lambda` expression, use a `def`
     "E713", # Test for membership should be `not in`
+    "LOG015", # Root logger usage
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["*"]
 exclude = ["pics", "ranges"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

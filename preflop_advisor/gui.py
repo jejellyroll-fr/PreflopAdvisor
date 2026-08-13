@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
 
+import inspect
 import os
 import sys
-import inspect
 from configparser import ConfigParser
+
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QGridLayout,
+    QGroupBox,
+    QLabel,
     QMainWindow,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
-    QGroupBox,
-    QGridLayout,
-    QSizePolicy,
-    QLabel,
 )
-from PySide6.QtCore import Qt
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from preflop_advisor.card_selector import CardSelector
-from preflop_advisor.tree_selector import TreeSelector
-from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.outputframe import OutputFrame
+from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.randomizer import RandomButton
+from preflop_advisor.tree_selector import TreeSelector
 
 
 class MainWindow(QMainWindow):
@@ -131,56 +132,76 @@ class MainWindow(QMainWindow):
     def update_output_frame(self):
         """Update the interface based on selections."""
         try:
-            hand = self.card_selector.get_selected_hand()  # Get the selected hand
-            position = self.position_selector.get_position()  # Get the selected position
-            tree_info = self.tree_selector.get_tree_infos()  # Get the tree information
-            if not position:
-                raise ValueError("Position not selected or invalid.")
-            if hand and position and tree_info:
-                self.output.update_output_frame(hand, position, tree_info)
+            tree_infos = self.tree_selector.get_tree_infos()
+            if not tree_infos:
+                return
+            game = tree_infos["game"]
+
+            # Adapt card count and active positions based on tree
+            self.update_card_and_position_selector(tree_infos)
+
+            position = self.position_selector.get_position()
+            hand = self.card_selector.get_selected_hand()
+
+            # Validate hand length matches game type
+            if (len(hand) == 4 and game == "NL"
+                    or len(hand) == 8 and game in ["PLO", "PLO8"]
+                    or len(hand) == 10 and game == "PLO5"):
+                self.output.update_output_frame(hand, position, tree_infos)
         except AttributeError as e:
             print(f"Error in update_output_frame: {e}")
-        except ValueError as e:
-            print(f"Invalid value: {e}")
+        except Exception as e:
+            print(f"Error: {e}")
+
+    def update_card_and_position_selector(self, tree_infos):
+        """Adapt card count and active positions based on the selected tree."""
+        num_players = tree_infos["plrs"]
+        game = tree_infos["game"]
+
+        if game in ["PLO", "PLO8"]:
+            self.card_selector.set_num_cards(4)
+        elif game in ["NL"]:
+            self.card_selector.set_num_cards(2)
+        elif game in ["PLO5"]:
+            self.card_selector.set_num_cards(5)
+        self.position_selector.update_active_positions(num_players)
 
     def _get_section_config(self, section):
-        """Helper to retrieve a configuration section as a dictionary."""
+        """Helper to retrieve a configuration section.
+        Returns the real config section if it exists, otherwise a dict of defaults."""
+        if section in self.configs:
+            return self.configs[section]
+        # Fallback defaults if section missing from config.ini
         default_configs = {
             "CardSelector": {
-                "NumCards": 4,
-                "ButtonHeight": 90,  # Further increase button height
-                "ButtonWidth": 50,
-                "ButtonPad": 5,
-                "Background": "white",
-                "BackgroundPressed": "gray50",
+                "NumCards": "4",
+                "ButtonPad": "5",
+                "Background": "#2c2c2c",
+                "BackgroundPressed": "#444444",
             },
             "PositionSelector": {
                 "PositionList": "X,UTG,MP,CO,BU,SB,BB",
                 "PositionInactive": "SB,BB",
-                "ButtonHeight": 3,
-                "ButtonWidth": 8,
-                "ButtonPad": 5,
-                "FontSize": 12,
-                "Font": "Arial",
-                "Background": "white",
-                "BackgroundPressed": "gray",
-                "DefaultPosition": 0,
+                "ButtonHeight": "30",
+                "ButtonWidth": "40",
+                "ButtonPad": "10",
+                "FontSize": "14",
+                "Font": "Helvetica",
+                "Background": "#2c2c2c",
+                "BackgroundPressed": "#444444",
+                "DefaultPosition": "0",
             },
             "TreeSelector": {
-                "NumTrees": 5,
-                "FontSize": 14,
+                "NumTrees": "5",
+                "FontSize": "12",
                 "Font": "Arial",
-                "DefaultTree": 0,
+                "DefaultTree": "0",
             },
             "TreeReader": {
                 "Positions": "BB,SB,BU,CO,MP,UTG",
             },
         }
-
-        defaults = default_configs.get(section, {})
-        if section in self.configs:
-            return {key: self.configs.get(section, key, fallback=defaults.get(key)) for key in defaults}
-        return defaults
+        return default_configs.get(section, {})
 
 
 if __name__ == "__main__":

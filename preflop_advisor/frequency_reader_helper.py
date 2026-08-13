@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 
-import os
-import sys
 import itertools
+import os
 import pickle
+import sys
 from configparser import ConfigParser
+
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
     QHBoxLayout,
     QLabel,
+    QMainWindow,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
-    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import Qt
 
 # Add the parent directory to sys.path to access the preflop_advisor module
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Import necessary modules from the preflop_advisor package
 from preflop_advisor.tree_reader_helpers import ActionProcessor
-from preflop_advisor.hand_convert_helper import convert_hand
 
 # Global constants
 RANKS = list("AKQJT98765432")

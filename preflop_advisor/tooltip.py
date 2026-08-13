@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
-import os
 import logging
-from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QWidget, QVBoxLayout
-from PySide6.QtCore import Qt, QPoint
+import os
+
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
 # Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -31,9 +32,21 @@ class CreateToolTip(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        # Check if the text is a path to an image
-        if os.path.exists(self.text):
+        # Check if the text is a path to an image (including relative / popup-pics fallback)
+        img_path = self.text
+        if not os.path.exists(img_path):
+            pkg_path = os.path.join(os.path.dirname(__file__), img_path)
+            if os.path.exists(pkg_path):
+                img_path = pkg_path
+            else:
+                basename = os.path.basename(img_path)
+                popup_path = os.path.join(os.path.dirname(__file__), "popup-pics", basename)
+                if os.path.exists(popup_path):
+                    img_path = popup_path
+
+        if os.path.exists(img_path) and any(img_path.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".bmp")) or os.path.exists(img_path):
             self.pic = True
+            self.text = img_path
 
         if not self.pic:
             # Text tooltip

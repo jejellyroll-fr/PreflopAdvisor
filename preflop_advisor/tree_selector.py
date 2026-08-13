@@ -1,26 +1,29 @@
 #!/usr/bin/env python3
 
-from configparser import ConfigParser
-from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QComboBox,
-    QLabel,
-    QApplication,
-    QMainWindow,
-    QSizePolicy,
-)
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QPixmap
+import logging
 import os
 import sys
-import logging
+from configparser import ConfigParser
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QLabel,
+    QMainWindow,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 # Logger configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Add the project directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+
+from preflop_advisor.tooltip import CreateToolTip
 
 
 class TreeSelector(QWidget):
@@ -32,6 +35,9 @@ class TreeSelector(QWidget):
         super().__init__(root)
         self.root = root  # Store the parent to access other components
         self.update_output = update_output
+        self.tree_tooltips = tree_tooltips or {}
+        self.enable_tooltips = tree_selector_settings.get("ToolTips", "NO").upper() == "YES"
+        self.current_tooltip = None
         self.num_trees = int(tree_selector_settings.get("NumTrees", 5))
         self.fontsize = int(tree_selector_settings.get("FontSize", 12))
         self.font = tree_selector_settings.get("Font", "Arial")
@@ -109,6 +115,7 @@ class TreeSelector(QWidget):
             infos = tree_infos[table].split(",")
             table_dic = {
                 "index": index,
+                "table_key": table,
                 "plrs": int(infos[0]),
                 "bb": int(infos[1]),
                 "game": infos[2],
@@ -130,40 +137,26 @@ class TreeSelector(QWidget):
         self.current_tree = self.trees[index]
         self.label.setText(f"Selected: {self.current_tree['game']} {self.current_tree['infos']}")
         logging.info("Selected tree: %s", self.current_tree)
+
+        # Update tooltip if enabled
+        if self.enable_tooltips and self.tree_tooltips and "table_key" in self.current_tree:
+            table_key = self.current_tree["table_key"]
+            tooltip_val = self.tree_tooltips.get(table_key, "")
+            if tooltip_val:
+                self.current_tooltip = CreateToolTip(self, tooltip_val)
+                self.dropdown.enterEvent = lambda event: self.current_tooltip.show_tooltip(self.dropdown) if self.current_tooltip else None
+                self.dropdown.leaveEvent = lambda event: self.current_tooltip.hide_tooltip() if self.current_tooltip else None
+            else:
+                self.current_tooltip = None
+
         self.tree_changed()
 
     def tree_changed(self):
         """
         Callback called when the selected tree changes.
         """
-        logging.info("Tree change detected.")
         if callable(self.update_output):
             self.update_output()
-
-        # Update the PositionSelector if available
-        if hasattr(self.root, "position_selector"):
-            num_players = self.current_tree["plrs"]
-
-            # Mapping of positions based on the number of players
-            positions_map = {
-                2: (["SB", "BB"], []),
-                3: (["BU", "SB", "BB"], []),
-                4: (["CO", "BU", "SB", "BB"], []),
-                5: (["MP", "CO", "BU", "SB", "BB"], []),
-                6: (["UTG", "MP", "CO", "BU", "SB", "BB"], ["SB", "BB"]),
-            }
-
-            positions, inactive_positions = positions_map.get(num_players, ([], []))
-
-            logging.info(
-                "Updating positions for %d players: positions = %s, inactive = %s",
-                num_players,
-                positions,
-                inactive_positions,
-            )
-
-            # Update positions
-            self.root.position_selector.update_active_positions(positions, inactive_positions)
 
     def get_tree_infos(self):
         """
@@ -174,17 +167,9 @@ class TreeSelector(QWidget):
         return self.current_tree
 
 
-# Class to simulate PositionSelector in tests
-class MockPositionSelector:
-    def update_active_positions(self, positions, inactive_positions):
-        logging.info("Positions updated: %s, inactive: %s", positions, inactive_positions)
-
-
-# Test class to replace MainWindow
 class MockMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.position_selector = MockPositionSelector()
 
 
 def test():

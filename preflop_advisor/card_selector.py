@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 
-import sys
-import os
 import logging
+import os
+import sys
+from configparser import ConfigParser
+
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
     QGridLayout,
+    QMainWindow,
     QPushButton,
     QSizePolicy,
+    QWidget,
 )
-from PySide6.QtGui import QFont
-from configparser import ConfigParser
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -180,6 +181,23 @@ class CardSelector(QWidget):
             hand += RANK_DIC[card[0]]
             hand += SUIT_DIC[card[1]]
         return hand
+
+    # Backward-compatible alias
+    get_hand = get_selected_hand
+
+    def set_num_cards(self, num_cards):
+        """
+        Changes the number of cards to select (2 for NL, 4 for PLO/PLO8, 5 for PLO5).
+        Resets current selection when num_cards changes.
+        """
+        if num_cards in (2, 4, 5) and num_cards != self.num_cards:
+            logging.info("Changing num_cards from %d to %d", self.num_cards, num_cards)
+            self.num_cards = num_cards
+            # Reset current selection
+            for item in self.selected_cards:
+                self.deselect_button(item)
+            self.selected_cards = []
+            self.selection_counter = 0
 
     def resizeEvent(self, event):
         """
