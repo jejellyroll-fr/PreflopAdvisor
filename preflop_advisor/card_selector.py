@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import theme
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,9 +40,9 @@ RANK_DIC = {
     12: "2",
 }
 SUIT_DIC = {0: "h", 1: "c", 2: "s", 3: "d"}
-SUIT_SIGN_DIC = {0: "\u2665", 1: "\u2663", 2: "\u2660", 3: "\u2666"}
-SUIT_COLORS = {"h": "red", "d": "blue", "c": "green", "s": "white"}
-BUTTON_FONT = QFont("Helvetica", 16, QFont.Bold)
+SUIT_SIGN_DIC = {index: theme.SUIT_SYMBOLS[suit] for index, suit in SUIT_DIC.items()}
+SUIT_COLORS = theme.SUIT_COLORS
+BUTTON_FONT = QFont(theme.FONT_FAMILY, 16, QFont.Bold)
 
 
 class CardSelector(QWidget):
@@ -56,8 +58,6 @@ class CardSelector(QWidget):
         self.num_cards = int(card_selector_settings.get("NumCards", 2))
         self.color_dict = SUIT_COLORS
         self.button_pad = int(card_selector_settings.get("ButtonPad", 5))
-        self.background = "#2c2c2c"
-        self.background_pressed = "#444444"
 
         # Container for buttons
         self.button_list = [[self.create_button(r, c) for r in range(NUM_ROWS)] for c in range(NUM_COLUMNS)]
@@ -89,21 +89,7 @@ class CardSelector(QWidget):
         """
         button = QPushButton(RANK_DIC[row] + SUIT_SIGN_DIC[column], self)
         button.setFont(BUTTON_FONT)
-        button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.background};
-                color: {SUIT_COLORS[SUIT_DIC[column]]};
-                border: 2px solid #555555;
-                border-radius: 10px;
-            }}
-            QPushButton:hover {{
-                background-color: #3c3c3c;
-            }}
-            QPushButton:pressed {{
-                background-color: {self.background_pressed};
-                border: 2px solid #777777;
-            }}
-        """)
+        button.setStyleSheet(theme.card_button_qss(SUIT_DIC[column]))
         button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         button.clicked.connect(self.on_button_clicked(row, column))
         logger.debug("Button created: %s%s", RANK_DIC[row], SUIT_SIGN_DIC[column])
@@ -132,10 +118,11 @@ class CardSelector(QWidget):
             self.selection_counter -= 1
             return
         if len(self.selected_cards) >= self.num_cards:
-            logger.warning("Limit reached, resetting selection")
-            for item in self.selected_cards:
-                self.deselect_button(item)
-            self.selected_cards = []
+            # Drop the oldest card rather than the whole hand: wiping every selection
+            # on one extra click meant re-picking all of them to fix a single mistake.
+            oldest = self.selected_cards.pop(0)
+            logger.debug("Selection full, replacing %s%s", RANK_DIC[oldest[0]], SUIT_DIC[oldest[1]])
+            self.deselect_button(oldest)
         self.selected_cards.append(button_index)
         logger.debug("Card selected: %s%s", RANK_DIC[row], SUIT_DIC[column])
         self.select_button(button_index)
@@ -148,24 +135,14 @@ class CardSelector(QWidget):
         Updates the style of the selected button.
         """
         button = self.button_list[button_index[1]][button_index[0]]
-        button.setStyleSheet(f"""
-            background-color: {self.background_pressed};
-            color: {SUIT_COLORS[SUIT_DIC[button_index[1]]]}; 
-            border: 2px solid #777777;
-            border-radius: 10px;
-        """)
+        button.setStyleSheet(theme.card_button_qss(SUIT_DIC[button_index[1]], selected=True))
 
     def deselect_button(self, button_index):
         """
         Updates the style of the deselected button.
         """
         button = self.button_list[button_index[1]][button_index[0]]
-        button.setStyleSheet(f"""
-            background-color: {self.background};
-            color: {SUIT_COLORS[SUIT_DIC[button_index[1]]]}; 
-            border: 2px solid #555555;
-            border-radius: 10px;
-        """)
+        button.setStyleSheet(theme.card_button_qss(SUIT_DIC[button_index[1]]))
 
     def new_hand(self):
         """

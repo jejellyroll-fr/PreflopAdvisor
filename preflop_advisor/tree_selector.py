@@ -45,7 +45,6 @@ class TreeSelector(QWidget):
 
         # Main layout
         self.layout = QVBoxLayout(self)
-        self.setStyleSheet("background-color: #1e1e1e; color: white;")  # Dark theme
 
         # Label to display the current selection
         self.label = QLabel("Select a Tree")
@@ -56,25 +55,6 @@ class TreeSelector(QWidget):
 
         # Create a dropdown list (QComboBox)
         self.dropdown = QComboBox()
-        self.dropdown.setStyleSheet(f"""
-            QComboBox {{
-                font-family: {self.font};
-                font-size: {self.fontsize}px;
-                background-color: #2c2c2c;
-                color: white;
-                border: 1px solid #555555;
-                border-radius: 5px;
-                padding: 5px;
-            }}
-            QComboBox::drop-down {{
-                border: 0px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #2c2c2c;
-                color: white;
-                selection-background-color: #444444;
-            }}
-        """)
         self.dropdown.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # Add options to the QComboBox

@@ -1,29 +1,23 @@
 #!/usr/bin/env python3
 
 import logging
-import os
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication,
     QGridLayout,
     QLabel,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
+from . import theme
 from .tree_reader import TreeReader
 
 logger = logging.getLogger(__name__)
 
-
-# Constants
-RESULT_ROWS = 7
-RESULT_COLUMNS = 8
-RESULT_HEIGHT = 80
-RESULT_WIDTH = 120
 
 # Monker exports EVs in chips where the big blind is worth 2000 -- folding in the BB is
 # reported as -2000, i.e. -1bb. Overridable through [Output] ChipsPerBB for trees
@@ -33,131 +27,141 @@ CHIPS_PER_BB = 2000.0
 # A TableEntry has two value slots (left and right).
 MAX_DISPLAYED_ACTIONS = 2
 
-INFO_FONT = QFont("Helvetica", 20)
-RESULT_FONT = QFont("Helvetica", 12)
+# Minimum readable cell size; cells grow beyond this to fill the available space.
+MIN_CELL_WIDTH = 96
+MIN_CELL_HEIGHT = 64
 
-SUIT_COLORS = {
-    "h": QColor("red"),
-    "d": QColor("blue"),
-    "c": QColor("green"),
-    "s": QColor("black"),
-}
-SUIT_SIGN_DIC = {"h": "\u2665", "c": "\u2663", "s": "\u2660", "d": "\u2666"}
+# Shown instead of an empty box, so "no data" is distinguishable from a rendering bug.
+EMPTY_CELL_TEXT = "—"
+
+SUIT_SIGN_DIC = theme.SUIT_SYMBOLS
+
+
+def short_action_label(action):
+    """Human-readable label for a Monker action key.
+
+    ``Raise100`` is the internal name of a sizing, not something a player reads. The
+    numeric part is the sizing percentage, so ``Raise75`` shows as ``R75``.
+    """
+    if not action:
+        return ""
+    key = action.strip()
+    if key.lower() == "all_in":
+        return "AI"
+    if key.lower() == "raisepot":
+        return "Rpot"
+    if key.lower().startswith("raise") and key[5:].isdigit():
+        return f"R{key[5:]}"
+    return key
 
 
 class TableEntry(QWidget):
-    """
-    Custom widget to display information in a table.
-    """
+    """One cell of the results grid: either a header label or up to two actions."""
 
-    def __init__(self, parent, width, height):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        logger.debug("Initializing a TableEntry widget")
 
-        # Set up the main layout
         self.layout = QGridLayout(self)
-        self.layout.setContentsMargins(5, 5, 5, 5)
-        self.layout.setSpacing(10)
+        self.layout.setContentsMargins(4, 4, 4, 4)
+        self.layout.setSpacing(3)
 
-        # Set the initial size
-        self.setFixedSize(width, height)
-
-        # Variables for texts
         self.info_text = QLabel("", self)
-        self.info_text.setFont(INFO_FONT)
         self.info_text.setAlignment(Qt.AlignCenter)
         self.info_text.setWordWrap(True)
 
         self.label_left = QLabel("", self)
-        self.label_left.setFont(RESULT_FONT)
         self.label_left.setAlignment(Qt.AlignCenter)
 
         self.label_right = QLabel("", self)
-        self.label_right.setFont(RESULT_FONT)
         self.label_right.setAlignment(Qt.AlignCenter)
 
-        # Add widgets to the layout
         self.layout.addWidget(self.info_text, 0, 0, 1, 2)
         self.layout.addWidget(self.label_left, 1, 0)
         self.layout.addWidget(self.label_right, 1, 1)
 
-        # Apply light grid theme
+        # Cells grow with the window instead of being pinned to a fixed pixel size.
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(MIN_CELL_WIDTH, MIN_CELL_HEIGHT)
+
         self.setStyleSheet(
-            """
-            QWidget {
-                border: 1px solid #d3d3d3;
-                border-radius: 5px;
-                background-color: 1e1e1e; 
-                color: black;
-            }
-            QLabel {
-                border: 1px solid #d3d3d3;
+            f"""
+            TableEntry {{
+                border: 1px solid {theme.BORDER};
+                border-radius: 6px;
+                background-color: {theme.SURFACE};
+            }}
+            QLabel {{
                 background-color: transparent;
-                color: grey;
-            }
+                color: {theme.TEXT_PRIMARY};
+                border: 0;
+            }}
             """
         )
-        logger.debug("TableEntry initialized with size %d x %d", width, height)
+        self.clear_entry()
+
+    def resizeEvent(self, event):
+        """Scales the fonts with the cell so the grid stays legible at any window size."""
+        width = self.width()
+        self.info_text.setFont(QFont(theme.FONT_FAMILY, max(9, min(20, width // 8))))
+        value_font = QFont(theme.FONT_FAMILY, max(7, min(12, width // 14)))
+        self.label_left.setFont(value_font)
+        self.label_right.setFont(value_font)
+        super().resizeEvent(event)
 
     def set_description_label(self, text=""):
-        """
-        Updates the description displayed in the main field.
-        """
+        """Renders the cell as a row or column header."""
+        self.clear_entry()
         self.info_text.setText(text)
-        self.info_text.show()
-        logger.debug("Description updated: %s", text)
+        self.info_text.setStyleSheet(f"color: {theme.TEXT_SECONDARY}; font-weight: bold;")
 
-    def set_result_label(self, results):
-        """
-        Displays formatted results on the left and right sides with conditional coloring.
-        """
-        logger.debug("Configuring results: %s", results)
-        # Clear previous texts
-        self.label_left.setText("")
-        self.label_right.setText("")
-        self.label_left.setStyleSheet("")
-        self.label_right.setStyleSheet("")
+    def set_result_label(self, results, tooltip="", highlight=None):
+        """Renders up to two actions, tinted by frequency and coloured by EV.
 
-        def apply_style(label, value):
-            try:
-                numeric_value = float(value)
-                if numeric_value > 0:
-                    label.setStyleSheet("background-color: #90EE90; color: black;")  # Vert clair
-                elif numeric_value < 0:
-                    label.setStyleSheet("background-color: #FF6347; color: black;")  # Rouge tomate
-                else:
-                    label.setStyleSheet("background-color: #e0e0e0; color: black;")  # Neutre
-            except ValueError:
-                label.setStyleSheet("background-color: #e0e0e0; color: black;")  # Neutre en cas de non numérique
+        The tint carries the frequency, which is the figure a player scans for: a line
+        played 5% of the time stays faint, a pure line reads at full strength. EV keeps
+        the red/green semantics, on the EV column itself -- it used to be applied to the
+        frequency, which is never negative, so every non-zero cell came out green.
 
-        if len(results) == 1:
-            # Display the result on the right side
-            self.label_right.setText(self.convert_result_to_str(results[0]))
-            apply_style(self.label_right, results[0][1])
-        elif len(results) == 2:
-            # Display results on both sides
-            self.label_left.setText(self.convert_result_to_str(results[0]))
-            apply_style(self.label_left, results[0][1])
-            self.label_right.setText(self.convert_result_to_str(results[1]))
-            apply_style(self.label_right, results[1][1])
+        ``highlight`` is the action the current randomizer roll selects, if any.
+        """
+        self.clear_entry()
+        self.setToolTip(tooltip)
 
-    def convert_result_to_str(self, result):
-        """
-        Converts a list or tuple into a multi-line string.
-        """
-        return "\n".join(result)
+        if not results:
+            self.info_text.setText(EMPTY_CELL_TEXT)
+            self.info_text.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+            return
+
+        for label, entry in zip((self.label_left, self.label_right), results):
+            self._render_action(label, entry, selected=highlight is not None and entry[0] == highlight)
+
+    def _render_action(self, label, entry, selected=False):
+        action, frequency, ev = entry
+        try:
+            share = float(frequency) / 100.0
+        except (TypeError, ValueError):
+            share = 0.0
+
+        # Keep a floor so a 0%-but-available action is still visible as an option.
+        background = theme.blend(theme.action_color(action), theme.SURFACE, 0.15 + 0.65 * share)
+        border = theme.TEXT_PRIMARY if selected else theme.ev_color(ev)
+        label.setText(f"{short_action_label(action)}\n{frequency}%\n{ev}")
+        label.setStyleSheet(
+            f"""
+            background-color: {background};
+            color: {theme.TEXT_PRIMARY};
+            border: {"2px" if selected else "1px"} solid {border};
+            border-radius: 4px;
+            padding: 2px;
+            """
+        )
 
     def clear_entry(self):
-        """
-        Resets all fields and styles.
-        """
-        logger.debug("Resetting the TableEntry widget")
-        self.info_text.setText("")
-        self.label_left.setText("")
-        self.label_right.setText("")
-
-        self.label_left.setStyleSheet("")
-        self.label_right.setStyleSheet("")
+        """Resets all fields and styles."""
+        self.setToolTip("")
+        for label in (self.info_text, self.label_left, self.label_right):
+            label.setText("")
+            label.setStyleSheet("")
 
 
 class OutputFrame(QWidget):
@@ -171,13 +175,14 @@ class OutputFrame(QWidget):
         # Info frame
         self.info_frame = QWidget(self)
         self.general_infos_label = QLabel("", self.info_frame)
-        self.general_infos_label.setFont(INFO_FONT)
-        # Layout for info_frame
+        self.general_infos_label.setFont(QFont(theme.FONT_FAMILY, 13))
         self.info_layout = QGridLayout(self.info_frame)
-        self.info_layout.addWidget(self.general_infos_label, 0, 5)
+        self.info_layout.setContentsMargins(4, 4, 4, 4)
 
         self.card_labels_list = []
         self.card_labels()
+        self.info_layout.addWidget(self.general_infos_label, 0, len(self.card_labels_list))
+        self.info_layout.setColumnStretch(len(self.card_labels_list), 1)
 
         self.update_info_frame(hand="", position="", treeinfo="")
 
@@ -186,92 +191,152 @@ class OutputFrame(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.output_frame = QWidget()
         self.output_layout = QGridLayout(self.output_frame)
+        self.output_layout.setSpacing(3)
+        self.output_layout.setContentsMargins(3, 3, 3, 3)
         self.scroll_area.setWidget(self.output_frame)
 
-        # Create the results grid
-        self.table_entries = [[None for _ in range(RESULT_COLUMNS)] for _ in range(RESULT_ROWS)]
-        self.create_result_grid()
+        # The grid is built to fit each result set; nothing is allocated up front.
+        self.table_entries = []
 
-        # Main layout
+        # Latest randomizer roll, and enough state to re-render without re-reading the
+        # ranges when only the roll changes.
+        self.roll = None
+        self._last_render = None
+
         self.main_layout = QVBoxLayout(self)
         self.main_layout.addWidget(self.info_frame)
         self.main_layout.addWidget(self.scroll_area)
 
+    # ------------------------------------------------------------------
+    # Header
+    # ------------------------------------------------------------------
+
     def card_labels(self):
-        logger.debug("Initializing card labels")
         self.card_labels_list = []
         for i in range(5):
             label = QLabel("", self.info_frame)
-            label.setFont(INFO_FONT)
+            label.setFont(QFont(theme.FONT_FAMILY, 20, QFont.Bold))
             label.setAlignment(Qt.AlignCenter)
             self.card_labels_list.append(label)
             self.info_layout.addWidget(label, 0, i)
-        logger.debug("Card labels initialized")
 
     def set_card_label(self, hand):
-        logger.debug("Updating card labels with hand: %s", hand)
         hand_remaining = hand
         for label in self.card_labels_list:
-            if len(hand_remaining) == 0:
+            if not hand_remaining:
                 label.setText("")
-            else:
-                card = hand_remaining[0:2]
-                suit = card[1]
-                label.setStyleSheet(f"color: {SUIT_COLORS[suit].name()}")
-                label.setText(card[0] + SUIT_SIGN_DIC[suit])
-                hand_remaining = hand_remaining[2:]
-        logger.debug("Card labels updated")
+                label.setStyleSheet("")
+                continue
+            card, hand_remaining = hand_remaining[0:2], hand_remaining[2:]
+            suit = card[1]
+            label.setStyleSheet(f"color: {theme.SUIT_COLORS[suit]};")
+            label.setText(card[0] + theme.SUIT_SYMBOLS[suit])
 
     def update_info_frame(self, hand, position, treeinfo):
-        logger.debug("Updating info frame")
         self.set_card_label(hand)
-        text = f"   Position: {position}   {treeinfo}"
-        self.general_infos_label.setText(text)
-        logger.debug("Info frame updated with: %s", text)
+        self.general_infos_label.setText(f"   Position: {position}   {treeinfo}")
+
+    # ------------------------------------------------------------------
+    # Results grid
+    # ------------------------------------------------------------------
+
+    def set_roll(self, value):
+        """Applies a randomizer roll and re-highlights the selected actions."""
+        self.roll = value
+        if self._last_render is not None:
+            self.render_results(*self._last_render)
+
+    def action_for_roll(self, results):
+        """Action a mixed strategy resolves to for the current roll.
+
+        Walks the node's cumulative frequencies, folding included, so a roll of 25 on a
+        Fold 30% / Call 70% node correctly comes out as a fold.
+        """
+        if self.roll is None or not results:
+            return None
+        cumulative = 0.0
+        for action, frequency, _ in results:
+            cumulative += frequency * 100
+            if self.roll < cumulative:
+                return action
+        return results[-1][0]
 
     def update_output_frame(self, hand, position, tree):
         logger.debug("Updating output frame")
         tree_reader = TreeReader(hand, position, tree, self.tree_reader_configs)
         results = tree_reader.get_results()
-        logger.debug("Results obtained: %s", results)
 
         tree_infos = f"{tree['plrs']}-max {tree['bb']}bb {tree['game']} {tree['infos']}"
+        self._last_render = (results, hand, position, tree_infos)
+        self.render_results(results, hand, position, tree_infos)
+
+    def render_results(self, results, hand, position, tree_infos):
+        """Paints a result grid; separated from reading so a roll can re-render cheaply."""
         self.update_info_frame(hand, position, tree_infos)
 
-        # Clear previous entries
-        for row in range(RESULT_ROWS):
-            for column in range(RESULT_COLUMNS):
-                self.table_entries[row][column].clear_entry()
+        rows = len(results)
+        columns = max((len(row) for row in results), default=0)
+        self.create_result_grid(rows, columns)
 
-        # Update with new results
-        for row in range(len(results)):
-            for column in range(len(results[0])):
-                if results[row][column]["isInfo"]:
-                    self.table_entries[row][column].set_description_label(results[row][column]["Text"])
+        for row_index, row in enumerate(results):
+            for column_index in range(columns):
+                entry = self.table_entries[row_index][column_index]
+                if column_index >= len(row):
+                    entry.clear_entry()
+                    continue
+                cell = row[column_index]
+                if cell["isInfo"]:
+                    entry.set_description_label(cell["Text"])
                 else:
-                    self.table_entries[row][column].set_result_label(
-                        self.preprocess_results(results[row][column]["Results"])
+                    entry.set_result_label(
+                        self.preprocess_results(cell["Results"]),
+                        tooltip=self.describe_cell(results, row_index, column_index),
+                        highlight=self.action_for_roll(cell["Results"]),
                     )
-        logger.debug("Output frame updated")
+        logger.debug("Output frame updated: %dx%d", rows, columns)
 
-    def create_result_grid(self):
-        logger.debug("Creating results grid")
-        for row in range(RESULT_ROWS):
-            for column in range(RESULT_COLUMNS):
-                table_entry = TableEntry(self.output_frame, RESULT_WIDTH, RESULT_HEIGHT)
-                self.table_entries[row][column] = table_entry
-                self.output_layout.addWidget(table_entry, row, column)
+    def create_result_grid(self, rows, columns):
+        """Builds the grid to the size of the current result set.
 
-        # Apply grid lines style
-        self.output_frame.setStyleSheet(
-            """
-            QWidget {
-                border: 1px solid #d3d3d3;
-                background-color: #3c3c3c; 
-            }
-            """
-        )
-        logger.debug("Results grid created")
+        The grid used to be a fixed 7x8: heads-up left 53 of 56 cells empty, and any
+        configuration with more than six seats raised IndexError.
+        """
+        if len(self.table_entries) == rows and all(len(row) == columns for row in self.table_entries):
+            for row in self.table_entries:
+                for entry in row:
+                    entry.clear_entry()
+            return
+
+        while self.output_layout.count():
+            item = self.output_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self.table_entries = []
+        for row_index in range(rows):
+            row_entries = []
+            for column_index in range(columns):
+                entry = TableEntry(self.output_frame)
+                self.output_layout.addWidget(entry, row_index, column_index)
+                row_entries.append(entry)
+            self.table_entries.append(row_entries)
+            self.output_layout.setRowStretch(row_index, 1)
+        for column_index in range(columns):
+            self.output_layout.setColumnStretch(column_index, 1)
+
+        logger.debug("Results grid created: %dx%d", rows, columns)
+
+    def describe_cell(self, results, row_index, column_index):
+        """Tooltip naming the scenario a cell stands for.
+
+        The grid is dense and its axes are abbreviated; spelling out "4bet / vs BU" on
+        hover removes the guesswork about which spot is being read.
+        """
+        row_label = results[row_index][0].get("Text", "") if results[row_index][0]["isInfo"] else ""
+        header = results[0] if results else []
+        column_label = header[column_index].get("Text", "") if column_index < len(header) else ""
+        parts = [part for part in (row_label, column_label) if part]
+        return " / ".join(parts)
 
     def preprocess_results(self, results):
         """Formats solver results for display: frequency in %, EV in big blinds.
@@ -282,7 +347,6 @@ class OutputFrame(QWidget):
         soon as a node had no Fold file: the first real action was consumed as the fold
         baseline and disappeared from the display.
         """
-        logger.debug("Preprocessing results: %s", results)
         if not results:
             return []
 
@@ -308,42 +372,3 @@ class OutputFrame(QWidget):
             ]
             for action, frequency, ev in displayed[:MAX_DISPLAYED_ACTIONS]
         ]
-
-
-def test():
-    from configparser import ConfigParser
-
-    app = QApplication([])
-
-    logger.debug("Starting OutputFrame test")
-
-    configs = ConfigParser()
-    config_path = os.path.dirname(__file__)
-    configs.read(os.path.join(config_path, "config.ini"))
-
-    output_configs = configs["Output"] if configs.has_section("Output") else {}
-    tree_reader_configs = configs["TreeReader"] if configs.has_section("TreeReader") else {}
-
-    # Create a test tree
-    tree = {
-        "plrs": 2,
-        "bb": 100,
-        "game": "Omaha",
-        "infos": "Test Game",
-        "folder": "./ranges/HU-100bb-with-limp",
-    }
-
-    # Create the OutputFrame
-    output_frame = OutputFrame(None, output_configs, tree_reader_configs)
-
-    # Call update_output_frame with test data
-    output_frame.update_output_frame("AsKhTs9h", "X", tree)
-
-    output_frame.show()
-
-    app.exec()
-    logger.debug("OutputFrame test completed")
-
-
-if __name__ == "__main__":
-    test()

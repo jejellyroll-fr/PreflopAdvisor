@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import theme
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,18 +66,7 @@ class PositionSelector(QWidget):
         button = QPushButton(self.position_list[row], self)
         button.setFixedSize(self.button_width, self.button_height)
         button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.background};
-                color: white;
-                border: 1px solid #555555;
-                border-radius: 5px;
-                font-size: {self.fontsize}px;
-            }}
-            QPushButton:pressed {{
-                background-color: {self.background_pressed};
-            }}
-        """)
+        button.setStyleSheet(theme.position_button_qss(font_size=self.fontsize))
         button.clicked.connect(self.on_button_clicked(row))
         self.layout.addWidget(button)
         logger.debug("Button created for %s", self.position_list[row])
@@ -111,32 +102,14 @@ class PositionSelector(QWidget):
         Deselects a button.
         """
         logger.debug("Deselecting button: %s", self.position_list[row])
-        button = self.button_list[row]
-        button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.background};
-                color: white;
-                border: 1px solid #555555;
-                border-radius: 5px;
-                font-size: {self.fontsize}px;
-            }}
-        """)
+        self.button_list[row].setStyleSheet(theme.position_button_qss(selected=False, font_size=self.fontsize))
 
     def select_button(self, row):
         """
         Selects a button.
         """
         logger.debug("Selecting button: %s", self.position_list[row])
-        button = self.button_list[row]
-        button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.background_pressed};
-                color: white;
-                border: 1px solid #777777;
-                border-radius: 5px;
-                font-size: {self.fontsize}px;
-            }}
-        """)
+        self.button_list[row].setStyleSheet(theme.position_button_qss(selected=True, font_size=self.fontsize))
 
     def position_changed(self):
         """

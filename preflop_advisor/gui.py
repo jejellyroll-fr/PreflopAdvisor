@@ -84,6 +84,9 @@ class MainWindow(QMainWindow):
         self.card_selector.handChanged.connect(self.on_selection_changed)
         self.position_selector.positionChanged.connect(self.on_selection_changed)
         self.tree_selector.treeChanged.connect(self.on_selection_changed)
+        # A roll only changes which action is highlighted, so it re-renders the existing
+        # results rather than re-reading the ranges.
+        self.rand_button.rollChanged.connect(self.output.set_roll)
 
         # Assemble layouts
         self.assemble_layouts()

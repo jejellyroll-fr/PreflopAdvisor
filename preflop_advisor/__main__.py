@@ -6,6 +6,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from . import theme
 from .gui import MainWindow
 
 
@@ -39,6 +40,7 @@ def main():
     configure_logging(args.verbose)
 
     app = QApplication([sys.argv[0], *qt_args])
+    app.setStyleSheet(theme.APPLICATION_QSS)
     ui = MainWindow()
     ui.show()
     sys.exit(app.exec())

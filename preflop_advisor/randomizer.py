@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
 import logging
-import os
 from configparser import ConfigParser
 from random import randint
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -14,136 +13,90 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import theme
+
 logger = logging.getLogger(__name__)
 
 
 class RandomButton(QWidget):
+    """Draws a number in 0..99 to play a mixed strategy.
+
+    Solver strategies are mixed: a spot may be a raise 60% of the time and a call 40%.
+    The draw is how a player picks a single action while respecting those frequencies --
+    compare the roll against the cumulative frequencies of the node. The widget used to
+    display a number and nothing consumed it, so the frequencies had to be applied by
+    eye; it now emits the roll so the grid can mark which action it selects.
     """
-    Widget containing a button that displays a random number when clicked.
-    """
+
+    rollChanged = Signal(int)
 
     def __init__(self, root, config):
         super().__init__(root)
 
-        # Retrieve configurations
-        self.fontsize = int(config.get("FontSize", 12))  # Font size
-        self.font = config.get("Font", "Arial")  # Font family
-        self.background = config.get("Background", "#2c2c2c")  # Dark background color
-        self.text_color = config.get("TextColor", "white")  # Text color
-        self.background_hover = config.get("BackgroundHover", "#444444")  # Background on hover
-        self.background_pressed = config.get("BackgroundPressed", "#555555")  # Background on press
+        self.fontsize = int(config.get("FontSize", 12))
+        self.value = None
 
-        logger.debug(
-            "Initializing RandomButton with FontSize=%d, Font=%s, Background=%s",
-            self.fontsize,
-            self.font,
-            self.background,
-        )
-
-        # Create the main layout
         self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(4, 4, 4, 4)
 
-        # Create the button with custom styling
-        self.button = QPushButton("100")  # Default value
+        self.button = QPushButton("Roll")
         self.button.setStyleSheet(f"""
             QPushButton {{
-                background-color: {self.background};
-                color: {self.text_color};
-                border: 1px solid #AAAAAA;
+                background-color: {theme.SURFACE};
+                color: {theme.TEXT_PRIMARY};
+                border: 1px solid {theme.BORDER};
                 border-radius: 5px;
                 font-size: {self.fontsize}px;
-                font-family: {self.font};
+                font-family: {theme.FONT_FAMILY};
             }}
             QPushButton:hover {{
-                background-color: {self.background_hover};
+                background-color: {theme.SURFACE_RAISED};
             }}
             QPushButton:pressed {{
-                background-color: {self.background_pressed};
+                background-color: {theme.SURFACE_PRESSED};
             }}
         """)
-        self.button.clicked.connect(self.on_button_clicked)  # Connect button click to action
+        self.button.setToolTip("Draw a number to pick one action from a mixed strategy")
+        self.button.clicked.connect(self.roll)
 
-        # Add the button to the main layout
         self.layout.addWidget(self.button, alignment=Qt.AlignCenter)
 
-        logger.debug("RandomButton initialized successfully")
+    def roll(self):
+        """Draws a new number and announces it."""
+        self.value = randint(0, 99)
+        self.button.setText(str(self.value))
+        logger.debug("Rolled %d", self.value)
+        self.rollChanged.emit(self.value)
+        return self.value
 
-    def on_button_clicked(self):
-        """
-        Updates the button text with a random number between 0 and 100.
-        """
-        new_value = randint(0, 100)
-        self.button.setText(str(new_value))
-        logger.debug("Button clicked, new value: %d", new_value)
+    # Kept for the previous name used by the click handler.
+    on_button_clicked = roll
 
     def resizeEvent(self, event):
-        """
-        Handles resizing of the button to adapt to the parent widget's size.
-        """
-        button_width = self.size().width() * 0.8  # 80% of the parent widget's width
-        button_height = self.size().height() * 0.4  # 40% of the parent widget's height
-        self.button.setFixedSize(
-            max(50, int(button_width)), max(30, int(button_height))
-        )  # Minimum size to avoid being too small
-        logger.debug(
-            "ResizeEvent triggered, button resized to: %dx%d", max(50, int(button_width)), max(30, int(button_height))
-        )
+        """Handles resizing of the button to adapt to the parent widget's size."""
+        button_width = self.size().width() * 0.8
+        button_height = self.size().height() * 0.4
+        self.button.setFixedSize(max(50, int(button_width)), max(30, int(button_height)))
         super().resizeEvent(event)
 
 
 def test():
-    """
-    Test function to launch the application and verify the behavior of RandomButton.
-    """
-    logger.debug("Starting test application")
+    """Launches the widget on its own to check its behaviour."""
     app = QApplication([])
 
-    # Load configurations
-    config_path = os.path.join(os.path.dirname(__file__), "config.ini")
     configs = ConfigParser()
+    settings = configs["PositionSelector"] if configs.has_section("PositionSelector") else {}
 
-    # Create config.ini file if it doesn't exist
-    if not os.path.exists(config_path):
-        with open(config_path, "w") as f:
-            f.write("""
-[PositionSelector]
-ButtonHeight=3
-ButtonWidth=8
-ButtonPad=5
-FontSize=14
-Font=Arial
-Background=#2c2c2c
-TextColor=white
-BackgroundHover=#444444
-BackgroundPressed=#555555
-            """)
-        logger.warning("Configuration file created at: %s", config_path)
-
-    configs.read(config_path)
-
-    # Check if the PositionSelector section exists
-    if "PositionSelector" not in configs:
-        logger.error("Section 'PositionSelector' not found in configuration file.")
-        return
-
-    settings = configs["PositionSelector"]
-    logger.debug("Loaded configurations: %s", dict(settings))
-
-    # Main window to test the button
     window = QMainWindow()
     rand_button = RandomButton(window, settings)
+    rand_button.rollChanged.connect(lambda value: print("rolled", value))
     window.setCentralWidget(rand_button)
-    window.setWindowTitle("Random Button Test - Dark Theme")
-    window.resize(400, 200)  # Initial window size
-
-    # Apply dark theme to the main window
-    window.setStyleSheet("background-color: #121212; color: white;")
-
-    logger.debug("Main window initialized and displayed")
+    window.setWindowTitle("Random Button Test")
+    window.resize(400, 200)
+    window.setStyleSheet(theme.APPLICATION_QSS)
     window.show()
 
     app.exec()
-    logger.debug("Test application terminated")
 
 
 if __name__ == "__main__":

@@ -26,7 +26,13 @@ class TreeReader:
         """
         logger.debug("Initializing TreeReader for hand: %s and position: %s", hand, position)
 
-        self.full_position_list = [pos.strip() for pos in configs["Positions"].split(",")]
+        # ConfigParser lowercases option names, plain dicts do not. ActionProcessor
+        # normalizes the same way; doing it here too means either kind of mapping works.
+        settings = {str(key).lower(): value for key, value in dict(configs).items()}
+        positions = settings.get("positions")
+        if positions is None:
+            raise KeyError("Positions missing from the TreeReader configuration")
+        self.full_position_list = [pos.strip() for pos in positions.split(",")]
         self.position_list = []
         self.num_players = int(tree_infos.get("plrs", len(self.full_position_list)))  # Ensure it's an integer
         self.init_position_list(self.num_players, self.full_position_list)
