@@ -5,13 +5,22 @@ import os
 from collections import OrderedDict
 from configparser import ConfigParser
 
-from preflop_advisor.errors import InvalidRaiseSizing
-from preflop_advisor.hand_convert_helper import convert_hand
+from .errors import InvalidRaiseSizing
+from .hand_convert_helper import convert_hand
+from .paths import resolve_range_folder
 
 logger = logging.getLogger(__name__)
 
-# Global cache for file reads
+#: Shared across processors that read the same tree, so switching position or hand does
+#: not re-read files. Keyed by absolute file path; entries are evicted least-recently
+#: inserted first. Call :func:`clear_cache` when the range files change on disk.
 CACHE = OrderedDict()
+
+
+def clear_cache():
+    """Drop every cached range file."""
+    CACHE.clear()
+
 
 # Default Monker codes, used when the configuration does not supply them.
 DEFAULT_ACTION_CODES = {
@@ -45,19 +54,10 @@ class ActionProcessor:
         self.position_list = position_list
         self.tree_infos = tree_infos
         self.configs = configs
-        self.path = tree_infos["folder"]
-        if not os.path.isdir(self.path):
-            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-            candidate = os.path.join(project_root, self.path)
-            if os.path.isdir(candidate):
-                self.path = candidate
-                self.tree_infos["folder"] = self.path
-            else:
-                basename = os.path.basename(self.path.rstrip("/\\"))
-                candidate2 = os.path.join(project_root, "ranges", basename)
-                if os.path.isdir(candidate2):
-                    self.path = candidate2
-                    self.tree_infos["folder"] = self.path
+        # A missing folder is not fatal here: the node index simply comes back empty and
+        # every cell reads as unavailable. TreeReader is the layer that refuses to build.
+        self.path = resolve_range_folder(tree_infos["folder"]) or tree_infos["folder"]
+        self.tree_infos["folder"] = self.path
 
         # ConfigParser lowercases option names while the rest of the code writes them in
         # CamelCase. Normalize once here rather than depending on the exact type of
@@ -370,12 +370,12 @@ def test():
     """
     Test function for ActionProcessor.
     """
-    logging.info("Starting test for ActionProcessor.")
+    logger.debug("Starting test for ActionProcessor.")
     config = ConfigParser()
     config.read("config.ini")
 
     if "TreeReader" not in config:
-        logging.error("'TreeReader' section missing in config.ini")
+        logger.error("'TreeReader' section missing in config.ini")
         return
 
     configs = config["TreeReader"]
@@ -386,7 +386,7 @@ def test():
     test_folder = tree_infos["folder"]
     if not os.path.exists(test_folder):
         os.makedirs(test_folder)
-        logging.info("Test folder created: %s", test_folder)
+        logger.debug("Test folder created: %s", test_folder)
 
     # Create a test file
     test_file = os.path.join(test_folder, "0.1.rng")
@@ -396,18 +396,18 @@ def test():
     # Initialize and read
     action_processor = ActionProcessor(position_list, tree_infos, configs)
     result = action_processor.read_file_into_hash(test_file)
-    logging.info("Content of the read file: %s", result)
+    logger.debug("Content of the read file: %s", result)
 
     # Test retrieving results
     action_list = [("SB", "Raise"), ("BB", "Call")]
     hand = "AhKs"
     results = action_processor.get_results(hand, action_list, "BB")
     for res in results:
-        logging.info("Result: %s", res)
+        logger.debug("Result: %s", res)
 
     # Cleanup after test
     os.remove(test_file)
-    logging.info("Test completed. Test file removed.")
+    logger.debug("Test completed. Test file removed.")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 
 import logging
 import os
-import sys
 from configparser import ConfigParser
 from random import randint
 
@@ -15,11 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Logger configuration
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-# Add the project directory to sys.path for relative imports
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+logger = logging.getLogger(__name__)
 
 
 class RandomButton(QWidget):
@@ -38,7 +33,7 @@ class RandomButton(QWidget):
         self.background_hover = config.get("BackgroundHover", "#444444")  # Background on hover
         self.background_pressed = config.get("BackgroundPressed", "#555555")  # Background on press
 
-        logging.info(
+        logger.debug(
             "Initializing RandomButton with FontSize=%d, Font=%s, Background=%s",
             self.fontsize,
             self.font,
@@ -71,7 +66,7 @@ class RandomButton(QWidget):
         # Add the button to the main layout
         self.layout.addWidget(self.button, alignment=Qt.AlignCenter)
 
-        logging.info("RandomButton initialized successfully")
+        logger.debug("RandomButton initialized successfully")
 
     def on_button_clicked(self):
         """
@@ -79,7 +74,7 @@ class RandomButton(QWidget):
         """
         new_value = randint(0, 100)
         self.button.setText(str(new_value))
-        logging.info("Button clicked, new value: %d", new_value)
+        logger.debug("Button clicked, new value: %d", new_value)
 
     def resizeEvent(self, event):
         """
@@ -90,7 +85,7 @@ class RandomButton(QWidget):
         self.button.setFixedSize(
             max(50, int(button_width)), max(30, int(button_height))
         )  # Minimum size to avoid being too small
-        logging.debug(
+        logger.debug(
             "ResizeEvent triggered, button resized to: %dx%d", max(50, int(button_width)), max(30, int(button_height))
         )
         super().resizeEvent(event)
@@ -100,7 +95,7 @@ def test():
     """
     Test function to launch the application and verify the behavior of RandomButton.
     """
-    logging.info("Starting test application")
+    logger.debug("Starting test application")
     app = QApplication([])
 
     # Load configurations
@@ -122,17 +117,17 @@ TextColor=white
 BackgroundHover=#444444
 BackgroundPressed=#555555
             """)
-        logging.warning("Configuration file created at: %s", config_path)
+        logger.warning("Configuration file created at: %s", config_path)
 
     configs.read(config_path)
 
     # Check if the PositionSelector section exists
     if "PositionSelector" not in configs:
-        logging.error("Section 'PositionSelector' not found in configuration file.")
+        logger.error("Section 'PositionSelector' not found in configuration file.")
         return
 
     settings = configs["PositionSelector"]
-    logging.info("Loaded configurations: %s", dict(settings))
+    logger.debug("Loaded configurations: %s", dict(settings))
 
     # Main window to test the button
     window = QMainWindow()
@@ -144,11 +139,11 @@ BackgroundPressed=#555555
     # Apply dark theme to the main window
     window.setStyleSheet("background-color: #121212; color: white;")
 
-    logging.info("Main window initialized and displayed")
+    logger.debug("Main window initialized and displayed")
     window.show()
 
     app.exec()
-    logging.info("Test application terminated")
+    logger.debug("Test application terminated")
 
 
 if __name__ == "__main__":

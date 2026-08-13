@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Logging configuration
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
 
 # Constants
 NUM_ROWS = 13
@@ -50,10 +50,9 @@ class CardSelector(QWidget):
 
     handChanged = Signal(str)
 
-    def __init__(self, card_selector_settings, update_output=None):
+    def __init__(self, card_selector_settings):
         super().__init__()
-        logging.info("Initializing CardSelector")
-        self.update_output = update_output
+        logger.debug("Initializing CardSelector")
         self.num_cards = int(card_selector_settings.get("NumCards", 2))
         self.color_dict = SUIT_COLORS
         self.button_pad = int(card_selector_settings.get("ButtonPad", 5))
@@ -67,7 +66,7 @@ class CardSelector(QWidget):
         self.selection_counter = 0
 
         self.init_ui()
-        logging.info("CardSelector initialized with a maximum of %d cards to select", self.num_cards)
+        logger.debug("CardSelector initialized with a maximum of %d cards to select", self.num_cards)
 
     def init_ui(self):
         """
@@ -82,7 +81,7 @@ class CardSelector(QWidget):
                 layout.addWidget(self.button_list[col][row], row, col)
 
         self.setLayout(layout)
-        logging.info("User interface initialized")
+        logger.debug("User interface initialized")
 
     def create_button(self, row, column):
         """
@@ -107,7 +106,7 @@ class CardSelector(QWidget):
         """)
         button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         button.clicked.connect(self.on_button_clicked(row, column))
-        logging.debug("Button created: %s%s", RANK_DIC[row], SUIT_SIGN_DIC[column])
+        logger.debug("Button created: %s%s", RANK_DIC[row], SUIT_SIGN_DIC[column])
         return button
 
     def on_button_clicked(self, row, column):
@@ -116,7 +115,7 @@ class CardSelector(QWidget):
         """
 
         def event_handler():
-            logging.info("Button clicked: %s%s", RANK_DIC[row], SUIT_DIC[column])
+            logger.debug("Button clicked: %s%s", RANK_DIC[row], SUIT_DIC[column])
             self.process_button_clicked(row, column)
 
         return event_handler
@@ -127,21 +126,21 @@ class CardSelector(QWidget):
         """
         button_index = [row, column]
         if button_index in self.selected_cards:
-            logging.info("Card deselected: %s%s", RANK_DIC[row], SUIT_DIC[column])
+            logger.debug("Card deselected: %s%s", RANK_DIC[row], SUIT_DIC[column])
             self.deselect_button(button_index)
             self.selected_cards.remove(button_index)
             self.selection_counter -= 1
             return
         if len(self.selected_cards) >= self.num_cards:
-            logging.warning("Limit reached, resetting selection")
+            logger.warning("Limit reached, resetting selection")
             for item in self.selected_cards:
                 self.deselect_button(item)
             self.selected_cards = []
         self.selected_cards.append(button_index)
-        logging.info("Card selected: %s%s", RANK_DIC[row], SUIT_DIC[column])
+        logger.debug("Card selected: %s%s", RANK_DIC[row], SUIT_DIC[column])
         self.select_button(button_index)
         if len(self.selected_cards) == self.num_cards:
-            logging.info("Maximum number of cards selected, creating a new hand")
+            logger.debug("Maximum number of cards selected, creating a new hand")
             self.new_hand()
 
     def select_button(self, button_index):
@@ -170,13 +169,11 @@ class CardSelector(QWidget):
 
     def new_hand(self):
         """
-        Calls the update_output function and emits handChanged signal to pass the selected cards.
+        Emits handChanged with the selected cards.
         """
         hand = self.get_selected_hand()
-        logging.info("New hand generated: %s", hand)
+        logger.debug("New hand generated: %s", hand)
         self.handChanged.emit(hand)
-        if callable(self.update_output):
-            self.update_output()
 
     def get_selected_hand(self):
         """
@@ -197,7 +194,7 @@ class CardSelector(QWidget):
         Resets current selection when num_cards changes.
         """
         if num_cards in (2, 4, 5) and num_cards != self.num_cards:
-            logging.info("Changing num_cards from %d to %d", self.num_cards, num_cards)
+            logger.debug("Changing num_cards from %d to %d", self.num_cards, num_cards)
             self.num_cards = num_cards
             # Reset current selection
             for item in self.selected_cards:
@@ -225,41 +222,42 @@ class CardSelector(QWidget):
             for row in range(NUM_ROWS):
                 button = self.button_list[col][row]
                 button.setFixedSize(max(button_width, 10), max(button_height, 10))
-        logging.debug("Button sizes updated: width = %d, height = %d", button_width, button_height)
+        logger.debug("Button sizes updated: width = %d, height = %d", button_width, button_height)
 
 
 def test():
     """
     Main test function to validate the CardSelector interface.
     """
-    logging.info("Starting CardSelector test")
+    logger.debug("Starting CardSelector test")
     # Load the configuration file
     configs = ConfigParser()
     config_path = os.path.join(os.path.dirname(__file__), "config.ini")
     if not os.path.exists(config_path):
-        logging.error("Error: config.ini not found at %s", config_path)
+        logger.error("Error: config.ini not found at %s", config_path)
         return
 
     configs.read(config_path)
     if "CardSelector" not in configs:
-        logging.error("Error: 'CardSelector' section not found in config.ini")
+        logger.error("Error: 'CardSelector' section not found in config.ini")
         return
 
     card_selector_settings = configs["CardSelector"]
 
     def update_output():
         selected_hand = card_selector.get_selected_hand()
-        logging.info("Output updated: %s", selected_hand)
+        logger.debug("Output updated: %s", selected_hand)
         print("Cards Selected:", selected_hand)
 
     app = QApplication(sys.argv)
     main_window = QMainWindow()
-    card_selector = CardSelector(card_selector_settings, update_output)
+    card_selector = CardSelector(card_selector_settings)
+    card_selector.handChanged.connect(lambda _: update_output())
     main_window.setCentralWidget(card_selector)
     main_window.setStyleSheet("background-color: #1e1e1e; color: white;")  # Dark theme
     main_window.setWindowTitle("Card Selector - Dark Theme")
     main_window.show()
-    logging.info("Main window displayed")
+    logger.debug("Main window displayed")
     sys.exit(app.exec())
 
 

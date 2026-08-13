@@ -2,7 +2,6 @@
 
 import logging
 import os
-import sys
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
@@ -15,13 +14,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Add the project directory to sys.path for relative imports
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from .tree_reader import TreeReader
 
-from preflop_advisor.tree_reader import TreeReader
+logger = logging.getLogger(__name__)
 
-# Logger configuration
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Constants
 RESULT_ROWS = 7
@@ -56,7 +52,7 @@ class TableEntry(QWidget):
 
     def __init__(self, parent, width, height):
         super().__init__(parent)
-        logging.info("Initializing a TableEntry widget")
+        logger.debug("Initializing a TableEntry widget")
 
         # Set up the main layout
         self.layout = QGridLayout(self)
@@ -101,7 +97,7 @@ class TableEntry(QWidget):
             }
             """
         )
-        logging.info("TableEntry initialized with size %d x %d", width, height)
+        logger.debug("TableEntry initialized with size %d x %d", width, height)
 
     def set_description_label(self, text=""):
         """
@@ -109,13 +105,13 @@ class TableEntry(QWidget):
         """
         self.info_text.setText(text)
         self.info_text.show()
-        logging.info("Description updated: %s", text)
+        logger.debug("Description updated: %s", text)
 
     def set_result_label(self, results):
         """
         Displays formatted results on the left and right sides with conditional coloring.
         """
-        logging.info("Configuring results: %s", results)
+        logger.debug("Configuring results: %s", results)
         # Clear previous texts
         self.label_left.setText("")
         self.label_right.setText("")
@@ -155,7 +151,7 @@ class TableEntry(QWidget):
         """
         Resets all fields and styles.
         """
-        logging.info("Resetting the TableEntry widget")
+        logger.debug("Resetting the TableEntry widget")
         self.info_text.setText("")
         self.label_left.setText("")
         self.label_right.setText("")
@@ -167,7 +163,7 @@ class TableEntry(QWidget):
 class OutputFrame(QWidget):
     def __init__(self, parent, output_configs, tree_reader_configs):
         super().__init__(parent)
-        logging.info("Initializing OutputFrame")
+        logger.debug("Initializing OutputFrame")
         self.parent = parent
         self.output_configs = output_configs
         self.tree_reader_configs = tree_reader_configs
@@ -202,7 +198,7 @@ class OutputFrame(QWidget):
         self.main_layout.addWidget(self.scroll_area)
 
     def card_labels(self):
-        logging.info("Initializing card labels")
+        logger.debug("Initializing card labels")
         self.card_labels_list = []
         for i in range(5):
             label = QLabel("", self.info_frame)
@@ -210,10 +206,10 @@ class OutputFrame(QWidget):
             label.setAlignment(Qt.AlignCenter)
             self.card_labels_list.append(label)
             self.info_layout.addWidget(label, 0, i)
-        logging.info("Card labels initialized")
+        logger.debug("Card labels initialized")
 
     def set_card_label(self, hand):
-        logging.info("Updating card labels with hand: %s", hand)
+        logger.debug("Updating card labels with hand: %s", hand)
         hand_remaining = hand
         for label in self.card_labels_list:
             if len(hand_remaining) == 0:
@@ -224,20 +220,20 @@ class OutputFrame(QWidget):
                 label.setStyleSheet(f"color: {SUIT_COLORS[suit].name()}")
                 label.setText(card[0] + SUIT_SIGN_DIC[suit])
                 hand_remaining = hand_remaining[2:]
-        logging.info("Card labels updated")
+        logger.debug("Card labels updated")
 
     def update_info_frame(self, hand, position, treeinfo):
-        logging.info("Updating info frame")
+        logger.debug("Updating info frame")
         self.set_card_label(hand)
         text = f"   Position: {position}   {treeinfo}"
         self.general_infos_label.setText(text)
-        logging.info("Info frame updated with: %s", text)
+        logger.debug("Info frame updated with: %s", text)
 
     def update_output_frame(self, hand, position, tree):
-        logging.info("Updating output frame")
+        logger.debug("Updating output frame")
         tree_reader = TreeReader(hand, position, tree, self.tree_reader_configs)
         results = tree_reader.get_results()
-        logging.info("Results obtained: %s", results)
+        logger.debug("Results obtained: %s", results)
 
         tree_infos = f"{tree['plrs']}-max {tree['bb']}bb {tree['game']} {tree['infos']}"
         self.update_info_frame(hand, position, tree_infos)
@@ -256,10 +252,10 @@ class OutputFrame(QWidget):
                     self.table_entries[row][column].set_result_label(
                         self.preprocess_results(results[row][column]["Results"])
                     )
-        logging.info("Output frame updated")
+        logger.debug("Output frame updated")
 
     def create_result_grid(self):
-        logging.info("Creating results grid")
+        logger.debug("Creating results grid")
         for row in range(RESULT_ROWS):
             for column in range(RESULT_COLUMNS):
                 table_entry = TableEntry(self.output_frame, RESULT_WIDTH, RESULT_HEIGHT)
@@ -275,7 +271,7 @@ class OutputFrame(QWidget):
             }
             """
         )
-        logging.info("Results grid created")
+        logger.debug("Results grid created")
 
     def preprocess_results(self, results):
         """Formats solver results for display: frequency in %, EV in big blinds.
@@ -286,7 +282,7 @@ class OutputFrame(QWidget):
         soon as a node had no Fold file: the first real action was consumed as the fold
         baseline and disappeared from the display.
         """
-        logging.debug("Preprocessing results: %s", results)
+        logger.debug("Preprocessing results: %s", results)
         if not results:
             return []
 
@@ -298,7 +294,7 @@ class OutputFrame(QWidget):
         chips_per_bb = float(self.output_configs.get("ChipsPerBB", CHIPS_PER_BB))
         displayed = [entry for entry in results if entry[0] != "Fold"]
         if len(displayed) > MAX_DISPLAYED_ACTIONS:
-            logging.debug(
+            logger.debug(
                 "%d actions available, showing the first %d",
                 len(displayed),
                 MAX_DISPLAYED_ACTIONS,
@@ -319,7 +315,7 @@ def test():
 
     app = QApplication([])
 
-    logging.info("Starting OutputFrame test")
+    logger.debug("Starting OutputFrame test")
 
     configs = ConfigParser()
     config_path = os.path.dirname(__file__)
@@ -346,7 +342,7 @@ def test():
     output_frame.show()
 
     app.exec()
-    logging.info("OutputFrame test completed")
+    logger.debug("OutputFrame test completed")
 
 
 if __name__ == "__main__":

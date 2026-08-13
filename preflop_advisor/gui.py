@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 
-import inspect
 import logging
 import os
-import sys
 from configparser import ConfigParser
 
 from PySide6.QtCore import Qt
@@ -18,14 +16,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from .card_selector import CardSelector
+from .errors import PreflopAdvisorError
+from .outputframe import OutputFrame
+from .paths import package_file
+from .position_selector import PositionSelector
+from .randomizer import RandomButton
+from .tree_selector import TreeSelector
 
-from preflop_advisor.card_selector import CardSelector
-from preflop_advisor.errors import PreflopAdvisorError
-from preflop_advisor.outputframe import OutputFrame
-from preflop_advisor.position_selector import PositionSelector
-from preflop_advisor.randomizer import RandomButton
-from preflop_advisor.tree_selector import TreeSelector
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -34,19 +33,16 @@ class MainWindow(QMainWindow):
         self.configs = ConfigParser()
 
         # Load the config.ini file
-        config_path = os.path.join(
-            os.path.dirname(os.path.abspath(inspect.getsourcefile(lambda: 0))),
-            "config.ini",
-        )
+        config_path = package_file("config.ini")
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
         self.configs.read(config_path)
 
         self.setWindowTitle("Preflop Advisor based on Monker")
 
-        # Components notify through callbacks fired from their own constructors, so the
-        # first notifications arrive before every component exists. Refuse to refresh
-        # until the window is fully assembled.
+        # Components emit while they are still being constructed, so the first
+        # notifications arrive before every component exists. Refuse to refresh until the
+        # window is fully assembled.
         self._ready = False
 
         # Initialize main widgets
@@ -72,20 +68,22 @@ class MainWindow(QMainWindow):
         output_settings = self._get_section_config("Output")
         tree_reader_settings = self._get_section_config("TreeReader")
 
-        # Initialize components
-        self.position_selector = PositionSelector(
-            self.input_frame, position_selector_settings, self.update_output_frame
-        )
-        self.card_selector = CardSelector(card_selector_settings, self.update_output_frame)
+        # Initialize components. Each one exposes a Qt signal; they are connected below,
+        # once every component exists, rather than passing callbacks into constructors.
+        self.position_selector = PositionSelector(self.input_frame, position_selector_settings)
+        self.card_selector = CardSelector(card_selector_settings)
         self.tree_selector = TreeSelector(
             self,
             tree_selector_settings,
             self.configs["TreeInfos"],
             self.configs["TreeToolTips"],
-            self.update_output_frame,
         )
         self.rand_button = RandomButton(self.input_frame, position_selector_settings)
         self.output = OutputFrame(self.output_frame, output_settings, tree_reader_settings)
+
+        self.card_selector.handChanged.connect(self.on_selection_changed)
+        self.position_selector.positionChanged.connect(self.on_selection_changed)
+        self.tree_selector.treeChanged.connect(self.on_selection_changed)
 
         # Assemble layouts
         self.assemble_layouts()
@@ -100,7 +98,7 @@ class MainWindow(QMainWindow):
 
         # Every component exists: allow refreshes and render the default selection.
         self._ready = True
-        self.tree_selector.tree_changed()
+        self.update_output_frame()
 
     def assemble_layouts(self):
         # Add descriptive labels
@@ -137,6 +135,10 @@ class MainWindow(QMainWindow):
         # Add the output component
         self.output_layout.addWidget(self.output)
 
+    def on_selection_changed(self, _=None):
+        """Slot for the component signals, which each carry a payload we do not need."""
+        self.update_output_frame()
+
     def update_output_frame(self):
         """Update the interface based on selections."""
         if not self._ready:
@@ -171,7 +173,7 @@ class MainWindow(QMainWindow):
 
     def report_error(self, message):
         """Surface a problem to the user instead of failing silently."""
-        logging.error(message)
+        logger.error(message)
         self.statusBar().showMessage(message, 10000)
 
     def update_card_and_position_selector(self, tree_infos):

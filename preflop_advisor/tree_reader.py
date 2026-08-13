@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 
 import logging
-import os
-import sys
 from configparser import ConfigParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from .errors import RangeFolderNotFound
+from .paths import resolve_range_folder
+from .tree_reader_helpers import ActionProcessor
 
-from preflop_advisor.tree_reader_helpers import ActionProcessor
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 
 class TreeReader:
@@ -26,7 +24,7 @@ class TreeReader:
         :param tree_infos: Information about the range tree.
         :param configs: General configuration for the TreeReader.
         """
-        logging.info("Initializing TreeReader for hand: %s and position: %s", hand, position)
+        logger.debug("Initializing TreeReader for hand: %s and position: %s", hand, position)
 
         self.full_position_list = [pos.strip() for pos in configs["Positions"].split(",")]
         self.position_list = []
@@ -39,27 +37,15 @@ class TreeReader:
         self.configs = configs
         self.tree_infos = tree_infos
 
-        # Verify that the tree folder exists (support relative paths and repo fallback)
-        tree_folder = self.tree_infos.get("folder", "")
-        if not os.path.isdir(tree_folder):
-            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-            candidate = os.path.join(project_root, tree_folder)
-            if os.path.isdir(candidate):
-                tree_folder = candidate
-                self.tree_infos["folder"] = tree_folder
-            else:
-                basename = os.path.basename(tree_folder.rstrip("/\\"))
-                candidate2 = os.path.join(project_root, "ranges", basename)
-                if os.path.isdir(candidate2):
-                    tree_folder = candidate2
-                    self.tree_infos["folder"] = tree_folder
-                else:
-                    logging.error("Specified tree folder not found: %s", tree_folder)
-                    raise FileNotFoundError(f"Tree folder not found: {tree_folder}")
+        configured_folder = self.tree_infos.get("folder", "")
+        tree_folder = resolve_range_folder(configured_folder)
+        if tree_folder is None:
+            raise RangeFolderNotFound(f"Tree folder not found: {configured_folder}")
+        self.tree_infos["folder"] = tree_folder
 
         self.action_processor = ActionProcessor(self.position_list, self.tree_infos, configs)
         self.results = []
-        logging.info("TreeReader initialized successfully.")
+        logger.debug("TreeReader initialized successfully.")
 
     def init_position_list(self, num_players, positions):
         """
@@ -68,9 +54,9 @@ class TreeReader:
         :param num_players: Number of active players.
         :param positions: Complete list of positions.
         """
-        logging.debug("Initializing positions for %d players", num_players)
+        logger.debug("Initializing positions for %d players", num_players)
         if num_players > len(positions):
-            logging.warning(
+            logger.warning(
                 "Number of players (%d) exceeds available positions (%d). Using maximum available.",
                 num_players,
                 len(positions),
@@ -78,13 +64,13 @@ class TreeReader:
             num_players = len(positions)
         self.position_list = positions[:num_players]
         self.position_list.reverse()
-        logging.info("Active position list: %s", self.position_list)
+        logger.debug("Active position list: %s", self.position_list)
 
     def fill_default_results(self):
         """
         Fills default results for all positions and scenarios.
         """
-        logging.info("Filling default results.")
+        logger.debug("Filling default results.")
         row = [{"isInfo": True, "Text": "X"}, {"isInfo": True, "Text": "FI"}]
         row.extend({"isInfo": True, "Text": "vs " + position} for position in self.position_list)
         self.results.append(row)
@@ -104,7 +90,7 @@ class TreeReader:
             for column_pos in self.position_list:
                 row.append({"isInfo": False, "Results": self.get_vs_first_in(row_pos, column_pos)})
             self.results.append(row)
-        logging.info("Default results filled successfully.")
+        logger.debug("Default results filled successfully.")
 
     def get_results(self):
         """
@@ -112,7 +98,7 @@ class TreeReader:
 
         :return: List of results.
         """
-        logging.info("Retrieving results.")
+        logger.debug("Retrieving results.")
         self.results = []
         if self.position:
             self.fill_position_results()
@@ -122,18 +108,18 @@ class TreeReader:
         # Validate results
         for row in self.results:
             if not isinstance(row, list):
-                logging.warning("Invalid row format: %s", row)
+                logger.warning("Invalid row format: %s", row)
                 continue
             for cell in row:
                 if not isinstance(cell, dict) or "isInfo" not in cell:
-                    logging.warning("Invalid cell format: %s", cell)
+                    logger.warning("Invalid cell format: %s", cell)
         return self.results
 
     def fill_position_results(self):
         """
         Fills results for a specific position.
         """
-        logging.info("Filling results for specific position: %s", self.position)
+        logger.debug("Filling results for specific position: %s", self.position)
         pos = self.position
         row = [{"isInfo": True, "Text": pos}]
         row.extend({"isInfo": True, "Text": "vs " + position} for position in self.position_list)
@@ -169,7 +155,7 @@ class TreeReader:
         """
         Adds special lines for specific scenarios (squeeze, 4bet, etc.).
         """
-        logging.info("Adding special lines for position: %s", pos)
+        logger.debug("Adding special lines for position: %s", pos)
         # Squeeze
         row = [{"isInfo": True, "Text": "squeeze"}]
         row.extend({"isInfo": False, "Results": self.get_squeeze(pos, column_pos)} for column_pos in self.position_list)
@@ -205,7 +191,7 @@ class TreeReader:
         try:
             return [self.position_list.index(position) for position in positions]
         except ValueError:
-            logging.warning("Positions %s not all seated in %s", list(positions), self.position_list)
+            logger.warning("Positions %s not all seated in %s", list(positions), self.position_list)
             return None
 
     def get_vs_first_in(self, position, fi_position):
@@ -356,12 +342,12 @@ def test():
     """
     Test function for TreeReader.
     """
-    logging.info("Starting TreeReader test.")
+    logger.debug("Starting TreeReader test.")
     config = ConfigParser()
     config.read("config.ini")
 
     if "TreeReader" not in config:
-        logging.error("'TreeReader' section missing in config.ini.")
+        logger.error("'TreeReader' section missing in config.ini.")
         return
 
     tree = {"folder": "./ranges/HU-100bb-with-limp", "plrs": 2}
@@ -377,7 +363,7 @@ def test():
             for field in row:
                 print(field)
     except FileNotFoundError as e:
-        logging.error("Error during execution: %s", e)
+        logger.error("Error during execution: %s", e)
 
 
 if __name__ == "__main__":

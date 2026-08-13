@@ -13,8 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Logger configuration
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 
 class PositionSelector(QWidget):
@@ -24,11 +23,10 @@ class PositionSelector(QWidget):
 
     positionChanged = Signal(str)
 
-    def __init__(self, parent, position_config, update_output=None):
+    def __init__(self, parent, position_config):
         super().__init__(parent)
-        logging.info("Initializing PositionSelector")
+        logger.debug("Initializing PositionSelector")
 
-        self.update_output = update_output
         self.position_list = [pos.strip() for pos in position_config["PositionList"].split(",")]
         self.position_inactive_list = [pos.strip() for pos in position_config["PositionInactive"].split(",")]
         self.button_height = int(position_config["ButtonHeight"])
@@ -57,7 +55,7 @@ class PositionSelector(QWidget):
         # Default selection
         self.select_button(self.current_position)
 
-        logging.info("PositionSelector initialized with %d positions", len(self.position_list))
+        logger.debug("PositionSelector initialized with %d positions", len(self.position_list))
 
     def create_button(self, row):
         """
@@ -80,7 +78,7 @@ class PositionSelector(QWidget):
         """)
         button.clicked.connect(self.on_button_clicked(row))
         self.layout.addWidget(button)
-        logging.debug("Button created for %s", self.position_list[row])
+        logger.debug("Button created for %s", self.position_list[row])
         return button
 
     def on_button_clicked(self, row):
@@ -98,10 +96,10 @@ class PositionSelector(QWidget):
         Handles button clicks and updates the selected position.
         """
         if row == self.current_position:
-            logging.debug("Button already selected: %s", self.position_list[row])
+            logger.debug("Button already selected: %s", self.position_list[row])
             return
 
-        logging.info("Changing position: %s -> %s", self.position_list[self.current_position], self.position_list[row])
+        logger.debug("Changing position: %s -> %s", self.position_list[self.current_position], self.position_list[row])
 
         self.deselect_button(self.current_position)
         self.current_position = row
@@ -112,7 +110,7 @@ class PositionSelector(QWidget):
         """
         Deselects a button.
         """
-        logging.debug("Deselecting button: %s", self.position_list[row])
+        logger.debug("Deselecting button: %s", self.position_list[row])
         button = self.button_list[row]
         button.setStyleSheet(f"""
             QPushButton {{
@@ -128,7 +126,7 @@ class PositionSelector(QWidget):
         """
         Selects a button.
         """
-        logging.debug("Selecting button: %s", self.position_list[row])
+        logger.debug("Selecting button: %s", self.position_list[row])
         button = self.button_list[row]
         button.setStyleSheet(f"""
             QPushButton {{
@@ -146,14 +144,12 @@ class PositionSelector(QWidget):
         """
         pos = self.get_position()
         self.positionChanged.emit(pos)
-        if callable(self.update_output):
-            self.update_output()
 
     def get_position(self):
         """
         Returns the selected position.
         """
-        logging.info("Current position: %s", self.position_list[self.current_position])
+        logger.debug("Current position: %s", self.position_list[self.current_position])
         return self.position_list[self.current_position]
 
     def get_active_positions(self, num_players):
@@ -198,14 +194,14 @@ class PositionSelector(QWidget):
         """
         Disables a button.
         """
-        logging.debug("Disabling button: %s", self.position_list[index])
+        logger.debug("Disabling button: %s", self.position_list[index])
         self.button_list[index].setEnabled(False)
 
     def activate_button(self, index):
         """
         Enables a button.
         """
-        logging.debug("Enabling button: %s", self.position_list[index])
+        logger.debug("Enabling button: %s", self.position_list[index])
         self.button_list[index].setEnabled(True)
 
 
@@ -216,18 +212,18 @@ class TestWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        logging.info("Initializing main window")
+        logger.debug("Initializing main window")
         self.setWindowTitle("Position Selector - Dark Theme")
         self.setMinimumSize(600, 200)
 
         configs = ConfigParser()
         config_path = "config.ini"
         if not configs.read(config_path):
-            logging.warning("Configuration file not found: %s", config_path)
+            logger.warning("Configuration file not found: %s", config_path)
 
         # Check if the `PositionSelector` section exists, otherwise apply default values
         if "PositionSelector" not in configs:
-            logging.warning("Section 'PositionSelector' missing in config.ini. Using default settings.")
+            logger.warning("Section 'PositionSelector' missing in config.ini. Using default settings.")
             settings = {
                 "PositionList": "X,UTG,MP,CO,BU,SB,BB",
                 "PositionInactive": "MP,SB",
@@ -247,30 +243,31 @@ class TestWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         def update_output():
-            logging.info("Selected position: %s", selector.get_position())
+            logger.debug("Selected position: %s", selector.get_position())
 
-        selector = PositionSelector(central_widget, settings, update_output)
+        selector = PositionSelector(central_widget, settings)
+        selector.positionChanged.connect(lambda _: update_output())
         selector.setStyleSheet("background-color: #121212; color: white;")  # Dark theme
 
         # Add the selector to the main layout
         layout = QHBoxLayout(central_widget)
         layout.addWidget(selector)
 
-        logging.info("TestWindow initialized successfully")
+        logger.debug("TestWindow initialized successfully")
 
 
 def main():
     """
     Entry point of the application.
     """
-    logging.info("Starting application")
+    logger.debug("Starting application")
     app = QApplication([])
 
     window = TestWindow()
     window.show()
 
     app.exec()
-    logging.info("Application terminated")
+    logger.debug("Application terminated")
 
 
 if __name__ == "__main__":

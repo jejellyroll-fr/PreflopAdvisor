@@ -7,8 +7,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
-# Logger configuration
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 
 class CreateToolTip(QWidget):
@@ -54,7 +53,7 @@ class CreateToolTip(QWidget):
 
         if not self.pic:
             # Text tooltip
-            logging.info("Creating a text tooltip: '%s'", self.text)
+            logger.debug("Creating a text tooltip: '%s'", self.text)
             label = QLabel(self.text, self)
             label.setStyleSheet("""
                 QLabel {
@@ -68,7 +67,7 @@ class CreateToolTip(QWidget):
             layout.addWidget(label)
         else:
             # Image tooltip
-            logging.info("Creating an image tooltip: '%s'", self.text)
+            logger.debug("Creating an image tooltip: '%s'", self.text)
             pixmap = QPixmap(self.text)
             if not pixmap.isNull():
                 pixmap = pixmap.scaled(400, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -76,7 +75,7 @@ class CreateToolTip(QWidget):
                 img_label.setPixmap(pixmap)
                 layout.addWidget(img_label)
             else:
-                logging.error("The specified image could not be loaded: '%s'", self.text)
+                logger.error("The specified image could not be loaded: '%s'", self.text)
 
         self.adjustSize()
 
@@ -87,7 +86,7 @@ class CreateToolTip(QWidget):
         :param widget: The widget relative to which to display the tooltip.
         """
         pos = widget.mapToGlobal(QPoint(200, -300))  # Offset for tooltip position
-        logging.info("Displaying tooltip at position: %s", pos)
+        logger.debug("Displaying tooltip at position: %s", pos)
         self.move(pos)
         self.show()
 
@@ -95,7 +94,7 @@ class CreateToolTip(QWidget):
         """
         Hides the tooltip.
         """
-        logging.info("Hiding tooltip")
+        logger.debug("Hiding tooltip")
         self.hide()
 
 
@@ -134,11 +133,11 @@ class MainWindow(QMainWindow):
         btn2.enterEvent = lambda event: self.tooltip2.show_tooltip(btn2)
         btn2.leaveEvent = lambda event: self.tooltip2.hide_tooltip()
 
-        logging.info("Main window initialized with two buttons.")
+        logger.debug("Main window initialized with two buttons.")
 
 
 if __name__ == "__main__":
-    logging.info("Starting the application")
+    logger.debug("Starting the application")
     app = QApplication([])
 
     # Create the main window
@@ -147,4 +146,4 @@ if __name__ == "__main__":
     window.show()
 
     app.exec()
-    logging.info("Application terminated")
+    logger.debug("Application terminated")
