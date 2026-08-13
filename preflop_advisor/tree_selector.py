@@ -5,7 +5,7 @@ import os
 import sys
 from configparser import ConfigParser
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -31,7 +31,9 @@ class TreeSelector(QWidget):
     Widget allowing the selection of a tree from a list defined in the configurations.
     """
 
-    def __init__(self, root, tree_selector_settings, tree_configs, tree_tooltips, update_output):
+    treeChanged = Signal(dict)
+
+    def __init__(self, root, tree_selector_settings, tree_configs, tree_tooltips, update_output=None):
         super().__init__(root)
         self.root = root  # Store the parent to access other components
         self.update_output = update_output
@@ -153,8 +155,10 @@ class TreeSelector(QWidget):
 
     def tree_changed(self):
         """
-        Callback called when the selected tree changes.
+        Callback called when the selected tree changes and emits treeChanged signal.
         """
+        if self.current_tree:
+            self.treeChanged.emit(self.current_tree)
         if callable(self.update_output):
             self.update_output()
 

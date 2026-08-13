@@ -3,6 +3,7 @@
 import logging
 from configparser import ConfigParser
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -21,7 +22,9 @@ class PositionSelector(QWidget):
     Position selection widget.
     """
 
-    def __init__(self, parent, position_config, update_output):
+    positionChanged = Signal(str)
+
+    def __init__(self, parent, position_config, update_output=None):
         super().__init__(parent)
         logging.info("Initializing PositionSelector")
 
@@ -139,9 +142,12 @@ class PositionSelector(QWidget):
 
     def position_changed(self):
         """
-        Notifies the position change.
+        Notifies the position change and emits positionChanged signal.
         """
-        self.update_output()
+        pos = self.get_position()
+        self.positionChanged.emit(pos)
+        if callable(self.update_output):
+            self.update_output()
 
     def get_position(self):
         """

@@ -5,6 +5,7 @@ import os
 import sys
 from configparser import ConfigParser
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -47,7 +48,9 @@ class CardSelector(QWidget):
     Interactive widget for selecting cards by pressing buttons.
     """
 
-    def __init__(self, card_selector_settings, update_output):
+    handChanged = Signal(str)
+
+    def __init__(self, card_selector_settings, update_output=None):
         super().__init__()
         logging.info("Initializing CardSelector")
         self.update_output = update_output
@@ -167,10 +170,13 @@ class CardSelector(QWidget):
 
     def new_hand(self):
         """
-        Calls the update_output function to pass the selected cards.
+        Calls the update_output function and emits handChanged signal to pass the selected cards.
         """
-        logging.info("New hand generated: %s", self.get_selected_hand())
-        self.update_output()
+        hand = self.get_selected_hand()
+        logging.info("New hand generated: %s", hand)
+        self.handChanged.emit(hand)
+        if callable(self.update_output):
+            self.update_output()
 
     def get_selected_hand(self):
         """

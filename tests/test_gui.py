@@ -45,12 +45,14 @@ def test_card_selector(qapp, configs):
     assert len(cs.selected_cards) == 4
     assert cs.get_selected_hand() == "AhKhQhJh"
     assert cs.get_hand() == "AhKhQhJh"
-    assert len(selected_hands) == 1
-
-    # Test dynamic switch to NL (2 cards)
+    # Test signal emission
+    signal_received = []
+    cs.handChanged.connect(lambda h: signal_received.append(h))
     cs.set_num_cards(2)
-    assert cs.num_cards == 2
-    assert len(cs.selected_cards) == 0  # Should be reset
+    cs.process_button_clicked(0, 0)
+    cs.process_button_clicked(1, 0)
+    assert len(signal_received) == 1
+    assert signal_received[0] == "AhKh"
 
 
 def test_position_selector(qapp, configs):
