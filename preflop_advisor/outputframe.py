@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
     QSizePolicy,
@@ -34,6 +35,9 @@ MIN_CELL_HEIGHT = 64
 # Shown instead of an empty box, so "no data" is distinguishable from a rendering bug.
 EMPTY_CELL_TEXT = "—"
 
+# Shown before a full hand has been picked.
+EMPTY_STATE_TEXT = "Pick a full hand on the left to see the strategy."
+
 SUIT_SIGN_DIC = theme.SUIT_SYMBOLS
 
 
@@ -55,34 +59,128 @@ def short_action_label(action):
     return key
 
 
+def format_ev(ev):
+    """Signs an EV figure so gain and loss are told apart at a glance, not by a glyph."""
+    try:
+        value = float(ev)
+    except (TypeError, ValueError):
+        return str(ev)
+    return f"{value:+.2f}"
+
+
+class ActionTile(QWidget):
+    """One action inside a cell: its name, its frequency and its EV.
+
+    The three figures are not equally important. Frequency is what a player scans a grid
+    for -- how often this line is taken -- so it is set large and bold, with the action
+    name above it and the EV below in a smaller, signed, colour-coded form. Rendering
+    all three at the same weight, as a single three-line label did, left nothing for the
+    eye to latch onto.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(0)
+
+        self.action_label = QLabel("", self)
+        self.frequency_label = QLabel("", self)
+        self.ev_label = QLabel("", self)
+        self.ev_label.setObjectName("ev")
+
+        for label in (self.action_label, self.frequency_label, self.ev_label):
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label)
+
+        self.action = ""
+
+    def text(self):
+        """Flat rendering of the tile, for logging and assertions."""
+        if not self.action:
+            return ""
+        return f"{self.action_label.text()} {self.frequency_label.text()} {self.ev_label.text()}"
+
+    def set_action(self, action, frequency, ev, selected=False):
+        self.action = action
+        self.action_label.setText(short_action_label(action))
+        self.frequency_label.setText(f"{frequency}%")
+        self.ev_label.setText(format_ev(ev))
+
+        try:
+            share = float(frequency) / 100.0
+        except (TypeError, ValueError):
+            share = 0.0
+
+        # Keep a floor so a 0%-but-available action is still visible as an option.
+        background = theme.blend(theme.action_color(action), theme.SURFACE, 0.15 + 0.65 * share)
+        border = theme.TEXT_PRIMARY if selected else theme.blend(background, theme.BORDER, 0.5)
+        self.setStyleSheet(f"""
+            ActionTile {{
+                background-color: {background};
+                border: {"2px" if selected else "1px"} solid {border};
+                border-radius: 4px;
+            }}
+            QLabel {{
+                background: transparent;
+                color: {theme.TEXT_PRIMARY};
+            }}
+            QLabel#ev {{
+                color: {theme.ev_color(ev)};
+                font-weight: bold;
+            }}
+        """)
+        self.show()
+
+    def clear(self):
+        self.action = ""
+        for label in (self.action_label, self.frequency_label, self.ev_label):
+            label.setText("")
+        self.setStyleSheet("")
+        self.hide()
+
+    def apply_fonts(self, height):
+        """Scales the three lines together, preserving their relative weight."""
+        primary = max(11, min(11 + height // 4, 24))
+        secondary = max(8, min(8 + height // 12, 13))
+
+        font = QFont(theme.FONT_FAMILY, primary, QFont.Bold)
+        self.frequency_label.setFont(font)
+        self.action_label.setFont(QFont(theme.FONT_FAMILY, secondary))
+        self.ev_label.setFont(QFont(theme.FONT_FAMILY, secondary, QFont.Bold))
+
+
 class TableEntry(QWidget):
     """One cell of the results grid: either a header label or up to two actions."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.layout = QGridLayout(self)
-        self.layout.setContentsMargins(4, 4, 4, 4)
-        self.layout.setSpacing(3)
+        self.cell_layout = QVBoxLayout(self)
+        self.cell_layout.setContentsMargins(4, 4, 4, 4)
+        self.cell_layout.setSpacing(3)
 
         self.info_text = QLabel("", self)
         self.info_text.setAlignment(Qt.AlignCenter)
         self.info_text.setWordWrap(True)
 
-        self.label_left = QLabel("", self)
-        self.label_left.setAlignment(Qt.AlignCenter)
+        # Header text and action tiles never show at the same time, and an empty header
+        # label still claimed a row of every data cell, squeezing the tiles.
+        self.tiles = QWidget(self)
+        tiles_layout = QHBoxLayout(self.tiles)
+        tiles_layout.setContentsMargins(0, 0, 0, 0)
+        tiles_layout.setSpacing(3)
 
-        self.label_right = QLabel("", self)
-        self.label_right.setAlignment(Qt.AlignCenter)
+        self.label_left = ActionTile(self.tiles)
+        self.label_right = ActionTile(self.tiles)
+        tiles_layout.addWidget(self.label_left)
+        tiles_layout.addWidget(self.label_right)
 
-        # Action tiles fill their half of the cell, so the colour tint covers a readable
-        # area instead of hugging the text.
-        for label in (self.label_left, self.label_right):
-            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        self.layout.addWidget(self.info_text, 0, 0, 1, 2)
-        self.layout.addWidget(self.label_left, 1, 0)
-        self.layout.addWidget(self.label_right, 1, 1)
+        self.cell_layout.addWidget(self.info_text)
+        self.cell_layout.addWidget(self.tiles, stretch=1)
 
         # Cells grow with the window instead of being pinned to a fixed pixel size.
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -111,11 +209,9 @@ class TableEntry(QWidget):
 
     def resizeEvent(self, event):
         """Scales the fonts with the cell so the grid stays legible at any window size."""
-        width = self.width()
-        self.info_text.setFont(QFont(theme.FONT_FAMILY, max(9, min(20, width // 8))))
-        value_font = QFont(theme.FONT_FAMILY, max(7, min(12, width // 14)))
-        self.label_left.setFont(value_font)
-        self.label_right.setFont(value_font)
+        self.info_text.setFont(QFont(theme.FONT_FAMILY, max(10, min(10 + self.width() // 12, 17)), QFont.Bold))
+        for tile in (self.label_left, self.label_right):
+            tile.apply_fonts(self.height())
         super().resizeEvent(event)
 
     def set_description_label(self, text=""):
@@ -123,13 +219,17 @@ class TableEntry(QWidget):
         self.clear_entry()
         self.info_text.setText(text)
         self.info_text.setStyleSheet(f"color: {theme.TEXT_SECONDARY}; font-weight: bold;")
+        self.info_text.show()
+        # The tiles row keeps its stretch even with both tiles hidden, which pins the
+        # header text to the top of the cell with dead space under it.
+        self.tiles.hide()
 
     def set_result_label(self, results, tooltip="", highlight=None):
         """Renders up to two actions, tinted by frequency and coloured by EV.
 
         The tint carries the frequency, which is the figure a player scans for: a line
         played 5% of the time stays faint, a pure line reads at full strength. EV keeps
-        the red/green semantics, on the EV column itself -- it used to be applied to the
+        the red/green semantics, on the EV figure itself -- it used to be applied to the
         frequency, which is never negative, so every non-zero cell came out green.
 
         ``highlight`` is the action the current randomizer roll selects, if any.
@@ -140,38 +240,31 @@ class TableEntry(QWidget):
         if not results:
             self.info_text.setText(EMPTY_CELL_TEXT)
             self.info_text.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+            self.info_text.show()
+            self.tiles.hide()
             return
 
-        for label, entry in zip((self.label_left, self.label_right), results):
-            self._render_action(label, entry, selected=highlight is not None and entry[0] == highlight)
+        # The header line is hidden so the tiles get the whole cell.
+        self.info_text.hide()
+        self.tiles.show()
+        for tile, (action, frequency, ev) in zip((self.label_left, self.label_right), results):
+            tile.set_action(action, frequency, ev, selected=highlight is not None and action == highlight)
+        self.label_left.apply_fonts(self.height())
+        self.label_right.apply_fonts(self.height())
 
-    def _render_action(self, label, entry, selected=False):
-        action, frequency, ev = entry
-        try:
-            share = float(frequency) / 100.0
-        except (TypeError, ValueError):
-            share = 0.0
-
-        # Keep a floor so a 0%-but-available action is still visible as an option.
-        background = theme.blend(theme.action_color(action), theme.SURFACE, 0.15 + 0.65 * share)
-        border = theme.TEXT_PRIMARY if selected else theme.ev_color(ev)
-        label.setText(f"{short_action_label(action)}\n{frequency}%\n{ev}")
-        label.setStyleSheet(
-            f"""
-            background-color: {background};
-            color: {theme.TEXT_PRIMARY};
-            border: {"2px" if selected else "1px"} solid {border};
-            border-radius: 4px;
-            padding: 2px;
-            """
-        )
+    def displayed_actions(self):
+        """Names of the actions currently shown, in display order."""
+        return [tile.action for tile in (self.label_left, self.label_right) if tile.action]
 
     def clear_entry(self):
         """Resets all fields and styles."""
         self.setToolTip("")
-        for label in (self.info_text, self.label_left, self.label_right):
-            label.setText("")
-            label.setStyleSheet("")
+        self.info_text.setText("")
+        self.info_text.setStyleSheet("")
+        self.info_text.show()
+        self.tiles.hide()
+        for tile in (self.label_left, self.label_right):
+            tile.clear()
 
 
 class OutputFrame(QWidget):
@@ -212,6 +305,14 @@ class OutputFrame(QWidget):
         # ranges when only the roll changes.
         self.roll = None
         self._last_render = None
+
+        # The grid is only built once a hand is picked, so without this the panel is
+        # blank on startup with nothing saying what to do.
+        self.placeholder = QLabel(EMPTY_STATE_TEXT, self.output_frame)
+        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.placeholder.setWordWrap(True)
+        self.placeholder.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 15px;")
+        self.output_layout.addWidget(self.placeholder, 0, 0)
 
         self.main_layout = QVBoxLayout(self)
         self.main_layout.addWidget(self.info_frame)
@@ -298,9 +399,11 @@ class OutputFrame(QWidget):
                 if cell["isInfo"]:
                     entry.set_description_label(cell["Text"])
                 else:
+                    scenario = self.describe_cell(results, row_index, column_index)
+                    strategy = self.describe_strategy(cell["Results"])
                     entry.set_result_label(
                         self.preprocess_results(cell["Results"]),
-                        tooltip=self.describe_cell(results, row_index, column_index),
+                        tooltip="\n".join(part for part in (scenario, strategy) if part),
                         highlight=self.action_for_roll(cell["Results"]),
                     )
         logger.debug("Output frame updated: %dx%d", rows, columns)
@@ -319,8 +422,11 @@ class OutputFrame(QWidget):
 
         while self.output_layout.count():
             item = self.output_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is self.placeholder:
+                widget.hide()  # kept, so it can come back when the hand is cleared
+            elif widget:
+                widget.deleteLater()
 
         self.table_entries = []
         for row_index in range(rows):
@@ -347,6 +453,19 @@ class OutputFrame(QWidget):
         column_label = header[column_index].get("Text", "") if column_index < len(header) else ""
         parts = [part for part in (row_label, column_label) if part]
         return " / ".join(parts)
+
+    @staticmethod
+    def describe_strategy(raw_results):
+        """Full strategy of a node, folding included.
+
+        The grid never shows a Fold column, so the visible frequencies do not add up to
+        100% and nothing on screen says where the remainder went. The tooltip spells the
+        whole node out.
+        """
+        if not raw_results:
+            return ""
+        lines = [f"{short_action_label(action)}  {frequency * 100:.0f}%" for action, frequency, _ in raw_results]
+        return "Strategy: " + ", ".join(lines)
 
     def preprocess_results(self, results):
         """Formats solver results for display: frequency in %, EV in big blinds.

@@ -111,7 +111,7 @@ def test_cells_actually_paint_their_border(qtbot):
     """
     entry = TableEntry()
     qtbot.addWidget(entry)
-    entry.set_description_label("4bet")
+    entry.clear_entry()  # empty cell: nothing painted over the body
 
     image = rendered(entry)
 
@@ -120,16 +120,66 @@ def test_cells_actually_paint_their_border(qtbot):
     assert image.pixelColor(60, 45).name() == theme.SURFACE, "cell body is not painted"
 
 
+def test_a_header_is_centred_in_its_cell(qtbot):
+    """The tiles row kept its stretch when hidden, pinning headers to the top."""
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.set_description_label("4bet")
+    entry.resize(120, 90)
+    force_layout(entry)
+
+    assert not entry.tiles.isVisible()
+    centre = entry.info_text.y() + entry.info_text.height() / 2
+    assert abs(centre - entry.height() / 2) < 10, "header is not vertically centred"
+
+
+def force_layout(widget):
+    """Runs every nested layout, so geometry is settled without showing the widget."""
+    from PySide6.QtWidgets import QWidget
+
+    for target in [widget, *widget.findChildren(QWidget)]:
+        # Called unbound: some widgets assign self.layout, shadowing the method.
+        layout = QWidget.layout(target)
+        if layout is not None:
+            layout.activate()
+
+
 def test_an_action_tile_fills_its_half_of_the_cell(qtbot):
     """The tint has to cover a readable area, not just hug the text."""
     entry = TableEntry()
     qtbot.addWidget(entry)
     entry.set_result_label([["Call", "40", "1.20"], ["Raise100", "60", "2.50"]])
     entry.resize(160, 120)
-    entry.layout.activate()  # geometry only settles once the layout runs
+    force_layout(entry)
 
     assert entry.label_left.width() > 60, "tile does not span its half of the cell"
-    assert entry.label_left.height() > 80, "tile does not span the cell height"
+    assert entry.label_left.height() > 90, "tile does not span the cell height"
+
+
+def test_the_header_line_does_not_squeeze_the_tiles(qtbot):
+    """An empty header label used to claim a row of every data cell."""
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.resize(160, 120)
+
+    entry.set_result_label([["Call", "40", "1.20"]])
+    force_layout(entry)
+
+    assert not entry.info_text.isVisible()
+    assert entry.label_left.height() > entry.height() * 0.85
+
+
+def test_frequency_is_the_most_prominent_figure(qtbot):
+    """Frequency is what the grid is scanned for; it has to outrank the other two."""
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.resize(160, 120)
+    entry.set_result_label([["Call", "40", "1.20"]])
+
+    tile = entry.label_left
+    assert tile.frequency_label.font().pointSize() > tile.action_label.font().pointSize()
+    assert tile.frequency_label.font().pointSize() > tile.ev_label.font().pointSize()
+    assert tile.frequency_label.font().bold()
 
 
 # --------------------------------------------------------------------------------------
@@ -156,6 +206,18 @@ def test_actions_are_rendered_with_frequency_and_ev(qtbot):
     assert "40%" in entry.label_left.text()
     assert "1.20" in entry.label_left.text()
     assert "R100" in entry.label_right.text()
+    assert entry.displayed_actions() == ["Call", "Raise100"]
+
+
+@pytest.mark.parametrize(
+    "ev,expected",
+    [("1.20", "+1.20"), ("-0.42", "-0.42"), ("0", "+0.00"), ("n/a", "n/a")],
+)
+def test_ev_carries_an_explicit_sign(ev, expected):
+    """Gain and loss should differ by more than one leading character."""
+    from preflop_advisor.outputframe import format_ev
+
+    assert format_ev(ev) == expected
 
 
 def test_a_positive_ev_and_a_negative_ev_do_not_look_alike(qtbot):
@@ -192,6 +254,27 @@ def test_cells_carry_a_tooltip_naming_the_scenario(frame, hu_tree):
     tooltips = {entry.toolTip() for row in frame.table_entries for entry in row if entry.toolTip()}
 
     assert any("4bet" in tooltip for tooltip in tooltips)
+
+
+def test_the_tooltip_accounts_for_the_hidden_fold_frequency(frame):
+    """Fold has no column, so the visible percentages do not add up to 100."""
+    strategy = frame.describe_strategy([["Fold", 0.83, -2000.0], ["Call", 0.0, 500.0], ["Raise100", 0.17, 900.0]])
+
+    assert "Fold  83%" in strategy
+    assert "R100  17%" in strategy
+
+
+def test_the_panel_explains_itself_before_a_hand_is_picked(frame):
+    """The grid is only built on demand, so the panel would otherwise start blank."""
+    assert frame.placeholder.isVisible() or frame.placeholder.text()
+    assert "hand" in frame.placeholder.text().lower()
+
+
+def test_the_placeholder_gives_way_to_the_grid(frame, hu_tree):
+    frame.update_output_frame(REFERENCE_HAND, "X", hu_tree)
+
+    assert not frame.placeholder.isVisible()
+    assert frame.table_entries
 
 
 # --------------------------------------------------------------------------------------
