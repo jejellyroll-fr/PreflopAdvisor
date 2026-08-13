@@ -54,6 +54,9 @@ Before you begin, ensure you have Python 3.x installed on your computer. You can
 
    # Or run tests
    uv run --extra test pytest
+
+   # Build standalone executable (.app on macOS, .exe on Windows, binary on Linux)
+   uv run --extra build python scripts/build.py
    #+END_SRC
 
 5. Export your Monker Preflop trees:
