@@ -4,7 +4,7 @@ import logging
 import os
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from . import theme
@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 POPUP_DIRNAME = "popup-pics"
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp")
+
+# Gap between the anchor widget and the tooltip, and the largest an image may render.
+TOOLTIP_GAP = 4
+MAX_IMAGE_SIZE = 400
 
 
 class CreateToolTip(QWidget):
@@ -27,15 +31,32 @@ class CreateToolTip(QWidget):
 
         :param parent: The parent widget.
         :param text: Text or image path to display.
-        :param pic: Indicates if the tooltip contains an image.
+        :param pic: Force image rendering even if the path cannot be resolved.
         """
         super().__init__(parent)
+        self.setWindowFlags(Qt.ToolTip)
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(5, 5, 5, 5)
+
         self.text = text
         self.pic = pic
-        self.setWindowFlags(Qt.ToolTip)  # Set the widget as a tooltip
+        self.set_content(text, pic)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
+    def set_content(self, text, pic=False):
+        """Replaces what the tooltip shows.
+
+        One instance is reused for the lifetime of its owner. Building a new tooltip
+        widget on every selection change leaked a top-level window each time, and left
+        the previous one able to reappear.
+        """
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self.text = text
+        self.pic = pic
 
         image_path = self.resolve_image(text)
         if image_path:
@@ -43,9 +64,9 @@ class CreateToolTip(QWidget):
             self.text = image_path
 
         if not self.pic:
-            # Text tooltip
             logger.debug("Creating a text tooltip: '%s'", self.text)
             label = QLabel(self.text, self)
+            label.setWordWrap(True)
             label.setStyleSheet(f"""
                 QLabel {{
                     background-color: {theme.SURFACE_RAISED};
@@ -55,16 +76,15 @@ class CreateToolTip(QWidget):
                     border-radius: 3px;
                 }}
             """)
-            layout.addWidget(label)
+            self._layout.addWidget(label)
         else:
-            # Image tooltip
             logger.debug("Creating an image tooltip: '%s'", self.text)
             pixmap = QPixmap(self.text)
             if not pixmap.isNull():
-                pixmap = pixmap.scaled(400, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap = pixmap.scaled(MAX_IMAGE_SIZE, MAX_IMAGE_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 img_label = QLabel(self)
                 img_label.setPixmap(pixmap)
-                layout.addWidget(img_label)
+                self._layout.addWidget(img_label)
             else:
                 logger.error("The specified image could not be loaded: '%s'", self.text)
 
@@ -96,16 +116,34 @@ class CreateToolTip(QWidget):
                 return candidate
         return None
 
+    def placement_for(self, widget, screen_area):
+        """Top-left corner to show at: just below the widget, kept on screen.
+
+        The old placement was a fixed ``QPoint(200, -300)`` offset, which threw the
+        tooltip over the results grid regardless of where the widget actually was, and
+        off-screen entirely for a window near an edge.
+        """
+        anchor = widget.mapToGlobal(QPoint(0, widget.height() + TOOLTIP_GAP))
+        x = min(max(anchor.x(), screen_area.left()), max(screen_area.right() - self.width(), screen_area.left()))
+
+        y = anchor.y()
+        if y + self.height() > screen_area.bottom():
+            # No room underneath: flip above the widget.
+            y = widget.mapToGlobal(QPoint(0, 0)).y() - self.height() - TOOLTIP_GAP
+        y = min(max(y, screen_area.top()), max(screen_area.bottom() - self.height(), screen_area.top()))
+        return QPoint(x, y)
+
     def show_tooltip(self, widget):
         """
-        Displays the tooltip at a position relative to the widget.
+        Displays the tooltip next to a widget, without leaving the screen.
 
         :param widget: The widget relative to which to display the tooltip.
         """
-        pos = widget.mapToGlobal(QPoint(200, -300))  # Offset for tooltip position
-        logger.debug("Displaying tooltip at position: %s", pos)
-        self.move(pos)
+        self.adjustSize()
+        screen = QGuiApplication.screenAt(widget.mapToGlobal(QPoint(0, 0))) or QGuiApplication.primaryScreen()
+        self.move(self.placement_for(widget, screen.availableGeometry()))
         self.show()
+        self.raise_()
 
     def hide_tooltip(self):
         """

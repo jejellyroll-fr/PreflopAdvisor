@@ -7,6 +7,7 @@ from collections import OrderedDict
 from .errors import InvalidRaiseSizing
 from .hand_convert_helper import convert_hand
 from .paths import resolve_range_folder
+from .settings import normalize
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +59,7 @@ class ActionProcessor:
         self.path = resolve_range_folder(tree_infos["folder"]) or tree_infos["folder"]
         self.tree_infos["folder"] = self.path
 
-        # ConfigParser lowercases option names while the rest of the code writes them in
-        # CamelCase. Normalize once here rather than depending on the exact type of
-        # `configs` (SectionProxy or plain dict).
-        self._settings = {str(key).lower(): value for key, value in dict(configs).items()}
+        self._settings = normalize(configs)
 
         self.cache_size = int(self._setting("CacheSize", 100))
         self.ending = self._setting("Ending", DEFAULT_ENDING)

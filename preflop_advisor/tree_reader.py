@@ -4,6 +4,7 @@ import logging
 
 from .errors import RangeFolderNotFound
 from .paths import resolve_range_folder
+from .settings import normalize
 from .tree_reader_helpers import ActionProcessor
 
 logger = logging.getLogger(__name__)
@@ -25,9 +26,7 @@ class TreeReader:
         """
         logger.debug("Initializing TreeReader for hand: %s and position: %s", hand, position)
 
-        # ConfigParser lowercases option names, plain dicts do not. ActionProcessor
-        # normalizes the same way; doing it here too means either kind of mapping works.
-        settings = {str(key).lower(): value for key, value in dict(configs).items()}
+        settings = normalize(configs)
         positions = settings.get("positions")
         if positions is None:
             raise KeyError("Positions missing from the TreeReader configuration")

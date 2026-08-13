@@ -2,7 +2,7 @@
 
 import logging
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .settings import Settings
 from .tooltip import CreateToolTip
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,13 @@ class TreeSelector(QWidget):
     def __init__(self, root, tree_selector_settings, tree_configs, tree_tooltips):
         super().__init__(root)
         self.root = root  # Store the parent to access other components
-        self.tree_tooltips = tree_tooltips or {}
-        self.enable_tooltips = tree_selector_settings.get("ToolTips", "NO").upper() == "YES"
+        settings = Settings(tree_selector_settings)
+        self.tree_tooltips = Settings(tree_tooltips) if tree_tooltips else None
+        self.enable_tooltips = str(settings.get("ToolTips", "NO")).upper() == "YES"
         self.current_tooltip = None
-        self.num_trees = int(tree_selector_settings.get("NumTrees", 5))
-        self.fontsize = int(tree_selector_settings.get("FontSize", 12))
-        self.font = tree_selector_settings.get("Font", "Arial")
+        self.num_trees = int(settings.get("NumTrees", 5))
+        self.fontsize = int(settings.get("FontSize", 12))
+        self.font = settings.get("Font", "Arial")
         self.trees = []
 
         logger.debug("Initializing TreeSelector with %d trees.", self.num_trees)
@@ -63,12 +65,13 @@ class TreeSelector(QWidget):
 
         # Connect the signal to handle selection changes
         self.dropdown.currentIndexChanged.connect(self.on_tree_selected)
+        self.dropdown.installEventFilter(self)
 
         # Add the QComboBox to the layout
         self.layout.addWidget(self.dropdown)
 
         # Select the default tree
-        default_tree = int(tree_selector_settings.get("DefaultTree", 0))
+        default_tree = int(settings.get("DefaultTree", 0))
         self.dropdown.setCurrentIndex(default_tree)
         self.current_tree = self.trees[default_tree] if self.trees else None
 
@@ -109,22 +112,58 @@ class TreeSelector(QWidget):
         self.label.setText(f"Selected: {self.current_tree['game']} {self.current_tree['infos']}")
         logger.debug("Selected tree: %s", self.current_tree)
 
-        # Update tooltip if enabled
-        if self.enable_tooltips and self.tree_tooltips and "table_key" in self.current_tree:
-            table_key = self.current_tree["table_key"]
-            tooltip_val = self.tree_tooltips.get(table_key, "")
-            if tooltip_val:
-                self.current_tooltip = CreateToolTip(self, tooltip_val)
-                self.dropdown.enterEvent = lambda event: (
-                    self.current_tooltip.show_tooltip(self.dropdown) if self.current_tooltip else None
-                )
-                self.dropdown.leaveEvent = lambda event: (
-                    self.current_tooltip.hide_tooltip() if self.current_tooltip else None
-                )
-            else:
-                self.current_tooltip = None
-
+        self.update_tooltip()
         self.tree_changed()
+
+    def tooltip_for_current_tree(self):
+        """Tooltip text or image path configured for the selected tree, if any."""
+        if not (self.enable_tooltips and self.tree_tooltips and self.current_tree):
+            return ""
+        return self.tree_tooltips.get(self.current_tree.get("table_key", ""), "")
+
+    def update_tooltip(self):
+        """Points the single tooltip instance at the selected tree.
+
+        A fresh CreateToolTip used to be built on every selection change, each one a
+        top-level window that was never released.
+        """
+        self.hide_tooltip()
+        content = self.tooltip_for_current_tree()
+        if not content:
+            self.current_tooltip = None
+            return
+        if self.current_tooltip is None:
+            self.current_tooltip = CreateToolTip(self, content)
+        else:
+            self.current_tooltip.set_content(content)
+
+    def show_tooltip(self):
+        if self.current_tooltip is not None:
+            self.current_tooltip.show_tooltip(self.dropdown)
+
+    def hide_tooltip(self):
+        if self.current_tooltip is not None:
+            self.current_tooltip.hide_tooltip()
+
+    def eventFilter(self, watched, event):
+        """Shows the tooltip while the pointer is over the dropdown.
+
+        An event filter replaces reassigning the dropdown's enterEvent/leaveEvent
+        attributes. Those were rebound on every selection change, and no Leave arrives
+        once the combo popup opens, which is how the tooltip got stranded on screen over
+        the results grid.
+        """
+        if watched is self.dropdown:
+            if event.type() == QEvent.Enter:
+                self.show_tooltip()
+            elif event.type() in (QEvent.Leave, QEvent.Hide, QEvent.MouseButtonPress, QEvent.FocusOut):
+                self.hide_tooltip()
+        return super().eventFilter(watched, event)
+
+    def hideEvent(self, event):
+        """A hidden selector must not leave its tooltip floating."""
+        self.hide_tooltip()
+        super().hideEvent(event)
 
     def tree_changed(self):
         """
