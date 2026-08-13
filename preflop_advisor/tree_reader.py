@@ -157,9 +157,7 @@ class TreeReader:
             row = [{"isInfo": True, "Text": "after Limp"}]
             for column_pos in self.position_list:
                 if column_pos == "BB":
-                    results = self.action_processor.get_results(
-                        self.hand, [("SB", "Call"), ("BB", "Raise")], pos
-                    )
+                    results = self.action_processor.get_results(self.hand, [("SB", "Call"), ("BB", "Raise")], pos)
                 else:
                     results = []
                 row.append({"isInfo": False, "Results": results})
@@ -207,9 +205,7 @@ class TreeReader:
         try:
             return [self.position_list.index(position) for position in positions]
         except ValueError:
-            logging.warning(
-                "Positions %s not all seated in %s", list(positions), self.position_list
-            )
+            logging.warning("Positions %s not all seated in %s", list(positions), self.position_list)
             return None
 
     def get_vs_first_in(self, position, fi_position):

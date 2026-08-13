@@ -146,8 +146,12 @@ class TreeSelector(QWidget):
             tooltip_val = self.tree_tooltips.get(table_key, "")
             if tooltip_val:
                 self.current_tooltip = CreateToolTip(self, tooltip_val)
-                self.dropdown.enterEvent = lambda event: self.current_tooltip.show_tooltip(self.dropdown) if self.current_tooltip else None
-                self.dropdown.leaveEvent = lambda event: self.current_tooltip.hide_tooltip() if self.current_tooltip else None
+                self.dropdown.enterEvent = lambda event: (
+                    self.current_tooltip.show_tooltip(self.dropdown) if self.current_tooltip else None
+                )
+                self.dropdown.leaveEvent = lambda event: (
+                    self.current_tooltip.hide_tooltip() if self.current_tooltip else None
+                )
             else:
                 self.current_tooltip = None
 

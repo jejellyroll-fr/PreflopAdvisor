@@ -46,9 +46,9 @@ Hors graphe (mort ou non branché) :
 
 ```python
 # RaiseSizeList = Raise75, RaisePot, Raise100, All_In
-numeric_part = re.findall(r"\d+\.?\d*", raise_size)   # "Raise75" -> ["75"]
-key = f"Raise{int(numeric_value * 100)}"              # -> "Raise7500"  ✗
-self.configs.setdefault(key, key)                     # -> configs["Raise7500"] = "Raise7500"
+numeric_part = re.findall(r"\d+\.?\d*", raise_size)  # "Raise75" -> ["75"]
+key = f"Raise{int(numeric_value * 100)}"  # -> "Raise7500"  ✗
+self.configs.setdefault(key, key)  # -> configs["Raise7500"] = "Raise7500"
 ```
 
 La clé attendue est `Raise75`, qui vaut `40075` en config. Le code fabrique `Raise7500`, absent de la config, puis `setdefault` l'auto-remplit avec sa propre valeur littérale. `get_filename` produit alors `Raise7500.rng` au lieu de `40075.rng`.
@@ -80,8 +80,9 @@ Correctif validé expérimentalement (substitution directe + sondage) :
 ```python
 {
     "isInfo": False,
-    "Results": self.action_processor.get_results(...) if column_pos == "BB"
-               else {"isInfo": False, "Results": []},   # ✗ dict imbriqué
+    "Results": self.action_processor.get_results(...)
+    if column_pos == "BB"
+    else {"isInfo": False, "Results": []},  # ✗ dict imbriqué
 }
 ```
 
@@ -179,7 +180,7 @@ def test_hu_tree_coverage_is_non_trivial(hu_tree, tree_configs):
                 if not cell["isInfo"]:
                     total += 1
                     filled += bool(cell["Results"])
-    assert filled / total > 0.30   # actuellement ≈ 0.03
+    assert filled / total > 0.30  # actuellement ≈ 0.03
 ```
 
 **0.4 — Test de contrat de forme**
@@ -204,7 +205,7 @@ def find_valid_raise_sizes(self, full_action_sequence):
         if action != "Raise":
             resolved.append((position, action))
             continue
-        for size_key in self.raise_size_keys:          # ["Raise75","RaisePot","Raise100","All_In"]
+        for size_key in self.raise_size_keys:  # ["Raise75","RaisePot","Raise100","All_In"]
             candidate = resolved + [(position, size_key)]
             if self._sequence_has_descendant(candidate):
                 resolved.append((position, size_key))
@@ -225,8 +226,7 @@ def find_valid_raise_sizes(self, full_action_sequence):
 row = [{"isInfo": True, "Text": "after Limp"}]
 for column_pos in self.position_list:
     if column_pos == "BB":
-        results = self.action_processor.get_results(
-            self.hand, [("SB", "Call"), ("BB", "Raise")], pos)
+        results = self.action_processor.get_results(self.hand, [("SB", "Call"), ("BB", "Raise")], pos)
     else:
         results = []
     row.append({"isInfo": False, "Results": results})

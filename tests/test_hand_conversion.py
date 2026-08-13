@@ -116,9 +116,7 @@ def test_conversion_is_suit_isomorphic(hand, isomorphic):
 
 
 def test_omaha5_conversion_is_permutation_invariant():
-    outputs = {
-        convert_hand("".join(order)) for order in itertools.permutations(cards_of("Ad8s7h2c4c"))
-    }
+    outputs = {convert_hand("".join(order)) for order in itertools.permutations(cards_of("Ad8s7h2c4c"))}
     assert len(outputs) == 1
 
 
@@ -292,9 +290,7 @@ def test_move_plo5_file_converts_json_export_to_range_format(tmp_path):
 
 
 def test_move_plo5_postflop_file_writes_csv(tmp_path):
-    (tmp_path / "in.json").write_text(
-        json.dumps({"items": [{"combo": "AhKs4h3s", "weight": 12, "ev": 1.5}]})
-    )
+    (tmp_path / "in.json").write_text(json.dumps({"items": [{"combo": "AhKs4h3s", "weight": 12, "ev": 1.5}]}))
 
     move_plo5_postflop_file(str(tmp_path), "in.json", "out.csv")
 

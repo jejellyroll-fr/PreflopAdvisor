@@ -32,10 +32,10 @@ def test_action_processor(configs):
     }
     position_list = ["SB", "BB"]
     ap = ActionProcessor(position_list, tree_infos, tree_reader_configs)
-    
+
     seq = ap.get_action_sequence([("SB", "Raise")])
     assert len(seq) > 0
-    
+
     # Test getting results for a hand
     results = ap.get_results("AhKs4h3s", [], "SB")
     assert isinstance(results, list)

@@ -303,7 +303,7 @@ def move_plo5_postflop_file(work_path, inputfilename, outputfilename):
     hands = data["items"]
     output_file = os.path.join(work_path, outputfilename)
     with open(output_file, "w") as range_file:
-        range_file.writelines(f"{item['combo']},{item['weight']},{item['ev']*1000}\n" for item in hands)
+        range_file.writelines(f"{item['combo']},{item['weight']},{item['ev'] * 1000}\n" for item in hands)
     logging.info(f"Converted post-flop file written: {output_file}")
 
 

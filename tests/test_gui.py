@@ -135,18 +135,14 @@ def test_active_seats_follow_the_table_size(position_selector, num_players, expe
     enabled = {
         position
         for position in position_selector.position_list
-        if position_selector.button_list[
-            position_selector.convert_position_name_to_index(position)
-        ].isEnabled()
+        if position_selector.button_list[position_selector.convert_position_name_to_index(position)].isEnabled()
     }
     assert enabled == expected
 
 
 def test_shrinking_the_table_falls_back_to_the_default_seat(position_selector):
     position_selector.update_active_positions(6)
-    position_selector.process_button_clicked(
-        position_selector.convert_position_name_to_index("UTG")
-    )
+    position_selector.process_button_clicked(position_selector.convert_position_name_to_index("UTG"))
     assert position_selector.get_position() == "UTG"
 
     position_selector.update_active_positions(2)
@@ -161,9 +157,7 @@ def test_shrinking_the_table_does_not_recurse(position_selector):
     the output refresh.
     """
     position_selector.update_active_positions(6)
-    position_selector.process_button_clicked(
-        position_selector.convert_position_name_to_index("UTG")
-    )
+    position_selector.process_button_clicked(position_selector.convert_position_name_to_index("UTG"))
 
     emitted = []
     position_selector.positionChanged.connect(emitted.append)

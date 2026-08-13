@@ -108,9 +108,7 @@ def test_raise_sizes_are_probed_not_assumed(synthetic_tree, tree_configs):
     resolved = processor.find_valid_raise_sizes(processor.get_action_sequence([("SB", "Raise")]))
     assert resolved == [("SB", "RaisePot")]
 
-    resolved = processor.find_valid_raise_sizes(
-        processor.get_action_sequence([("SB", "Raise"), ("BB", "Raise")])
-    )
+    resolved = processor.find_valid_raise_sizes(processor.get_action_sequence([("SB", "Raise"), ("BB", "Raise")]))
     assert resolved == [("SB", "RaisePot"), ("BB", "Raise100")]
     assert processor.test_action_sequence(resolved)
 
@@ -276,9 +274,7 @@ def test_cache_evicts_the_least_recently_inserted_file(synthetic_tree, tree_conf
     from preflop_advisor.tree_reader_helpers import CACHE
 
     CACHE.clear()
-    processor = ActionProcessor(
-        HU_POSITIONS, synthetic_tree, dict(tree_configs) | {"cachesize": "2"}
-    )
+    processor = ActionProcessor(HU_POSITIONS, synthetic_tree, dict(tree_configs) | {"cachesize": "2"})
 
     for sequence in ([("SB", "Fold")], [("SB", "Call")], [("SB", "RaisePot")]):
         processor.read_hand_with_cache("(3K)(4A)", sequence)

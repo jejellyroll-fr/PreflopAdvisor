@@ -26,9 +26,7 @@ DEFAULT_ENDING = ".rng"
 
 # Keys of the [TreeReader] section that drive the reader itself and are therefore not
 # action codes.
-_META_KEYS = frozenset(
-    {"positions", "raisesizelist", "validactions", "cachesize", "ending", "gametype"}
-)
+_META_KEYS = frozenset({"positions", "raisesizelist", "validactions", "cachesize", "ending", "gametype"})
 
 
 class ActionProcessor:
@@ -272,9 +270,7 @@ class ActionProcessor:
             else:
                 # No sizing leads anywhere; keep the first one so the caller still gets a
                 # well-formed sequence, and let test_action_sequence reject it.
-                logger.debug(
-                    "No valid raise sizing for %s after %s in %s", position, resolved, self.path
-                )
+                logger.debug("No valid raise sizing for %s after %s in %s", position, resolved, self.path)
                 resolved.append((position, self.raise_size_keys[0]))
 
         logger.debug("Sequence after sizing resolution: %s", resolved)

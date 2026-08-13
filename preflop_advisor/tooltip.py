@@ -44,7 +44,11 @@ class CreateToolTip(QWidget):
                 if os.path.exists(popup_path):
                     img_path = popup_path
 
-        if os.path.exists(img_path) and any(img_path.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".bmp")) or os.path.exists(img_path):
+        if (
+            os.path.exists(img_path)
+            and any(img_path.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".bmp"))
+            or os.path.exists(img_path)
+        ):
             self.pic = True
             self.text = img_path
 

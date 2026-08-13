@@ -29,9 +29,7 @@ def test_empty_results_render_as_empty(frame):
 
 
 def test_fold_is_never_displayed_as_an_action(raw_frame):
-    formatted = raw_frame.preprocess_results(
-        [["Fold", 0.0, -2000.0], ["Call", 0.4, 1000.0], ["Raise100", 0.6, 3000.0]]
-    )
+    formatted = raw_frame.preprocess_results([["Fold", 0.0, -2000.0], ["Call", 0.4, 1000.0], ["Raise100", 0.6, 3000.0]])
 
     assert [entry[0] for entry in formatted] == ["Call", "Raise100"]
 
