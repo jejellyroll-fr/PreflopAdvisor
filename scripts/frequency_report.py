@@ -2,7 +2,8 @@
 """Standalone report of preflop action frequencies, aggregated over whole ranges.
 
 Not part of the application: it was used to generate the tooltip overviews shipped in
-popup-pics/. Run it as ``python scripts/frequency_report.py [range-folder]``.
+popup-pics/. Run it as ``python scripts/frequency_report.py <range-folder>``, naming a
+single tree such as ``ranges/HU-100bb-with-limp`` -- not the ``ranges/`` container.
 """
 
 import itertools
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 
 # This script lives outside the package, so make the repository importable.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+RANGES_DIRNAME = "ranges"
 sys.path.insert(0, PROJECT_ROOT)
 
 from preflop_advisor.tree_reader_helpers import ActionProcessor
@@ -251,8 +253,37 @@ def format_cell(cell):
         return ""
 
 
+def available_trees():
+    """Tree folders under ranges/, i.e. the directories that hold .rng files."""
+    container = os.path.join(PROJECT_ROOT, RANGES_DIRNAME)
+    if not os.path.isdir(container):
+        return []
+    return sorted(
+        name
+        for name in os.listdir(container)
+        if os.path.isdir(os.path.join(container, name))
+        and any(entry.endswith(".rng") for entry in os.listdir(os.path.join(container, name)))
+    )
+
+
+def usage():
+    """Usage text listing the trees that are actually present.
+
+    The tree folder has to be named explicitly. Defaulting to ranges/ pointed at the
+    *container* of the trees rather than a tree, and since range files are only read
+    from the directory given, the report came out as zeros everywhere with no error.
+    """
+    lines = ["Usage: python scripts/frequency_report.py <range-folder>", ""]
+    trees = available_trees()
+    if trees:
+        lines.append("Trees available in this checkout:")
+        lines.extend(f"  {RANGES_DIRNAME}/{name}" for name in trees)
+    else:
+        lines.append(f"No tree found under {RANGES_DIRNAME}/. Export one from Monker first.")
+    return "\n".join(lines)
+
+
 def main():
-    app = QApplication([])
     config_path = os.path.join(PROJECT_ROOT, "preflop_advisor", "config.ini")
 
     # Load the configuration file
@@ -273,9 +304,21 @@ def main():
             return
 
     position_list = [position.strip() for position in configs["Positions"].split(",")]
-    tree_folder = sys.argv[1] if len(sys.argv) > 1 else os.path.join(PROJECT_ROOT, "ranges")
+
+    tree_folder = sys.argv[1] if len(sys.argv) > 1 else None
+    if tree_folder is None:
+        print(usage())
+        return 2
+    if not os.path.isdir(tree_folder):
+        print(f"Not a directory: {tree_folder}\n\n{usage()}")
+        return 2
+
     print(f"Reading ranges from: {tree_folder}")
     tree_infos = {"folder": tree_folder, "NumPlayers": len(position_list)}
+
+    # Created only once the arguments hold up, so a usage error does not spin up the GUI
+    # toolkit; reused when one already exists, since constructing a second raises.
+    app = QApplication.instance() or QApplication([])
 
     # Load weights from a pickle file if available
     game_type = configs.get("GameType", "DefaultGame")
@@ -301,4 +344,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

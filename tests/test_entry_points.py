@@ -85,3 +85,46 @@ def test_running_the_module_headlessly_starts_and_exits_cleanly():
         output = process.communicate()[0]
 
     assert "Traceback" not in output, output
+
+
+# --------------------------------------------------------------------------------------
+# Runtime data files
+# --------------------------------------------------------------------------------------
+
+
+def test_the_config_file_ships_with_the_package():
+    """MainWindow raises FileNotFoundError at startup without it."""
+    import os
+
+    from preflop_advisor.paths import package_file
+
+    assert os.path.isfile(package_file("config.ini"))
+
+
+def test_the_tooltip_images_ship_with_the_package():
+    """Tooltips resolve overview images under popup-pics/ inside the package."""
+    import os
+
+    from preflop_advisor.paths import package_file
+
+    popup = package_file("popup-pics")
+    assert os.path.isdir(popup)
+    assert any(name.endswith(".png") for name in os.listdir(popup))
+
+
+def test_runtime_data_is_declared_as_package_data():
+    """A wheel install carries no data unless it is declared.
+
+    packages.find only discovers Python packages; config.ini and popup-pics are what the
+    app reads at startup, and ranges/ is deliberately left out (15MB of demo trees).
+    """
+    import tomllib
+
+    from preflop_advisor.paths import PROJECT_ROOT
+
+    with open(f"{PROJECT_ROOT}/pyproject.toml", "rb") as handle:
+        config = tomllib.load(handle)
+
+    declared = config["tool"]["setuptools"]["package-data"]["preflop_advisor"]
+    assert "config.ini" in declared
+    assert any("popup-pics" in entry for entry in declared)

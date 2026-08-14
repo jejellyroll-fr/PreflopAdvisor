@@ -49,7 +49,15 @@ ignore = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["*"]
+# `ranges` is 15MB of demonstration trees. Users export their own from Monker and point
+# [TreeInfos] at them, so shipping it in the wheel would be dead weight; a wheel install
+# reports the missing folder in the status bar until a tree is configured.
 exclude = ["pics", "ranges", "tests", "tests.*"]
+
+[tool.setuptools.package-data]
+# Declared explicitly rather than relying on include-package-data: config.ini is loaded
+# unconditionally at startup, and the tooltip overviews are looked up under popup-pics/.
+preflop_advisor = ["config.ini", "popup-pics/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

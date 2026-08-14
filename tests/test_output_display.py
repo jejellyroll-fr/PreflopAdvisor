@@ -13,6 +13,9 @@ from preflop_advisor.tree_reader import TreeReader
 
 from .conftest import REFERENCE_HAND
 
+# Trash in the shipped HU tree: folds 100% of the time facing a raise.
+FOLDING_HAND = "2c3d4h9s"
+
 
 @pytest.fixture
 def frame(qtbot, output_configs, tree_configs):
@@ -392,3 +395,55 @@ def test_blend_moves_from_background_to_foreground():
 def test_ev_colour_is_neutral_for_unreadable_values():
     assert theme.ev_color("not-a-number") == theme.EV_NEUTRAL
     assert theme.ev_color("0.00") == theme.EV_NEUTRAL
+
+
+def test_a_roll_landing_on_fold_is_named_in_the_cell(qtbot):
+    """Fold has no tile, so a highlight of "Fold" would match nothing.
+
+    The randomizer would then show a number while the grid stayed inert, in exactly the
+    fold/call and fold/raise spots that are the common case.
+    """
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+
+    entry.set_result_label([["Call", "0", "2.38"], ["Raise100", "17", "2.89"]], highlight="Fold")
+
+    # isHidden, not isVisible: the latter is False while the parent is unshown.
+    assert not entry.info_text.isHidden()
+    assert "Fold" in entry.info_text.text()
+    assert theme.ACCENT in entry.info_text.styleSheet()
+
+
+def test_a_roll_landing_on_a_shown_action_marks_the_tile_only(qtbot):
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+
+    entry.set_result_label([["Call", "0", "2.38"], ["Raise100", "17", "2.89"]], highlight="Raise100")
+
+    assert entry.info_text.isHidden()
+    assert entry.label_right.text()
+
+
+def test_the_fold_marker_clears_on_the_next_render(qtbot):
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.set_result_label([["Call", "40", "1.0"]], highlight="Fold")
+
+    entry.set_result_label([["Call", "40", "1.0"]], highlight="Call")
+
+    assert entry.info_text.isHidden()
+
+
+def test_the_roll_reaches_the_grid_as_a_fold_marker(frame, hu_tree):
+    """End to end: a roll lands in Fold and the grid says so.
+
+    REFERENCE_HAND is too strong to ever fold in this tree -- every node gives it a 0%
+    fold -- so a hand that actually folds is needed to exercise the path.
+    """
+    frame.update_output_frame(FOLDING_HAND, "BB", hu_tree)
+    frame.set_roll(0)
+
+    markers = [
+        entry.info_text.text() for row in frame.table_entries for entry in row if "Fold" in entry.info_text.text()
+    ]
+    assert markers, "no cell reported the rolled Fold"

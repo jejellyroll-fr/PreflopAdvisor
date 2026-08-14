@@ -244,13 +244,23 @@ class TableEntry(QWidget):
             self.tiles.hide()
             return
 
-        # The header line is hidden so the tiles get the whole cell.
-        self.info_text.hide()
         self.tiles.show()
         for tile, (action, frequency, ev) in zip((self.label_left, self.label_right), results):
             tile.set_action(action, frequency, ev, selected=highlight is not None and action == highlight)
         self.label_left.apply_fonts(self.height())
         self.label_right.apply_fonts(self.height())
+
+        # The roll can land in the Fold bucket, but Fold has no tile of its own, so the
+        # highlight would match nothing and the randomizer would silently pick an action
+        # the grid never shows. Name it above the tiles instead.
+        rolled_but_not_shown = highlight is not None and all(entry[0] != highlight for entry in results)
+        if rolled_but_not_shown:
+            self.info_text.setText(f"▸ {short_action_label(highlight)}")
+            self.info_text.setStyleSheet(f"color: {theme.ACCENT}; font-weight: bold;")
+            self.info_text.show()
+        else:
+            # Otherwise the header line is hidden so the tiles get the whole cell.
+            self.info_text.hide()
 
     def displayed_actions(self):
         """Names of the actions currently shown, in display order."""
