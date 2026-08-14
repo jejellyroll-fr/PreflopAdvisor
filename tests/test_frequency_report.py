@@ -59,3 +59,28 @@ def test_running_with_a_bad_path_explains_itself(script, monkeypatch, capsys):
 
     assert exit_code == 2
     assert "Not a directory" in capsys.readouterr().out
+
+
+def test_running_on_the_ranges_container_explains_itself(script, monkeypatch, capsys):
+    """A directory is not enough: ranges/ is one, and holds no range file."""
+    monkeypatch.setattr(script.sys, "argv", ["frequency_report.py", "ranges"])
+
+    exit_code = script.main()
+
+    assert exit_code == 2
+    assert "No .rng file in" in capsys.readouterr().out
+
+
+def test_running_on_an_empty_directory_explains_itself(script, monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(script.sys, "argv", ["frequency_report.py", str(tmp_path)])
+
+    exit_code = script.main()
+
+    assert exit_code == 2
+    assert "No .rng file in" in capsys.readouterr().out
+
+
+def test_a_tree_folder_passes_the_range_file_check(script):
+    assert script.holds_range_files(os.path.join(PROJECT_ROOT, "ranges", "HU-100bb-with-limp"))
+    assert not script.holds_range_files(os.path.join(PROJECT_ROOT, "ranges"))
+    assert not script.holds_range_files("/definitely/not/here")

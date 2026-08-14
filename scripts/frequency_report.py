@@ -29,8 +29,10 @@ from PySide6.QtWidgets import (
 # This script lives outside the package, so make the repository importable.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 RANGES_DIRNAME = "ranges"
+RANGE_ENDING = ".rng"
 sys.path.insert(0, PROJECT_ROOT)
 
+from preflop_advisor.paths import resolve_range_folder
 from preflop_advisor.tree_reader_helpers import ActionProcessor
 
 # Global constants
@@ -253,20 +255,33 @@ def format_cell(cell):
         return ""
 
 
-def available_trees():
-    """Tree folders under ranges/, i.e. the directories that hold .rng files."""
+def holds_range_files(folder, ending=RANGE_ENDING):
+    """Whether the folder itself holds range files.
+
+    Only the directory given is looked at, the way ``ActionProcessor`` indexes it: a
+    folder of tree folders -- ``ranges/`` first among them -- holds none, and an empty
+    directory is a directory all the same. Either one indexes zero nodes and reports
+    zero everywhere.
+    """
+    try:
+        return any(entry.endswith(ending) for entry in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def available_trees(ending=RANGE_ENDING):
+    """Tree folders under ranges/, i.e. the directories that hold range files."""
     container = os.path.join(PROJECT_ROOT, RANGES_DIRNAME)
     if not os.path.isdir(container):
         return []
     return sorted(
         name
         for name in os.listdir(container)
-        if os.path.isdir(os.path.join(container, name))
-        and any(entry.endswith(".rng") for entry in os.listdir(os.path.join(container, name)))
+        if os.path.isdir(os.path.join(container, name)) and holds_range_files(os.path.join(container, name), ending)
     )
 
 
-def usage():
+def usage(ending=RANGE_ENDING):
     """Usage text listing the trees that are actually present.
 
     The tree folder has to be named explicitly. Defaulting to ranges/ pointed at the
@@ -274,7 +289,7 @@ def usage():
     from the directory given, the report came out as zeros everywhere with no error.
     """
     lines = ["Usage: python scripts/frequency_report.py <range-folder>", ""]
-    trees = available_trees()
+    trees = available_trees(ending)
     if trees:
         lines.append("Trees available in this checkout:")
         lines.extend(f"  {RANGES_DIRNAME}/{name}" for name in trees)
@@ -305,12 +320,20 @@ def main():
 
     position_list = [position.strip() for position in configs["Positions"].split(",")]
 
-    tree_folder = sys.argv[1] if len(sys.argv) > 1 else None
-    if tree_folder is None:
-        print(usage())
+    ending = configs.get("Ending", RANGE_ENDING)
+
+    argument = sys.argv[1] if len(sys.argv) > 1 else None
+    if argument is None:
+        print(usage(ending))
         return 2
-    if not os.path.isdir(tree_folder):
-        print(f"Not a directory: {tree_folder}\n\n{usage()}")
+    # Resolved the way ActionProcessor will resolve it, so the folder checked here is
+    # the folder read from.
+    tree_folder = resolve_range_folder(argument)
+    if tree_folder is None:
+        print(f"Not a directory: {argument}\n\n{usage(ending)}")
+        return 2
+    if not holds_range_files(tree_folder, ending):
+        print(f"No {ending} file in: {tree_folder}\n\n{usage(ending)}")
         return 2
 
     print(f"Reading ranges from: {tree_folder}")
