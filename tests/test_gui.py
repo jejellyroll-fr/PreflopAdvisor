@@ -294,6 +294,28 @@ def test_the_window_registers_a_progress_dialog_for_database_builds(main_window)
         progress.close()
 
 
+def test_the_progress_factory_outlives_the_window_that_registered_it(qtbot):
+    """The store keeps the factory for the whole process; a window does not last that long.
+
+    Closing over the window meant every later build reached a MainWindow Qt had already
+    destroyed, and raised instead of showing progress.
+    """
+    import gc
+
+    from preflop_advisor import sqlite_store
+
+    # Deliberately not handed to qtbot: the point is to let Qt destroy it while the store
+    # still holds whatever the window registered, which is what qtbot's teardown prevents.
+    window = MainWindow()
+    window.deleteLater()
+    del window
+    gc.collect()
+    qtbot.wait(10)
+
+    progress = sqlite_store._PROGRESS_FACTORY("/ranges/some-tree", 2)
+    progress.close()
+
+
 # --------------------------------------------------------------------------------------
 # Window shape
 # --------------------------------------------------------------------------------------
@@ -370,3 +392,18 @@ def test_the_divider_position_survives_a_restart(qtbot, main_window):
     qtbot.addWidget(reopened)
 
     assert reopened.splitter.sizes() == moved
+
+
+def test_widening_the_window_goes_to_the_results(qtbot, main_window):
+    """A wider card grid is wider cards; a wider table is another seat read at a glance."""
+    main_window.show()
+    main_window.resize(1360, 660)
+    qtbot.wait(20)
+    input_width = main_window.input_frame.width()
+    output_width = main_window.output_frame.width()
+
+    main_window.resize(1900, 660)
+    qtbot.wait(20)
+
+    assert main_window.input_frame.width() == input_width
+    assert main_window.output_frame.width() > output_width + 400

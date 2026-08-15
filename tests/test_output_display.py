@@ -6,9 +6,17 @@ strategy.
 """
 
 import pytest
+from PySide6.QtGui import QFontMetrics
 
 from preflop_advisor import theme
-from preflop_advisor.outputframe import EMPTY_CELL_TEXT, OutputFrame, TableEntry, short_action_label
+from preflop_advisor.outputframe import (
+    EMPTY_CELL_TEXT,
+    MIN_CELL_HEIGHT,
+    MIN_CELL_WIDTH,
+    OutputFrame,
+    TableEntry,
+    short_action_label,
+)
 from preflop_advisor.tree_reader import TreeReader
 
 from .conftest import REFERENCE_HAND
@@ -477,3 +485,93 @@ def test_the_roll_reaches_the_grid_as_a_fold_marker(frame, hu_tree):
         entry.info_text.text() for row in frame.table_entries for entry in row if "Fold" in entry.info_text.text()
     ]
     assert markers, "no cell reported the rolled Fold"
+
+
+# --------------------------------------------------------------------------------------
+# The grid spans the panel it is given
+# --------------------------------------------------------------------------------------
+
+
+def test_shrinking_the_grid_releases_the_columns_it_no_longer_has(frame):
+    """A QGridLayout keeps the stretch of every column it has ever held.
+
+    Going from the overview to a heads-up position view left the fourth column stretched
+    with nothing in it, so three columns of results sat in three quarters of the panel.
+    """
+    frame.create_result_grid(3, 4)
+    frame.create_result_grid(7, 3)
+
+    layout = frame.output_layout
+    assert [layout.columnStretch(i) for i in range(3)] == [1, 1, 1]
+    assert all(layout.columnStretch(i) == 0 for i in range(3, layout.columnCount()))
+
+
+def test_shrinking_the_grid_releases_the_rows_it_no_longer_has(frame):
+    frame.create_result_grid(7, 3)
+    frame.create_result_grid(3, 4)
+
+    layout = frame.output_layout
+    assert [layout.rowStretch(i) for i in range(3)] == [1, 1, 1]
+    assert all(layout.rowStretch(i) == 0 for i in range(3, layout.rowCount()))
+
+
+def test_a_rebuilt_grid_of_the_same_size_is_still_spread(frame):
+    """The early return skips the rebuild, so it has to reset the stretches itself."""
+    frame.create_result_grid(7, 6)
+    frame.create_result_grid(3, 3)
+    frame.create_result_grid(3, 3)
+
+    layout = frame.output_layout
+    assert all(layout.columnStretch(i) == 0 for i in range(3, layout.columnCount()))
+
+
+@pytest.mark.parametrize("columns", [3, 5, 8])
+def test_the_table_spans_the_panel_whatever_the_seat_count(qtbot, frame, columns):
+    """Three-handed or nine-handed, the table uses the width it is given."""
+    frame.resize(900, 600)
+    frame.create_result_grid(7, columns)
+    qtbot.wait(10)
+
+    used = sum(entry.width() for entry in frame.table_entries[0])
+    available = frame.scroll_area.viewport().width()
+    assert used >= min(available, columns * MIN_CELL_WIDTH) - 20
+
+
+# --------------------------------------------------------------------------------------
+# Legibility as the cells narrow
+# --------------------------------------------------------------------------------------
+
+
+def test_a_narrow_cell_gets_a_smaller_font_than_a_wide_one(qtbot):
+    """Sized on height alone, a nine-handed cell asked for a 24pt "98%" in half the room.
+
+    The numbers then rendered as "-1.6" and "R10": a wrong value, shown confidently,
+    which is worse than having to scroll.
+    """
+    wide, narrow = TableEntry(), TableEntry()
+    qtbot.addWidget(wide)
+    qtbot.addWidget(narrow)
+
+    for entry, width in ((wide, 240), (narrow, MIN_CELL_WIDTH)):
+        entry.resize(width, 80)
+        entry.set_result_label([["Call", "38", "1.68"], ["Raise100", "62", "2.41"]])
+        force_layout(entry)
+
+    assert narrow.label_left.frequency_label.font().pointSize() < wide.label_left.frequency_label.font().pointSize()
+
+
+def test_the_cell_floor_fits_what_a_tile_has_to_show(qtbot):
+    """The floor is what "+2.41" costs, not a round number."""
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.resize(MIN_CELL_WIDTH, MIN_CELL_HEIGHT)
+    entry.set_result_label([["Call", "38", "1.68"], ["Raise100", "62", "2.41"]])
+    force_layout(entry)
+
+    for label, text in (
+        (entry.label_right.ev_label, "+2.41"),
+        (entry.label_right.action_label, "R100"),
+        (entry.label_right.frequency_label, "62%"),
+    ):
+        needed = QFontMetrics(label.font()).horizontalAdvance(text)
+        assert needed <= label.width(), f"{text!r} needs {needed}px, has {label.width()}px"

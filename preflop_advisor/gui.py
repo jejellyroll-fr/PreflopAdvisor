@@ -83,6 +83,11 @@ class DatabaseProgress:
         self.dialog.close()
 
 
+def build_progress(folder, total):
+    """Progress dialog for a database build, parented to whatever window is up."""
+    return DatabaseProgress(folder, total, QApplication.activeWindow())
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -99,7 +104,11 @@ class MainWindow(QMainWindow):
         # Building a tree's lookup database can take minutes, and it happens the first
         # time that tree is read. Registered here rather than in the store so that layer
         # keeps no dependency on a toolkit, and stays silent under tests and scripts.
-        sqlite_store.set_progress_factory(lambda folder, total: DatabaseProgress(folder, total, self))
+        #
+        # The dialog finds its parent when it is built, rather than closing over this
+        # window: the store keeps the factory for the life of the process, and a window
+        # captured here would be reached again long after Qt had destroyed it.
+        sqlite_store.set_progress_factory(build_progress)
 
         # Components emit while they are still being constructed, so the first
         # notifications arrive before every component exists. Refuse to refresh until the
@@ -159,8 +168,12 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.input_frame)
         self.splitter.addWidget(self.output_frame)
         self.splitter.setChildrenCollapsible(False)
-        self.splitter.setStretchFactor(0, 5)
-        self.splitter.setStretchFactor(1, 5)
+        # Every pixel past the opening width goes to the results. A wider card grid is
+        # just wider cards; a wider table is another seat's column read without scrolling,
+        # which is what a six- or nine-handed tree needs. Dragging the handle still
+        # overrides this, and where it is dragged to is remembered.
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
         main_layout.addWidget(self.splitter, 0, 0)
 
         # Set here rather than by the caller: both entry points get the same window, and
