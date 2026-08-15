@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 #: Cards per hand, by the game a tree declares. Matches what the card selector offers.
 CARDS_PER_GAME = {"NL": 2, "PLO": 4, "PLO8": 4, "PLO5": 5}
+#: How many hands to try on a node that exists before moving to the next spot. A whole
+#: export holds every hand of every node it has, so this only matters for a truncated
+#: one -- and it is what stops such a tree being called empty when it is not.
+HANDS_PER_SPOT = 5
 #: Height of the revealed strategy tiles. They read at a glance; they do not need the
 #: whole panel, and the room below is where the tally sits.
 TILE_HEIGHT = 120
@@ -154,8 +158,13 @@ class TrainerPanel(QWidget):
         Walked, not sampled. Drawing at random with replacement can miss a spot that is
         there: a nine-handed catalogue is 81 of them, so a tree exporting one line would
         be declared empty better than half the time. Every spot is looked at once before
-        saying the tree has nothing to drill, which costs 81 lookups at worst -- a few
-        milliseconds, against an answer that would have been wrong.
+        saying the tree has nothing to drill.
+
+        A spot whose node exists but did not hold the hand dealt is tried again with
+        another, up to ``HANDS_PER_SPOT``, since a truncated export holds some hands of a
+        node and not others. A spot with no node at all is left after one look: another
+        hand cannot conjure a file. That keeps the sweep to one lookup per absent line,
+        and spends the retries only where they can pay.
         """
         reader = TreeReader("", "", tree, self.tree_reader_configs)
         cards = CARDS_PER_GAME.get(str(tree.get("game", "PLO")).upper(), 4)
@@ -163,10 +172,17 @@ class TrainerPanel(QWidget):
         self.rng.shuffle(spots)
 
         for spot in spots:
-            hand = deal(cards, self.rng)
-            results = playable(reader.action_processor.get_results(hand, spot.line, spot.hero))
-            if results:
-                return Question(spot, hand, results)
+            for _ in range(HANDS_PER_SPOT):
+                hand = deal(cards, self.rng)
+                answered = reader.action_processor.get_results(hand, spot.line, spot.hero)
+                if not answered:
+                    # No file behind this line at all: another hand would not find one.
+                    break
+                results = playable(answered)
+                if results:
+                    return Question(spot, hand, results)
+                # The node is there but does not hold that hand, which a truncated export
+                # does. Only here is another deal worth its cost.
         logger.warning("No spot of %s answered", tree.get("folder"))
         return None
 

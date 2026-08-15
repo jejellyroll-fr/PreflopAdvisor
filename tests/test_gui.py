@@ -717,3 +717,43 @@ def test_the_trainer_asks_for_a_tree_when_none_is_configured(main_window, monkey
 
     assert main_window.trainer.question is None
     assert "tree" in main_window.trainer.spot_label.text().lower()
+
+
+def test_a_node_that_holds_some_hands_is_tried_again(main_window, tmp_path, monkeypatch):
+    """A truncated export holds part of a node, and one deal may miss it.
+
+    Left at a single hand per spot, such a tree was called empty while it had questions in
+    it -- and a node whose file exists is exactly where another deal can pay.
+    """
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "partial"
+    folder.mkdir()
+    # "(3K)(4A)" is what AhKs4h3s converts to; the file holds that hand and no other.
+    (folder / "1.rng").write_text("(3K)(4A)\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+
+    dealt = iter(["2c3d4h5s", "2c3d4h5s", "AhKs4h3s"])
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: next(dealt))
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is not None
+    assert main_window.trainer.question.hand == "AhKs4h3s"
+
+
+def test_a_line_with_no_file_is_not_dealt_again(main_window, tmp_path, monkeypatch):
+    """Another hand cannot conjure a file, so it is looked at once and left."""
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    folder = tmp_path / "empty"
+    folder.mkdir()
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "SB", [])])
+
+    deals = []
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: deals.append(1) or "AhKs4h3s")
+    main_window.trainer.next_hand()
+
+    assert deals == [1], "one look at a line that has no ranges behind it"
