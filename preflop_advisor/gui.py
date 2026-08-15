@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QSizePolicy,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +30,7 @@ from .paths import package_file
 from .position_selector import PositionSelector
 from .randomizer import RandomButton
 from .settings import ConfigSource, normalize
+from .trainer_panel import TrainerPanel
 from .tree_reader import TreeReader
 from .tree_selector import TreeSelector
 
@@ -120,6 +122,7 @@ class MainWindow(QMainWindow):
         # notifications arrive before every component exists. Refuse to refresh until the
         # window is fully assembled.
         self._ready = False
+        self._divider_placed = False
 
         # Initialize main widgets
         central_widget = QWidget()
@@ -179,7 +182,24 @@ class MainWindow(QMainWindow):
         # Dragging the handle still overrides this, and where it is left is remembered.
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        main_layout.addWidget(self.splitter, 0, 0)
+
+        # The advisor and the trainer are two ways of using the same tree, so they share
+        # the window and the selector rather than each carrying their own.
+        self.advisor = QWidget()
+        advisor_layout = QVBoxLayout(self.advisor)
+        advisor_layout.setContentsMargins(0, 0, 0, 0)
+        advisor_layout.addWidget(self.splitter)
+
+        self.trainer = TrainerPanel(
+            self.tree_selector.get_tree_infos,
+            tree_reader_settings,
+            output_settings,
+        )
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.advisor, "Advisor")
+        self.tabs.addTab(self.trainer, "Trainer")
+        main_layout.addWidget(self.tabs, 0, 0)
 
         # Set here rather than by the caller: both entry points get the same window, and
         # __main__ used to show it at whatever the layout demanded -- which was its
@@ -331,6 +351,12 @@ class MainWindow(QMainWindow):
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self.fit_to_screen()
+        # The divider is placed once the window has a real size. Set before that, its
+        # sizes are proportions of a page that has not been laid out, and Qt rescales
+        # them: the band then drifted with the window instead of holding still.
+        if not self._divider_placed:
+            self._divider_placed = True
+            self.place_divider()
 
     def restore_layout(self) -> None:
         """Put the window and its divider back where they were left.
@@ -344,7 +370,11 @@ class MainWindow(QMainWindow):
         geometry = settings.value(GEOMETRY_KEY)
         if isinstance(geometry, QByteArray):
             self.restoreGeometry(geometry)
-        divider = settings.value(SPLITTER_KEY)
+        self.place_divider()
+
+    def place_divider(self) -> None:
+        """Put the divider where it was left, or where it opens."""
+        divider = QSettings().value(SPLITTER_KEY)
         if isinstance(divider, QByteArray):
             self.splitter.restoreState(divider)
         else:
@@ -353,7 +383,14 @@ class MainWindow(QMainWindow):
             self.splitter.setSizes(list(DEFAULT_SPLIT))
 
     def save_layout(self) -> None:
-        """Record where the window and its divider ended up."""
+        """Record where the window and its divider ended up.
+
+        A window that was never shown has no layout worth keeping: its divider still holds
+        the proportions of a page that was never laid out, and saving those means the next
+        launch opens on them.
+        """
+        if not self._divider_placed:
+            return
         settings = QSettings()
         settings.setValue(GEOMETRY_KEY, self.saveGeometry())
         settings.setValue(SPLITTER_KEY, self.splitter.saveState())

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from preflop_advisor.card_selector import CardSelector
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
+from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector
@@ -374,7 +375,8 @@ def test_the_window_can_be_made_short(main_window):
     """The floor is the layout's own, and it has to clear a laptop screen."""
     main_window.resize(200, 200)
 
-    assert main_window.minimumSizeHint().height() <= 500
+    # The tab bar over the two modes costs about thirty pixels of it.
+    assert main_window.minimumSizeHint().height() <= 560
 
 
 def test_enlarging_the_window_does_not_raise_its_floor(main_window):
@@ -542,3 +544,91 @@ def test_showing_the_window_trims_it(qtbot, main_window):
     qtbot.wait(20)
 
     assert main_window.height() <= available.height()
+
+
+# --------------------------------------------------------------------------------------
+# Trainer tab
+# --------------------------------------------------------------------------------------
+
+
+def test_the_window_offers_both_the_advisor_and_the_trainer(main_window):
+    tabs = [main_window.tabs.tabText(index) for index in range(main_window.tabs.count())]
+
+    assert tabs == ["Advisor", "Trainer"]
+
+
+def test_dealing_asks_a_spot_the_selected_tree_can_answer(main_window):
+    """The trainer reads the Advisor's tree, so there is one answer to which tree it is."""
+    trainer = main_window.trainer
+
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert trainer.question.results, "a question must carry the solver's answer"
+    assert trainer.spot_label.text() == trainer.question.spot.label
+    assert len(trainer.buttons) == len(trainer.question.actions())
+
+
+def test_only_the_actions_of_the_node_are_offered(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+
+    offered = [button.text() for button in trainer.buttons]
+    expected = [short_action_label(action) for action in trainer.question.actions()]
+
+    assert offered == expected
+
+
+def test_answering_grades_the_choice_and_reveals_the_strategy(qtbot, main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    question = trainer.question
+
+    qtbot.mouseClick(trainer.buttons[0], Qt.LeftButton)
+
+    assert trainer.session.hands == 1
+    assert trainer.verdict_label.text(), "the answer must be scored on screen"
+    assert len(trainer.tiles) == len(question.results), "every action's numbers are shown"
+    assert all(not button.isEnabled() for button in trainer.buttons), "no answering twice"
+
+
+def test_the_session_tally_follows_the_answers(qtbot, main_window):
+    trainer = main_window.trainer
+
+    for _ in range(3):
+        trainer.next_hand()
+        qtbot.mouseClick(trainer.buttons[0], Qt.LeftButton)
+
+    assert trainer.session.hands == 3
+    assert trainer.stat_labels["Hands"].text() == "3"
+    assert sum(trainer.session.counts.values()) == 3
+
+
+def test_a_new_hand_clears_the_previous_answer(qtbot, main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    qtbot.mouseClick(trainer.buttons[0], Qt.LeftButton)
+
+    trainer.next_hand()
+
+    assert trainer.verdict_label.text() == ""
+    assert trainer.tiles == []
+    assert all(button.isEnabled() for button in trainer.buttons)
+
+
+def test_a_window_that_was_never_shown_saves_no_layout(qtbot):
+    """Its divider holds the proportions of a page that was never laid out.
+
+    Saved, they are what the next launch opens on.
+    """
+    from PySide6.QtCore import QSettings
+
+    from preflop_advisor.gui import SPLITTER_KEY
+
+    QSettings().remove(SPLITTER_KEY)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.save_layout()
+
+    assert QSettings().value(SPLITTER_KEY) is None
