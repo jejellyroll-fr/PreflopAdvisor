@@ -733,8 +733,17 @@ def test_a_node_that_holds_some_hands_is_tried_again(main_window, tmp_path, monk
     (folder / "1.rng").write_text("(3K)(4A)\n1.0;4000.0\n")
     main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
 
-    dealt = iter(["2c3d4h5s", "2c3d4h5s", "AhKs4h3s"])
-    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: next(dealt))
+    # Misses first, then the hand the file holds -- and it keeps giving it, because the
+    # catalogue is walked in a random order and how many deals come before is not fixed.
+    misses = [2]
+
+    def dealt(cards, rng):
+        if misses[0]:
+            misses[0] -= 1
+            return "2c3d4h5s"
+        return "AhKs4h3s"
+
+    monkeypatch.setattr(trainer_panel, "deal", dealt)
 
     main_window.trainer.next_hand()
 
