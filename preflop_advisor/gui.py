@@ -285,9 +285,18 @@ class MainWindow(QMainWindow):
     # Window layout, remembered between sessions
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def opening_size():
-        """The size to open at, trimmed to the screen actually attached.
+    def usable_screen(self):
+        """The area of the display this window is on, or the primary one before it has one.
+
+        ``QWidget.screen()`` rather than the primary screen: on a machine with a laptop
+        panel and a monitor beside it, sizing against the larger of the two puts a window
+        on the smaller one that does not fit it.
+        """
+        screen = self.screen() or QApplication.primaryScreen()
+        return None if screen is None else screen.availableGeometry()
+
+    def opening_size(self):
+        """The size to open at, trimmed to the screen showing the window.
 
         A fixed size cannot serve both machines this runs on: at the height a seven-handed
         overview needs, the window would not fit a 1366x768 laptop, and at the height that
@@ -296,14 +305,33 @@ class MainWindow(QMainWindow):
 
         :return: ``(width, height)``, never larger than the usable screen.
         """
-        screen = QApplication.primaryScreen()
-        if screen is None:
+        available = self.usable_screen()
+        if available is None:
             return DEFAULT_WINDOW_SIZE
-        available = screen.availableGeometry()
         return (
             min(DEFAULT_WINDOW_SIZE[0], available.width()),
             min(DEFAULT_WINDOW_SIZE[1], available.height() - WINDOW_CHROME_ALLOWANCE),
         )
+
+    def fit_to_screen(self):
+        """Shrink the window if it is larger than the display it ended up on.
+
+        Covers what sizing at construction cannot: a window that opens on a second, smaller
+        display, and a geometry remembered from a monitor that has since been unplugged --
+        restored whole onto a laptop panel that cannot show it.
+        """
+        available = self.usable_screen()
+        if available is None:
+            return
+        width = min(self.width(), available.width())
+        height = min(self.height(), available.height() - WINDOW_CHROME_ALLOWANCE)
+        if (width, height) != (self.width(), self.height()):
+            logger.debug("Trimming the window to its screen: %dx%d", width, height)
+            self.resize(width, height)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fit_to_screen()
 
     def restore_layout(self):
         """Put the window and its divider back where they were left.

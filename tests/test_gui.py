@@ -517,3 +517,28 @@ def test_a_long_seat_name_is_shown_whole(position_selector):
     for button in position_selector.button_list:
         needed = QFontMetrics(button.font()).horizontalAdvance(button.text())
         assert needed <= button.minimumWidth(), f"{button.text()!r} does not fit its button"
+
+
+def test_a_window_larger_than_its_screen_is_trimmed(qtbot, main_window):
+    """Sizing at construction cannot know which display the window ends up on.
+
+    Nor can it know that the geometry it just restored came from a monitor that has since
+    been unplugged, and does not fit the panel that is left.
+    """
+    available = main_window.usable_screen()
+    main_window.resize(available.width() + 800, available.height() + 800)
+
+    main_window.fit_to_screen()
+
+    assert main_window.width() <= available.width()
+    assert main_window.height() <= available.height()
+
+
+def test_showing_the_window_trims_it(qtbot, main_window):
+    available = main_window.usable_screen()
+    main_window.resize(available.width() + 800, available.height() + 800)
+
+    main_window.show()
+    qtbot.wait(20)
+
+    assert main_window.height() <= available.height()
