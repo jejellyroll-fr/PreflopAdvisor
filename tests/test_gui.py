@@ -18,7 +18,7 @@ from preflop_advisor.sizings import sizings_for
 from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_reader_helpers import ActionProcessor
-from preflop_advisor.tree_selector import TreeSelector
+from preflop_advisor.tree_selector import TreeSelector, ante_of
 
 from .conftest import REFERENCE_HAND
 
@@ -928,8 +928,6 @@ def test_the_situations_are_offered_before_the_first_deal(qtbot, main_window):
 )
 def test_a_tree_says_whether_it_has_an_ante(raw_config, description, declared, expected):
     """Declared beside its tree, or unknown when the description says there is one."""
-    from preflop_advisor.tree_selector import ante_of
-
     section = dict(raw_config["TreeInfos"])
     if declared is not None:
         section["table99.ante"] = declared
@@ -966,3 +964,14 @@ def test_the_table_shows_the_folds_that_had_to_happen(main_window, raw_config):
     assert question.table.seat("MP").folded
     assert question.table.seat("CO").action == "", "the hero has not acted yet"
     assert question.table.seat("BU").action == "", "and neither have the seats after them"
+
+
+def test_an_ante_declaration_is_read_whatever_its_casing():
+    """configparser lower-cases its keys; a plain mapping keeps what was written.
+
+    Both are valid here, and a declaration missed reads as no ante at all -- which
+    understates the pot, every percentage raise and every stack.
+    """
+    section = {"Table5": "PLO,6,100,folder", "Table5.ante": "0.125"}
+
+    assert ante_of("Table5", "6-max ante PLO", section) == 0.125

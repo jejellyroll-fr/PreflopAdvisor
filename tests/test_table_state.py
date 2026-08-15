@@ -326,3 +326,18 @@ def test_going_all_in_with_an_ante_leaves_nothing_behind():
 
     assert state.seat("UTG").stack == 0
     assert state.seat("UTG").committed == 20
+
+
+def test_a_seat_is_out_by_its_code_not_by_its_name():
+    """ValidActions names the actions; only the code says what one does.
+
+    A tree calling its fold "Muck" had its chips correctly left alone and was still
+    painted as live, because the seat read its own label back to decide.
+    """
+    sizings = {"muck": Sizing("fold"), "pot": Sizing("pot", 1.0)}
+
+    state = table_state(["UTG", "MP", "CO", "BU", "SB", "BB"], [("UTG", "Muck")], "MP", sizings)
+
+    assert state.seat("UTG").folded
+    assert state.seat("UTG").action == "Muck", "and it still says what the tree called it"
+    assert not state.seat("MP").folded

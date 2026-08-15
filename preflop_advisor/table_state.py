@@ -35,10 +35,11 @@ class Seat:
     action: str
     hero: bool = False
     button: bool = False
-
-    @property
-    def folded(self) -> bool:
-        return self.action == "Fold"
+    #: Carried rather than read back off the label. Whether a seat is out is decided once,
+    #: where the line is played -- by the action's code, since the name is whatever
+    #: ``ValidActions`` called it. Derived here from ``action == "Fold"``, a tree spelling
+    #: it any other way had its chips left alone and was still painted as live.
+    folded: bool = False
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,7 @@ def table_state(
     available = max(stack - posted, 0.0)
     bets = dict.fromkeys(seats, 0.0)
     actions = dict.fromkeys(seats, "")
+    out = dict.fromkeys(seats, False)
     readable = ante is not None
 
     # The blinds are posted by the last two seats of the acting order, which is where they
@@ -146,6 +148,7 @@ def table_state(
 
         sizing = sizings.get(action.lower(), Sizing("unknown"))
         if action == "Fold" or sizing.kind == "fold":
+            out[seat] = True
             continue
         if sizing.kind == "call":
             bets[seat] = min(highest, available)
@@ -178,6 +181,7 @@ def table_state(
                 action=actions[name],
                 hero=name == hero,
                 button=name == dealer,
+                folded=out[name],
             )
             for name in seats
         ],

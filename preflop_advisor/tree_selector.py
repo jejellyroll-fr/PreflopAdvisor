@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .settings import ConfigSource, Settings
+from .settings import ConfigSource, Settings, get
 from .tooltip import CreateToolTip
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,11 @@ def ante_of(table: str, description: str, tree_infos: ConfigSource) -> float | N
     description says it has one without saying how much comes back as ``None``: the size
     is not in the export, and every number built on the pot would be short without it.
     """
-    declared = dict(tree_infos).get(f"{table}.ante".lower())
+    # Read case-insensitively on both sides: configparser hands its keys over in lower
+    # case, a plain mapping -- which the type accepts and the tests pass -- keeps whatever
+    # spelling it was written in, and a declaration missed here is silently read as no ante
+    # at all.
+    declared = get(tree_infos, f"{table}.ante")
     if declared is not None:
         try:
             return float(declared)
