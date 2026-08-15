@@ -3,6 +3,7 @@
 import logging
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
@@ -13,6 +14,9 @@ from PySide6.QtWidgets import (
 from . import theme
 
 logger = logging.getLogger(__name__)
+
+#: Room a seat button keeps around its label, for its border and padding.
+LABEL_PADDING = 18
 
 
 class PositionSelector(QWidget):
@@ -61,13 +65,21 @@ class PositionSelector(QWidget):
         Creates a button for a position.
         """
         button = QPushButton(self.position_list[row], self)
-        button.setFixedSize(self.button_width, self.button_height)
+        # A floor, not a fixed size. Pinned to the configured 40 pixels, a longer seat
+        # name was cut rather than shown: "UTG1" rendered as "JTG1", the clipped upright
+        # of the U reading as a J. A wrong label, and a quiet one.
+        button.setMinimumSize(max(self.button_width, self.label_width(button)), self.button_height)
         button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         button.setStyleSheet(theme.position_button_qss(font_size=self.fontsize))
         button.clicked.connect(self.on_button_clicked(row))
         self.layout.addWidget(button)
         logger.debug("Button created for %s", self.position_list[row])
         return button
+
+    @staticmethod
+    def label_width(button):
+        """Width the button's own text needs, with room for its border and padding."""
+        return QFontMetrics(button.font()).horizontalAdvance(button.text()) + LABEL_PADDING
 
     def on_button_clicked(self, row):
         """
@@ -122,21 +134,26 @@ class PositionSelector(QWidget):
         logger.debug("Current position: %s", self.position_list[self.current_position])
         return self.position_list[self.current_position]
 
-    def get_active_positions(self, num_players):
+    def get_active_positions(self, seats):
         """
-        Returns the positions that can be selected for a given table size.
+        Returns the positions that can be selected, given the seats a tree has.
 
-        Seats are filled from the blinds backwards, and the overview entry (the last of
-        the configured list once reversed) is always available.
-        """
-        reversed_positions = list(reversed(self.position_list))
-        return [reversed_positions[-1]] + reversed_positions[:num_players]
+        The seats are handed in rather than derived here. Deriving them meant trimming
+        the configured list, which is the reader's job and repeated its one hard case:
+        cutting a seven-name list down to six drops UTG and keeps HJ, so a six-handed
+        table offered a seat it does not have and hid one it does.
 
-    def update_active_positions(self, num_players):
+        :param seats: Seat names of the current table.
+        :return: Those seats plus the overview entry, which is always available.
         """
-        Activates or deactivates positions based on the number of players.
+        overview = list(reversed(self.position_list))[-1]
+        return [overview] + list(seats)
+
+    def update_active_positions(self, seats):
         """
-        active_positions = self.get_active_positions(num_players)
+        Activates or deactivates positions based on the seats of the current table.
+        """
+        active_positions = self.get_active_positions(seats)
 
         for position in self.position_list:
             index = self.convert_position_name_to_index(position)

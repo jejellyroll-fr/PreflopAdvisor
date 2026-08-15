@@ -4,15 +4,17 @@ import logging
 import os
 from configparser import ConfigParser
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QProgressDialog,
     QSizePolicy,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -24,9 +26,36 @@ from .outputframe import OutputFrame
 from .paths import package_file
 from .position_selector import PositionSelector
 from .randomizer import RandomButton
+from .settings import normalize
+from .tree_reader import TreeReader
 from .tree_selector import TreeSelector
 
 logger = logging.getLogger(__name__)
+
+#: Identifies the settings store. QSettings writes nothing anywhere until these are set on
+#: the application, so both entry points declare them.
+SETTINGS_ORGANIZATION = "PreflopAdvisor"
+SETTINGS_APPLICATION = "PreflopAdvisor"
+
+#: Where the window remembers its size and the position of its divider. Read through
+#: QSettings, which writes wherever the platform keeps application settings.
+GEOMETRY_KEY = "window/geometry"
+SPLITTER_KEY = "window/splitter"
+
+#: Opening size, when nothing has been remembered yet. Wide rather than tall: the results
+#: are a table, the card grid is four rows, and the screens this runs on are short. The
+#: width is what a nine-handed overview needs: eleven columns of 112, which is the
+#: narrowest a cell can be without cutting the numbers in it. The height is what its ten
+#: rows need. Both are trimmed to the screen, so a 1366x768 laptop opens to what it has
+#: and a larger display opens to a table that fits whole.
+DEFAULT_WINDOW_SIZE = (1400, 1040)
+#: Taken off the screen's usable height for the window's own title bar, which
+#: availableGeometry does not account for.
+WINDOW_CHROME_ALLOWANCE = 40
+#: Opening split, band over table. The band is sized to hold the card grid and no more;
+#: everything else belongs to the results, which is what runs out of room on a seven-
+#: handed tree.
+DEFAULT_SPLIT = (300, 390)
 
 
 class DatabaseProgress:
@@ -61,6 +90,11 @@ class DatabaseProgress:
         self.dialog.close()
 
 
+def build_progress(folder, total):
+    """Progress dialog for a database build, parented to whatever window is up."""
+    return DatabaseProgress(folder, total, QApplication.activeWindow())
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -77,7 +111,11 @@ class MainWindow(QMainWindow):
         # Building a tree's lookup database can take minutes, and it happens the first
         # time that tree is read. Registered here rather than in the store so that layer
         # keeps no dependency on a toolkit, and stays silent under tests and scripts.
-        sqlite_store.set_progress_factory(lambda folder, total: DatabaseProgress(folder, total, self))
+        #
+        # The dialog finds its parent when it is built, rather than closing over this
+        # window: the store keeps the factory for the life of the process, and a window
+        # captured here would be reached again long after Qt had destroyed it.
+        sqlite_store.set_progress_factory(build_progress)
 
         # Components emit while they are still being constructed, so the first
         # notifications arrive before every component exists. Refuse to refresh until the
@@ -130,49 +168,79 @@ class MainWindow(QMainWindow):
         # Assemble layouts
         self.assemble_layouts()
 
-        # Add frames to the main layout
-        main_layout.addWidget(self.input_frame, 0, 0, 1, 1)
-        main_layout.addWidget(self.output_frame, 0, 1, 1, 1)
+        # Input and output are separated by a handle rather than by fixed proportions:
+        # how much room the results deserve against the card grid depends on the screen,
+        # and on whether the tree is heads-up or six-handed.
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.addWidget(self.input_frame)
+        self.splitter.addWidget(self.output_frame)
+        self.splitter.setChildrenCollapsible(False)
+        # Every pixel past the opening height goes to the results. The band is as tall as
+        # the card grid needs and no taller; the table is what benefits from more room.
+        # Dragging the handle still overrides this, and where it is left is remembered.
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        main_layout.addWidget(self.splitter, 0, 0)
 
-        # Set resizing proportions
-        main_layout.setColumnStretch(0, 3)  # Stretch for the left column (input)
-        main_layout.setColumnStretch(1, 7)  # Stretch for the right column (output)
+        # Set here rather than by the caller: both entry points get the same window, and
+        # __main__ used to show it at whatever the layout demanded -- which was its
+        # minimum, and portrait. No minimum is imposed on top: the layout's own floor is
+        # the honest one, and it moves with the fonts the platform actually renders.
+        self.resize(*self.opening_size())
+        self.restore_layout()
 
         # Every component exists: allow refreshes and render the default selection.
         self._ready = True
         self.update_output_frame()
 
+    @staticmethod
+    def section_label(text, size=14, bold=False):
+        """A caption above one of the input sections."""
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignLeft)
+        weight = "font-weight: bold; " if bold else ""
+        label.setStyleSheet(f"font-size: {size}px; {weight}padding: 5px;")
+        return label
+
+    @staticmethod
+    def section(label, widget):
+        """One captioned control, as a column of its own."""
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.addWidget(label)
+        column.addWidget(widget)
+        return column
+
     def assemble_layouts(self):
-        # Add descriptive labels
-        label_hand = QLabel("Choose your hand:")
-        label_hand.setAlignment(Qt.AlignLeft)
-        label_hand.setStyleSheet("font-size: 16px; font-weight: bold; padding: 5px;")
+        """Input as a band across the top, results underneath.
 
-        label_tree = QLabel("Select a game tree:")
-        label_tree.setAlignment(Qt.AlignLeft)
-        label_tree.setStyleSheet("font-size: 14px; padding: 5px;")
-
-        label_random = QLabel("Randomize your choice:")
-        label_random.setAlignment(Qt.AlignLeft)
-        label_random.setStyleSheet("font-size: 14px; padding: 5px;")
-
-        label_position = QLabel("Choose your position:")
-        label_position.setAlignment(Qt.AlignLeft)
-        label_position.setStyleSheet("font-size: 14px; padding: 5px;")
-
-        # Ensure components and frames can be resized
-        self.input_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        The results are the wide thing: a seven-handed overview is nine columns, and a
+        column cannot go under 112 pixels without the numbers in it being cut. Beside a
+        card grid that needs 740 of its own, nine columns do not fit on any ordinary
+        screen; across the whole window they fit on a laptop.
+        """
+        self.input_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.output_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Add components to the input layout with adjusted proportions
-        self.input_layout.addWidget(label_hand)
-        self.input_layout.addWidget(self.card_selector, stretch=8)  # More vertical space
-        self.input_layout.addWidget(label_tree)
-        self.input_layout.addWidget(self.tree_selector, stretch=1)
-        self.input_layout.addWidget(label_random)
-        self.input_layout.addWidget(self.rand_button, stretch=1)
-        self.input_layout.addWidget(label_position)
-        self.input_layout.addWidget(self.position_selector, stretch=1)
+        cards = QVBoxLayout()
+        cards.setContentsMargins(0, 0, 0, 0)
+        cards.addWidget(self.section_label("Choose your hand:", size=16, bold=True))
+        cards.addWidget(self.card_selector)
+
+        # Tree, roll and position stand beside the cards rather than under them: the band
+        # is as tall as the card grid either way, and that height is taken from the table.
+        controls = QVBoxLayout()
+        controls.setSpacing(4)
+        controls.addLayout(self.section(self.section_label("Select a game tree:"), self.tree_selector))
+        controls.addLayout(self.section(self.section_label("Randomize:"), self.rand_button))
+        controls.addLayout(self.section(self.section_label("Choose your position:"), self.position_selector))
+        controls.addStretch(1)
+
+        band = QHBoxLayout()
+        band.setSpacing(16)
+        band.addLayout(cards, stretch=1)
+        band.addLayout(controls)
+        self.input_layout.addLayout(band)
 
         # Add the output component
         self.output_layout.addWidget(self.output)
@@ -213,6 +281,86 @@ class MainWindow(QMainWindow):
         expected = {"NL": 4, "PLO": 8, "PLO8": 8, "PLO5": 10}.get(game)
         return expected is not None and len(hand) == expected
 
+    # ------------------------------------------------------------------
+    # Window layout, remembered between sessions
+    # ------------------------------------------------------------------
+
+    def usable_screen(self):
+        """The area of the display this window is on, or the primary one before it has one.
+
+        ``QWidget.screen()`` rather than the primary screen: on a machine with a laptop
+        panel and a monitor beside it, sizing against the larger of the two puts a window
+        on the smaller one that does not fit it.
+        """
+        screen = self.screen() or QApplication.primaryScreen()
+        return None if screen is None else screen.availableGeometry()
+
+    def opening_size(self):
+        """The size to open at, trimmed to the screen showing the window.
+
+        A fixed size cannot serve both machines this runs on: at the height a seven-handed
+        overview needs, the window would not fit a 1366x768 laptop, and at the height that
+        fits one, a 1080p display would open showing four rows of a table it has room for
+        twice over.
+
+        :return: ``(width, height)``, never larger than the usable screen.
+        """
+        available = self.usable_screen()
+        if available is None:
+            return DEFAULT_WINDOW_SIZE
+        return (
+            min(DEFAULT_WINDOW_SIZE[0], available.width()),
+            min(DEFAULT_WINDOW_SIZE[1], available.height() - WINDOW_CHROME_ALLOWANCE),
+        )
+
+    def fit_to_screen(self):
+        """Shrink the window if it is larger than the display it ended up on.
+
+        Covers what sizing at construction cannot: a window that opens on a second, smaller
+        display, and a geometry remembered from a monitor that has since been unplugged --
+        restored whole onto a laptop panel that cannot show it.
+        """
+        available = self.usable_screen()
+        if available is None:
+            return
+        width = min(self.width(), available.width())
+        height = min(self.height(), available.height() - WINDOW_CHROME_ALLOWANCE)
+        if (width, height) != (self.width(), self.height()):
+            logger.debug("Trimming the window to its screen: %dx%d", width, height)
+            self.resize(width, height)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.fit_to_screen()
+
+    def restore_layout(self):
+        """Put the window and its divider back where they were left.
+
+        Nothing is imposed when there is nothing stored: the window keeps the size the
+        caller gave it, and the splitter its stretch factors.
+        """
+        settings = QSettings()
+        geometry = settings.value(GEOMETRY_KEY)
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        divider = settings.value(SPLITTER_KEY)
+        if divider is not None:
+            self.splitter.restoreState(divider)
+        else:
+            # Left to itself the splitter follows the size each side asks for, and the
+            # card grid asks for a lot.
+            self.splitter.setSizes(list(DEFAULT_SPLIT))
+
+    def save_layout(self):
+        """Record where the window and its divider ended up."""
+        settings = QSettings()
+        settings.setValue(GEOMETRY_KEY, self.saveGeometry())
+        settings.setValue(SPLITTER_KEY, self.splitter.saveState())
+
+    def closeEvent(self, event):
+        self.save_layout()
+        super().closeEvent(event)
+
     def report_error(self, message):
         """Surface a problem to the user instead of failing silently."""
         logger.error(message)
@@ -229,7 +377,14 @@ class MainWindow(QMainWindow):
             self.card_selector.set_num_cards(2)
         elif game in ["PLO5"]:
             self.card_selector.set_num_cards(5)
-        self.position_selector.update_active_positions(num_players)
+        # The seats come from the reader, which is where a table size may override the
+        # names, rather than being guessed a second time here.
+        seats = TreeReader.seats_for(
+            normalize(self._get_section_config("TreeReader")),
+            num_players,
+            [seat.strip() for seat in self._get_section_config("TreeReader")["Positions"].split(",")],
+        )
+        self.position_selector.update_active_positions(seats[:num_players])
 
     def _get_section_config(self, section):
         """Helper to retrieve a configuration section.
@@ -245,7 +400,7 @@ class MainWindow(QMainWindow):
                 "BackgroundPressed": "#444444",
             },
             "PositionSelector": {
-                "PositionList": "X,UTG,MP,CO,BU,SB,BB",
+                "PositionList": "X,UTG,UTG1,MP,LJ,HJ,CO,BU,SB,BB",
                 "PositionInactive": "SB,BB",
                 "ButtonHeight": "30",
                 "ButtonWidth": "40",
@@ -263,7 +418,14 @@ class MainWindow(QMainWindow):
                 "DefaultTree": "0",
             },
             "TreeReader": {
+                # Six-handed here, seven-handed in its own entry, for the same reason the
+                # packaged configuration splits them: trimming the seven-name list down to
+                # six drops UTG and keeps the hijack, and the ranges would then be read
+                # under the wrong seat names.
                 "Positions": "BB,SB,BU,CO,MP,UTG",
+                "Positions7": "BB,SB,BU,CO,HJ,MP,UTG",
+                "Positions8": "BB,SB,BU,CO,HJ,LJ,MP,UTG",
+                "Positions9": "BB,SB,BU,CO,HJ,LJ,MP,UTG1,UTG",
             },
         }
         return default_configs.get(section, {})
@@ -271,8 +433,8 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication([])
+    app.setOrganizationName(SETTINGS_ORGANIZATION)
+    app.setApplicationName(SETTINGS_APPLICATION)
     window = MainWindow()
-    window.resize(1200, 800)  # Initial window size
-    window.setMinimumSize(800, 600)  # Minimum size
     window.show()
     app.exec()

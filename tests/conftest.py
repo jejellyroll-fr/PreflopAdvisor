@@ -113,6 +113,26 @@ def synthetic_hand_values():
     return (0.75, 1500.0)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def isolated_settings(tmp_path_factory):
+    """Keep the window's remembered layout out of the developer's own settings.
+
+    The suite builds and closes main windows, and closing one records its geometry. Left
+    alone that would write to wherever the platform keeps application settings, and the
+    next test would read a size some earlier test happened to leave behind.
+    """
+    from PySide6.QtCore import QCoreApplication, QSettings
+
+    QCoreApplication.setOrganizationName("PreflopAdvisorTests")
+    QCoreApplication.setApplicationName("PreflopAdvisorTests")
+    QSettings.setDefaultFormat(QSettings.IniFormat)
+    QSettings.setPath(
+        QSettings.IniFormat,
+        QSettings.UserScope,
+        str(tmp_path_factory.mktemp("settings")),
+    )
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """A single ``QApplication`` instance for the whole session."""

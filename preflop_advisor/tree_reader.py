@@ -27,12 +27,12 @@ class TreeReader:
         logger.debug("Initializing TreeReader for hand: %s and position: %s", hand, position)
 
         settings = normalize(configs)
-        positions = settings.get("positions")
-        if positions is None:
+        if settings.get("positions") is None:
             raise KeyError("Positions missing from the TreeReader configuration")
-        self.full_position_list = [pos.strip() for pos in positions.split(",")]
+        default_seats = [pos.strip() for pos in settings["positions"].split(",")]
+        self.num_players = int(tree_infos.get("plrs", len(default_seats)))  # Ensure it's an integer
+        self.full_position_list = self.seats_for(settings, self.num_players, default_seats)
         self.position_list = []
-        self.num_players = int(tree_infos.get("plrs", len(self.full_position_list)))  # Ensure it's an integer
         self.init_position_list(self.num_players, self.full_position_list)
 
         self.hand = hand
@@ -50,6 +50,24 @@ class TreeReader:
         self.action_processor = ActionProcessor(self.position_list, self.tree_infos, configs)
         self.results = []
         logger.debug("TreeReader initialized successfully.")
+
+    @staticmethod
+    def seats_for(settings, num_players, default_seats):
+        """The seat names of a table that size, honouring a ``Positions<N>`` override.
+
+        Trimming one list cannot name every table correctly: six-handed the earliest seat
+        is UTG, seven-handed there is a hijack between it and the cutoff, so cutting a
+        seven-name list down to six drops UTG and keeps HJ. A size that needs its own
+        names says so, and the rest go on being trimmed as before.
+
+        :return: Seat names for that table, shortest stack first.
+        """
+        override = settings.get(f"positions{num_players}")
+        if override is None:
+            return default_seats
+        seats = [seat.strip() for seat in override.split(",") if seat.strip()]
+        logger.debug("Using the %d-handed seat names: %s", num_players, seats)
+        return seats
 
     def init_position_list(self, num_players, positions):
         """

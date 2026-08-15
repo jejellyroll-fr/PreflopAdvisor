@@ -6,7 +6,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from . import theme
+from . import gui, theme
 from .gui import MainWindow
 
 
@@ -40,6 +40,10 @@ def main():
     configure_logging(args.verbose)
 
     app = QApplication([sys.argv[0], *qt_args])
+    # Named before the window is built: QSettings has nowhere to read the remembered
+    # window layout from until the application identifies itself.
+    app.setOrganizationName(gui.SETTINGS_ORGANIZATION)
+    app.setApplicationName(gui.SETTINGS_APPLICATION)
     app.setStyleSheet(theme.APPLICATION_QSS)
     ui = MainWindow()
     ui.show()

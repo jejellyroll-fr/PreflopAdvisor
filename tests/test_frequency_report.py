@@ -99,6 +99,24 @@ def test_seats_are_trimmed_and_ordered_like_the_tree_reader(script):
     assert script.seated_positions(positions, 6) == ["UTG", "MP", "CO", "BU", "SB", "BB"]
 
 
+@pytest.mark.parametrize(
+    "num_players,expected",
+    [
+        (7, ["UTG", "MP", "HJ", "CO", "BU", "SB", "BB"]),
+        (9, ["UTG", "UTG1", "MP", "LJ", "HJ", "CO", "BU", "SB", "BB"]),
+    ],
+)
+def test_a_large_table_is_seated_by_the_readers_own_rules(script, tree_configs, num_players, expected):
+    """The report has to honour the per-size seat names, not trim Positions itself.
+
+    Trimming left it on six seats for a nine-handed tree, and asked that tree for
+    filenames built in the wrong acting order.
+    """
+    positions = [seat.strip() for seat in tree_configs["Positions"].split(",")]
+
+    assert script.seated_positions(positions, num_players, tree_configs) == expected
+
+
 def test_an_unlisted_tree_keeps_every_seat(script):
     """Nothing declares its size, so no seat is dropped."""
     positions = ["BB", "SB", "BU", "CO", "MP", "UTG"]

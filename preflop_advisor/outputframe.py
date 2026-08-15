@@ -28,9 +28,25 @@ CHIPS_PER_BB = 2000.0
 # A TableEntry has two value slots (left and right).
 MAX_DISPLAYED_ACTIONS = 2
 
-# Minimum readable cell size; cells grow beyond this to fill the available space.
-MIN_CELL_WIDTH = 96
-MIN_CELL_HEIGHT = 64
+# Minimum readable cell size; cells grow beyond this to fill the available space. A cell
+# holds two tiles, and a tile has to fit "+2.41" -- 43 pixels at the smallest font the
+# tiles use, which is the widest thing any of the three lines has to show. Measured, not
+# guessed: below this the EV renders as "-1.6" and the sizing as "R10", which is worse
+# than a scrollbar. It is what decides how many seats fit across a panel.
+MIN_CELL_WIDTH = 112
+# And down: three lines at the smallest fonts the tiles use cost 37 pixels, plus the
+# tile's own frame. It is what decides how many seats fit down one, so a nine-handed
+# overview -- ten rows -- turns on it.
+MIN_CELL_HEIGHT = 52
+# What a tile's own frame costs it, on top of the text: borders, padding, the gap to its
+# neighbour. Subtracted before deciding what font the text may have.
+TILE_CHROME = 16
+# What the frequency line costs in pixels per point of font size, measured on a rendered
+# "62%". Used to bound the font by the room the text actually has.
+PIXELS_PER_POINT = 2.7
+# And what one line costs down: a rendered line is about a third taller than its point
+# size (8pt occupies 11 pixels, 15pt occupies 20).
+POINTS_TO_LINE = 1.35
 
 # Shown instead of an empty box, so "no data" is distinguishable from a rendering bug.
 EMPTY_CELL_TEXT = "—"
@@ -142,10 +158,26 @@ class ActionTile(QWidget):
         self.setStyleSheet("")
         self.hide()
 
-    def apply_fonts(self, height):
-        """Scales the three lines together, preserving their relative weight."""
-        primary = max(11, min(11 + height // 4, 24))
-        secondary = max(8, min(8 + height // 12, 13))
+    def apply_fonts(self, height, width=None):
+        """Scales the three lines together, preserving their relative weight.
+
+        Bounded by the room in both directions. Sized on height alone, a cell in a
+        nine-handed grid -- as tall as any other, and a third as wide -- asked for a 24
+        point "98%" in a tile with room for half of it. ``PIXELS_PER_POINT`` is what the
+        widest line costs per point of font size across, ``POINTS_TO_LINE`` what any of
+        them costs down.
+
+        The two outer lines grow from the floor rather than from nothing, and the middle
+        one takes what they leave. Sized independently, a cell at the floor was given 13
+        and 15 point text -- 70 pixels of it, in 64 pixels of cell -- and the frequency,
+        the figure the grid is read for, was the line that got clipped.
+        """
+        secondary = max(8, min(8 + max(height - MIN_CELL_HEIGHT, 0) // 10, 13))
+        remaining = int((height - TILE_CHROME) / POINTS_TO_LINE) - 2 * secondary
+
+        primary = max(9, min(11 + height // 4, 24, remaining))
+        if width is not None:
+            primary = max(9, min(primary, int(width / PIXELS_PER_POINT)))
 
         font = QFont(theme.FONT_FAMILY, primary, QFont.Bold)
         self.frequency_label.setFont(font)
@@ -211,8 +243,12 @@ class TableEntry(QWidget):
         """Scales the fonts with the cell so the grid stays legible at any window size."""
         self.info_text.setFont(QFont(theme.FONT_FAMILY, max(10, min(10 + self.width() // 12, 17)), QFont.Bold))
         for tile in (self.label_left, self.label_right):
-            tile.apply_fonts(self.height())
+            tile.apply_fonts(self.height(), self.tile_width())
         super().resizeEvent(event)
+
+    def tile_width(self):
+        """Room the *text* of one tile has, once the tile's own frame is taken off."""
+        return max(self.width() // MAX_DISPLAYED_ACTIONS - TILE_CHROME, 20)
 
     def set_description_label(self, text=""):
         """Renders the cell as a row or column header."""
@@ -253,8 +289,8 @@ class TableEntry(QWidget):
         self.tiles.show()
         for tile, (action, frequency, ev) in zip((self.label_left, self.label_right), results):
             tile.set_action(action, frequency, ev, selected=highlight is not None and action == highlight)
-        self.label_left.apply_fonts(self.height())
-        self.label_right.apply_fonts(self.height())
+        self.label_left.apply_fonts(self.height(), self.tile_width())
+        self.label_right.apply_fonts(self.height(), self.tile_width())
 
         # The roll can land in the Fold bucket, but Fold has no tile of its own, so the
         # highlight would match nothing and the randomizer would silently pick an action
@@ -438,6 +474,7 @@ class OutputFrame(QWidget):
             for row in self.table_entries:
                 for entry in row:
                     entry.clear_entry()
+            self.spread_grid(rows, columns)
             return
 
         while self.output_layout.count():
@@ -456,11 +493,25 @@ class OutputFrame(QWidget):
                 self.output_layout.addWidget(entry, row_index, column_index)
                 row_entries.append(entry)
             self.table_entries.append(row_entries)
-            self.output_layout.setRowStretch(row_index, 1)
-        for column_index in range(columns):
-            self.output_layout.setColumnStretch(column_index, 1)
 
+        self.spread_grid(rows, columns)
         logger.debug("Results grid created: %dx%d", rows, columns)
+
+    def spread_grid(self, rows, columns):
+        """Shares the panel out between the cells that exist, and only those.
+
+        A QGridLayout keeps the stretch of every row and column it has ever been given,
+        and taking the widgets out does not take those with them. A grid that had been
+        wider went on reserving a share of the width for columns with nothing in them --
+        heads-up after the overview, three columns of results sat in three quarters of the
+        panel -- and one that had been taller squeezed its rows into the top. Both are
+        reset here, so the table always spans the space it is given, whether the tree is
+        heads-up or nine-handed.
+        """
+        for index in range(max(rows, self.output_layout.rowCount())):
+            self.output_layout.setRowStretch(index, 1 if index < rows else 0)
+        for index in range(max(columns, self.output_layout.columnCount())):
+            self.output_layout.setColumnStretch(index, 1 if index < columns else 0)
 
     def describe_cell(self, results, row_index, column_index):
         """Tooltip naming the scenario a cell stands for.

@@ -7,13 +7,22 @@ exactly where the interesting regressions live. These tests click real buttons w
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
 
 from preflop_advisor.card_selector import CardSelector
-from preflop_advisor.gui import DatabaseProgress, MainWindow
+from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
 from preflop_advisor.position_selector import PositionSelector
+from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector
 
+from .conftest import REFERENCE_HAND
+
 # Grid coordinates of the card buttons: column 0 is hearts, rows are A, K, Q, J.
+# Seats of a table that size, in acting order, as the reader hands them to the selector.
+HEADS_UP = ["SB", "BB"]
+SIX_MAX = ["UTG", "MP", "CO", "BU", "SB", "BB"]
+SEVEN_MAX = ["UTG", "MP", "HJ", "CO", "BU", "SB", "BB"]
+
 ACE_OF_HEARTS = (0, 0)
 KING_OF_HEARTS = (1, 0)
 QUEEN_OF_HEARTS = (2, 0)
@@ -116,21 +125,22 @@ def test_small_blind_is_selectable_heads_up(position_selector):
     It used to be listed in PositionInactive, which disables a seat regardless of table
     size.
     """
-    position_selector.update_active_positions(2)
+    position_selector.update_active_positions(HEADS_UP)
 
     index = position_selector.convert_position_name_to_index("SB")
     assert position_selector.button_list[index].isEnabled()
 
 
 @pytest.mark.parametrize(
-    "num_players,expected",
+    "seats,expected",
     [
-        (2, {"X", "SB", "BB"}),
-        (6, {"X", "UTG", "MP", "CO", "BU", "SB", "BB"}),
+        (HEADS_UP, {"X", "SB", "BB"}),
+        (SIX_MAX, {"X", "UTG", "MP", "CO", "BU", "SB", "BB"}),
+        (SEVEN_MAX, {"X", "UTG", "MP", "HJ", "CO", "BU", "SB", "BB"}),
     ],
 )
-def test_active_seats_follow_the_table_size(position_selector, num_players, expected):
-    position_selector.update_active_positions(num_players)
+def test_active_seats_follow_the_table_size(position_selector, seats, expected):
+    position_selector.update_active_positions(seats)
 
     enabled = {
         position
@@ -141,13 +151,13 @@ def test_active_seats_follow_the_table_size(position_selector, num_players, expe
 
 
 def test_shrinking_the_table_falls_back_to_the_default_seat(position_selector):
-    position_selector.update_active_positions(6)
+    position_selector.update_active_positions(SIX_MAX)
     position_selector.process_button_clicked(position_selector.convert_position_name_to_index("UTG"))
     assert position_selector.get_position() == "UTG"
 
-    position_selector.update_active_positions(2)
+    position_selector.update_active_positions(HEADS_UP)
 
-    assert position_selector.get_position() in position_selector.get_active_positions(2)
+    assert position_selector.get_position() in position_selector.get_active_positions(HEADS_UP)
 
 
 def test_shrinking_the_table_does_not_recurse(position_selector):
@@ -156,12 +166,12 @@ def test_shrinking_the_table_does_not_recurse(position_selector):
     Going through process_button_clicked made the notification re-enter this method via
     the output refresh.
     """
-    position_selector.update_active_positions(6)
+    position_selector.update_active_positions(SIX_MAX)
     position_selector.process_button_clicked(position_selector.convert_position_name_to_index("UTG"))
 
     emitted = []
     position_selector.positionChanged.connect(emitted.append)
-    position_selector.update_active_positions(2)
+    position_selector.update_active_positions(HEADS_UP)
 
     assert len(emitted) == 1
 
@@ -292,3 +302,243 @@ def test_the_window_registers_a_progress_dialog_for_database_builds(main_window)
         assert isinstance(progress, DatabaseProgress)
     finally:
         progress.close()
+
+
+def test_the_progress_factory_outlives_the_window_that_registered_it(qtbot):
+    """The store keeps the factory for the whole process; a window does not last that long.
+
+    Closing over the window meant every later build reached a MainWindow Qt had already
+    destroyed, and raised instead of showing progress.
+    """
+    import gc
+
+    from preflop_advisor import sqlite_store
+
+    # Deliberately not handed to qtbot: the point is to let Qt destroy it while the store
+    # still holds whatever the window registered, which is what qtbot's teardown prevents.
+    window = MainWindow()
+    window.deleteLater()
+    del window
+    gc.collect()
+    qtbot.wait(10)
+
+    progress = sqlite_store._PROGRESS_FACTORY("/ranges/some-tree", 2)
+    progress.close()
+
+
+# --------------------------------------------------------------------------------------
+# Window shape
+# --------------------------------------------------------------------------------------
+
+
+def test_the_card_grid_is_laid_out_four_rows_of_thirteen(card_selector):
+    """Suits down, ranks across: the deck the wide way round.
+
+    Thirteen rows of four made the selector 366 pixels tall on its own, which is what the
+    window could not shrink past on a screen that is short and wide.
+    """
+    layout = card_selector.layout()
+
+    for suit in range(4):
+        for rank in range(13):
+            row, column, _, _ = layout.getItemPosition(layout.indexOf(card_selector.button_list[suit][rank]))
+            assert (row, column) == (suit, rank)
+
+
+def test_a_card_button_keeps_its_place_in_the_deck(qtbot, card_selector):
+    """Laying the grid out the other way must not renumber the cards."""
+    card_selector.set_num_cards(2)
+    click_card(qtbot, card_selector, *ACE_OF_HEARTS)
+
+    assert card_selector.get_hand().startswith("Ah")
+
+
+def test_the_window_opens_wider_than_it_is_tall(main_window):
+    assert main_window.width() > main_window.height()
+
+
+def test_the_window_opens_inside_the_screen_it_is_on(main_window):
+    """A size that fits a 1080p display does not fit a 1366x768 laptop.
+
+    Opening at a fixed height meant one of the two was always wrong: either the window
+    came up taller than the screen, or a display with room for the whole table opened
+    showing four rows of it.
+    """
+    available = QApplication.primaryScreen().availableGeometry()
+
+    assert main_window.height() <= available.height()
+    assert main_window.width() <= max(available.width(), main_window.minimumSizeHint().width())
+
+
+def test_the_window_can_be_made_short(main_window):
+    """The floor is the layout's own, and it has to clear a laptop screen."""
+    main_window.resize(200, 200)
+
+    assert main_window.minimumSizeHint().height() <= 500
+
+
+def test_enlarging_the_window_does_not_raise_its_floor(main_window):
+    """Fixing each card button to the size it was given made the floor follow the window.
+
+    Once enlarged, the window could never be brought back down: the buttons had adopted
+    their new size as a minimum, and the grid demanded the total.
+    """
+    floor = main_window.card_selector.minimumSizeHint().height()
+
+    main_window.resize(1900, 1200)
+    main_window.card_selector.resize(1800, 900)
+
+    assert main_window.card_selector.minimumSizeHint().height() == floor
+
+
+def test_the_card_grid_stops_growing_before_its_buttons_become_slabs(main_window):
+    """Four rows in a full-height column left each button twice as tall as it was wide."""
+    main_window.resize(1360, 1000)
+    grid = main_window.card_selector
+    grid.resize(760, 800)
+
+    button = grid.button_list[0][0]
+    assert grid.height() <= grid.maximumHeight()
+    assert button.height() < button.width() * 2
+
+
+def test_the_divider_position_survives_a_restart(qtbot, main_window):
+    """It is what makes the layout fit a screen this code cannot see."""
+    main_window.splitter.setSizes([500, 860])
+    moved = main_window.splitter.sizes()
+    main_window.save_layout()
+
+    reopened = MainWindow()
+    qtbot.addWidget(reopened)
+
+    assert reopened.splitter.sizes() == moved
+
+
+def test_a_taller_window_goes_to_the_results(qtbot, main_window):
+    """The band holds a card grid and nothing else; the table is what wants the room."""
+    main_window.show()
+    main_window.resize(1360, 720)
+    qtbot.wait(20)
+    band_height = main_window.input_frame.height()
+    output_height = main_window.output_frame.height()
+
+    main_window.resize(1360, 1040)
+    qtbot.wait(20)
+
+    assert main_window.input_frame.height() == band_height
+    assert main_window.output_frame.height() > output_height + 250
+
+
+@pytest.mark.parametrize("players", [7, 8, 9])
+def test_an_overview_fits_across_the_window(qtbot, main_window, players):
+    """A table of N seats is N+2 columns: a row label, the open, and every seat to face.
+
+    Nine-handed that is eleven, and a column cannot go under 112 without cutting the
+    numbers in it. Beside the card grid they fit on no ordinary screen, which is why the
+    input sits above the table rather than next to it.
+    """
+    main_window.show()
+    # The preferred width, not the opening one: on a screen narrower than this the table
+    # scrolls and should, so what is being pinned down is that the preferred size is enough.
+    main_window.resize(DEFAULT_WINDOW_SIZE[0], main_window.height())
+    qtbot.wait(20)
+
+    main_window.output.create_result_grid(players + 1, players + 2)
+    qtbot.wait(20)
+
+    used = sum(entry.width() for entry in main_window.output.table_entries[0])
+    assert used <= main_window.output.scroll_area.viewport().width()
+    assert not main_window.output.scroll_area.horizontalScrollBar().isVisible()
+
+
+def test_a_seven_handed_tree_gets_seven_named_seats(raw_config, hu_tree):
+    """PLO is dealt seven-handed, and a tree declaring more seats than there are names
+    for is quietly cut down to the names that exist -- six of them, until now.
+    """
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=7), raw_config["TreeReader"])
+    selectable = [seat.strip() for seat in raw_config["PositionSelector"]["PositionList"].split(",")]
+
+    assert reader.position_list == SEVEN_MAX
+    for seat in reader.position_list:
+        assert seat in selectable, f"{seat} has no button in the position selector"
+
+
+def test_six_max_keeps_its_own_seat_names(raw_config, hu_tree):
+    """Trimming the seven-handed list would drop UTG and keep the hijack."""
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=6), raw_config["TreeReader"])
+
+    assert reader.position_list == SIX_MAX
+
+
+@pytest.mark.parametrize(
+    "num_players,expected",
+    [
+        (2, ["SB", "BB"]),
+        (5, ["MP", "CO", "BU", "SB", "BB"]),
+        (6, SIX_MAX),
+        (7, SEVEN_MAX),
+        (8, ["UTG", "MP", "LJ", "HJ", "CO", "BU", "SB", "BB"]),
+        (9, ["UTG", "UTG1", "MP", "LJ", "HJ", "CO", "BU", "SB", "BB"]),
+    ],
+)
+def test_every_table_size_names_its_seats(raw_config, hu_tree, num_players, expected):
+    """Two through nine, each with the seat its own table adds where it adds it."""
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=num_players), raw_config["TreeReader"])
+    selectable = [seat.strip() for seat in raw_config["PositionSelector"]["PositionList"].split(",")]
+
+    assert reader.position_list == expected
+    for seat in reader.position_list:
+        assert seat in selectable, f"{seat} has no button in the position selector"
+
+
+@pytest.mark.parametrize("num_players,expected", [(6, SIX_MAX), (7, SEVEN_MAX)])
+def test_the_fallback_configuration_names_seats_correctly_too(main_window, hu_tree, num_players, expected):
+    """The defaults used when config.ini has no [TreeReader] are a configuration as well.
+
+    They carried the seven-name list on its own, which is the arrangement that renames a
+    six-handed table.
+    """
+    main_window.configs.remove_section("TreeReader")
+    defaults = main_window._get_section_config("TreeReader")
+
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=num_players), defaults)
+
+    assert reader.position_list == expected
+
+
+def test_a_long_seat_name_is_shown_whole(position_selector):
+    """Pinned to the configured width, "UTG1" was cut down to what looked like "JTG1".
+
+    The clipped upright of the U reads as a J, so the button did not look broken -- it
+    looked like a seat nobody has.
+    """
+    from PySide6.QtGui import QFontMetrics
+
+    for button in position_selector.button_list:
+        needed = QFontMetrics(button.font()).horizontalAdvance(button.text())
+        assert needed <= button.minimumWidth(), f"{button.text()!r} does not fit its button"
+
+
+def test_a_window_larger_than_its_screen_is_trimmed(qtbot, main_window):
+    """Sizing at construction cannot know which display the window ends up on.
+
+    Nor can it know that the geometry it just restored came from a monitor that has since
+    been unplugged, and does not fit the panel that is left.
+    """
+    available = main_window.usable_screen()
+    main_window.resize(available.width() + 800, available.height() + 800)
+
+    main_window.fit_to_screen()
+
+    assert main_window.width() <= available.width()
+    assert main_window.height() <= available.height()
+
+
+def test_showing_the_window_trims_it(qtbot, main_window):
+    available = main_window.usable_screen()
+    main_window.resize(available.width() + 800, available.height() + 800)
+
+    main_window.show()
+    qtbot.wait(20)
+
+    assert main_window.height() <= available.height()

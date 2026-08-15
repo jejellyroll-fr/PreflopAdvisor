@@ -143,6 +143,37 @@ tool says so rather than guessing.
 To add a sizing, find its code by looking at the file names in your range folder, add a
 =Name=code= line, and list =Name= in =RaiseSizeList=.
 
+** Seats, and what their names do
+
+=Positions= lists the seats shortest stack first. It is trimmed to the tree's player count
+and reversed into acting order, which is the order the reader fills folds against.
+
+Trimming one list cannot name every table: six-handed the earliest seat is UTG, and
+seven-handed there is a hijack between it and the cutoff, so cutting a seven-name list
+down to six drops UTG and keeps HJ. Sizes that need their own names have their own entry:
+
+#+BEGIN_SRC ini
+Positions=BB,SB,BU,CO,MP,UTG
+Positions7=BB,SB,BU,CO,HJ,MP,UTG
+Positions8=BB,SB,BU,CO,HJ,LJ,MP,UTG
+Positions9=BB,SB,BU,CO,HJ,LJ,MP,UTG1,UTG
+#+END_SRC
+
+Which reads, in acting order:
+
+| seats | order |
+|-------+-------|
+| 6 | UTG MP CO BU SB BB |
+| 7 | UTG MP HJ CO BU SB BB |
+| 8 | UTG MP LJ HJ CO BU SB BB |
+| 9 | UTG UTG1 MP LJ HJ CO BU SB BB |
+
+**The names are labels.** A file name is built from the action codes and from where a seat
+sits in the list, never from what it is called, so renaming =HJ= to =LJ= changes the column
+header and nothing else. If your solver labels the middle seats differently, edit these
+lines to match it; what has to stay right is how many seats there are and the order they
+act in. Every seat you name also needs a button, in =[PositionSelector] PositionList=.
+
 ** Reading through a database instead of the range files
 
 Off by default. =[TreeReader] UseDatabase=yes= makes the tool read hands from a
@@ -187,7 +218,7 @@ python standalone.py
 ** Development
 #+BEGIN_SRC sh
 uv sync --extra dev
-uv run pytest              # 310 tests, coverage gate at 90%
+uv run pytest              # 364 tests, coverage gate at 90%
 uv run pytest -m "not slow"  # skip the subprocess smoke test
 uv run ruff check . && uv run ruff format --check .
 uv run preflop_advisor --verbose   # log every range lookup
@@ -195,16 +226,27 @@ uv run preflop_advisor --verbose   # log every range lookup
 
 ** Interface Description
 
-*** Top Left: Card Selector
-Select the desired hand. Clicking a selected card unselects it. Once the hand is full, clicking another card replaces the oldest one rather than clearing the whole selection.
+The input sits in a band across the top -- cards on the left, tree, randomizer and seats on
+the right -- with the results underneath, separated by a divider you can drag. Where you
+leave it is remembered along with the window size, so the layout follows the screen it is
+used on.
 
-*** Bottom Left: Tree Selector
+The results are the wide part: a table of /N/ seats is /N+2/ columns, so nine-handed is
+eleven, and a column cannot be narrower than 112 pixels without cutting the numbers in it.
+That is why they get the full width rather than half of it. The window asks for 1400x1040
+-- what a nine-handed overview needs -- and takes the smaller of that and the usable
+screen, so a 1366x768 laptop opens to what it has.
+
+*** Band, left: Card Selector
+A row per suit, a column per rank. Select the desired hand. Clicking a selected card unselects it. Once the hand is full, clicking another card replaces the oldest one rather than clearing the whole selection.
+
+*** Band, right: Tree Selector
 Displays the list of available trees as configured in =config.ini=. Tooltips provide additional information if configured. Selecting a different tree updates the output for the currently selected hand.
 
-*** Top Middle: Position Selector
-The default position is "X" for an overview of all positions. Selecting a specific position shows detailed information about that position's strategies, including 4bet and squeeze spots.
+*** Band, right: Position Selector
+The default position is "X" for an overview of all positions. Selecting a specific position shows detailed information about that position's strategies, including 4bet and squeeze spots. Which seats are offered follows the selected tree's player count, named as =Positions= and its per-size overrides say.
 
-*** Top Right: Output Grid
+*** Below: Output Grid
 Top line shows Hand, Position and general Information about the currently selected Tree
 **** General Overview (Position = X)
 First column shows available positions.

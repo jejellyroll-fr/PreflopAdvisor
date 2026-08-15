@@ -16,9 +16,10 @@ from . import theme
 logger = logging.getLogger(__name__)
 
 
-# Constants
-NUM_ROWS = 13
-NUM_COLUMNS = 4
+# Constants. These count the deck, not the layout: a rank is addressed by its index in
+# RANK_DIC and a suit by its index in SUIT_DIC, whichever way round they are laid out.
+NUM_ROWS = 13  # ranks
+NUM_COLUMNS = 4  # suits
 RANK_DIC = {
     0: "A",
     1: "K",
@@ -38,6 +39,16 @@ SUIT_DIC = {0: "h", 1: "c", 2: "s", 3: "d"}
 SUIT_SIGN_DIC = {index: theme.SUIT_SYMBOLS[suit] for index, suit in SUIT_DIC.items()}
 SUIT_COLORS = theme.SUIT_COLORS
 BUTTON_FONT = QFont(theme.FONT_FAMILY, 16, QFont.Bold)
+# Smallest a card button may become: enough for "A" and a suit symbol side by side.
+MIN_BUTTON_WIDTH = 34
+MIN_BUTTON_HEIGHT = 26
+# Largest it is worth making one. Past this the grid is only taking height from the
+# results table, which is the thing that runs out of room first on a seven-handed tree.
+MAX_BUTTON_WIDTH = 36
+# Height a button is allowed to reach, as a multiple of its width. A playing card is about
+# this shape, and it keeps the grid from turning into four rows of tall slabs.
+CARD_ASPECT = 1.4
+GRID_MARGINS = 10
 
 
 class CardSelector(QWidget):
@@ -66,14 +77,19 @@ class CardSelector(QWidget):
     def init_ui(self):
         """
         Initializes the user interface by adding buttons to the layout.
+
+        Laid out a suit per row and a rank per column: four rows of thirteen rather than
+        thirteen of four. The deck is the same either way, but stacking the ranks made the
+        selector 366 pixels tall on its own -- half of what the window could not shrink
+        below -- on machines whose screens are short and wide.
         """
         layout = QGridLayout()
         layout.setSpacing(self.button_pad)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(GRID_MARGINS, GRID_MARGINS, GRID_MARGINS, GRID_MARGINS)
 
-        for row in range(NUM_ROWS):
-            for col in range(NUM_COLUMNS):
-                layout.addWidget(self.button_list[col][row], row, col)
+        for rank in range(NUM_ROWS):
+            for suit in range(NUM_COLUMNS):
+                layout.addWidget(self.button_list[suit][rank], suit, rank)
 
         self.setLayout(layout)
         logger.debug("User interface initialized")
@@ -86,6 +102,9 @@ class CardSelector(QWidget):
         button.setFont(BUTTON_FONT)
         button.setStyleSheet(theme.card_button_qss(SUIT_DIC[column]))
         button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # A floor, not a size: thirteen of these across is what the window has to fit, so
+        # the number here is the one that decides how narrow the application can get.
+        button.setMinimumSize(MIN_BUTTON_WIDTH, MIN_BUTTON_HEIGHT)
         button.clicked.connect(self.on_button_clicked(row, column))
         logger.debug("Button created: %s%s", RANK_DIC[row], SUIT_SIGN_DIC[column])
         return button
@@ -178,20 +197,53 @@ class CardSelector(QWidget):
         """
         Handles button resizing when the widget size changes.
         """
+        self.update_size_caps()
         self.update_button_sizes()
         super().resizeEvent(event)
 
+    def update_size_caps(self):
+        """Stops the grid from growing at the results table's expense.
+
+        Two bounds. Across, a button stops at ``MAX_BUTTON_WIDTH``: the grid sits in a
+        band over the table, and past that size it is only taking room from it. Down, the
+        grid stops at the height that keeps a button roughly card-shaped -- four rows in a
+        full-height panel left each one 58 by 140.
+        """
+        width_cap = NUM_ROWS * (MAX_BUTTON_WIDTH + self.button_pad * 2) + GRID_MARGINS * 2
+        if width_cap != self.maximumWidth():
+            self.setMaximumWidth(width_cap)
+
+        button_width = min(
+            max(self.size().width() // NUM_ROWS - self.button_pad * 2, MIN_BUTTON_WIDTH),
+            MAX_BUTTON_WIDTH,
+        )
+        height_cap = NUM_COLUMNS * (int(button_width * CARD_ASPECT) + self.button_pad * 2) + GRID_MARGINS * 2
+        if height_cap != self.maximumHeight():
+            self.setMaximumHeight(height_cap)
+
     def update_button_sizes(self):
         """
-        Updates button sizes based on the current widget size.
-        """
-        grid_width = self.size().width()
-        grid_height = self.size().height()
-        button_width = grid_width // NUM_COLUMNS - self.button_pad * 2
-        button_height = grid_height // NUM_ROWS - self.button_pad * 2
+        Scales the card labels to the room each button has.
 
-        for col in range(NUM_COLUMNS):
-            for row in range(NUM_ROWS):
-                button = self.button_list[col][row]
-                button.setFixedSize(max(button_width, 10), max(button_height, 10))
-        logger.debug("Button sizes updated: width = %d, height = %d", button_width, button_height)
+        Only the font. Fixing each button's size to whatever the grid last handed out made
+        the widget's own minimum follow its current size, so a window once enlarged could
+        never be made small again -- and the more height the layout granted, the more it
+        demanded. The buttons carry a floor and expand; the layout does the arithmetic.
+        """
+        button_width = self.size().width() // NUM_ROWS - self.button_pad * 2
+        button_height = self.size().height() // NUM_COLUMNS - self.button_pad * 2
+        font = QFont(theme.FONT_FAMILY, self.label_point_size(button_width, button_height), QFont.Bold)
+
+        for suit in range(NUM_COLUMNS):
+            for rank in range(NUM_ROWS):
+                self.button_list[suit][rank].setFont(font)
+        logger.debug("Card labels scaled for buttons of %dx%d", button_width, button_height)
+
+    @staticmethod
+    def label_point_size(button_width, button_height):
+        """Point size for a "A<suit>" label that has to fit inside the button.
+
+        Two glyphs wide, so the width is what binds; the height only matters once the
+        buttons are squat.
+        """
+        return max(8, min(button_width // 4, button_height // 2, 18))
