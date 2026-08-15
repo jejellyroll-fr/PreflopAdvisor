@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
 import logging
+from collections.abc import Callable
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QResizeEvent
 from PySide6.QtWidgets import (
     QGridLayout,
     QPushButton,
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from .settings import ConfigSource
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +40,7 @@ RANK_DIC = {
 SUIT_DIC = {0: "h", 1: "c", 2: "s", 3: "d"}
 SUIT_SIGN_DIC = {index: theme.SUIT_SYMBOLS[suit] for index, suit in SUIT_DIC.items()}
 SUIT_COLORS = theme.SUIT_COLORS
-BUTTON_FONT = QFont(theme.FONT_FAMILY, 16, QFont.Bold)
+BUTTON_FONT = QFont(theme.FONT_FAMILY, 16, QFont.Weight.Bold)
 # Smallest a card button may become: enough for "A" and a suit symbol side by side.
 MIN_BUTTON_WIDTH = 34
 MIN_BUTTON_HEIGHT = 26
@@ -58,7 +60,7 @@ class CardSelector(QWidget):
 
     handChanged = Signal(str)
 
-    def __init__(self, card_selector_settings):
+    def __init__(self, card_selector_settings: ConfigSource) -> None:
         super().__init__()
         logger.debug("Initializing CardSelector")
         self.num_cards = int(card_selector_settings.get("NumCards", 2))
@@ -68,13 +70,13 @@ class CardSelector(QWidget):
         # Container for buttons
         self.button_list = [[self.create_button(r, c) for r in range(NUM_ROWS)] for c in range(NUM_COLUMNS)]
 
-        self.selected_cards = []
+        self.selected_cards: list[list[int]] = []
         self.selection_counter = 0
 
         self.init_ui()
         logger.debug("CardSelector initialized with a maximum of %d cards to select", self.num_cards)
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         """
         Initializes the user interface by adding buttons to the layout.
 
@@ -94,14 +96,14 @@ class CardSelector(QWidget):
         self.setLayout(layout)
         logger.debug("User interface initialized")
 
-    def create_button(self, row, column):
+    def create_button(self, row: int, column: int) -> QPushButton:
         """
         Creates a button representing a card.
         """
         button = QPushButton(RANK_DIC[row] + SUIT_SIGN_DIC[column], self)
         button.setFont(BUTTON_FONT)
         button.setStyleSheet(theme.card_button_qss(SUIT_DIC[column]))
-        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # A floor, not a size: thirteen of these across is what the window has to fit, so
         # the number here is the one that decides how narrow the application can get.
         button.setMinimumSize(MIN_BUTTON_WIDTH, MIN_BUTTON_HEIGHT)
@@ -109,18 +111,18 @@ class CardSelector(QWidget):
         logger.debug("Button created: %s%s", RANK_DIC[row], SUIT_SIGN_DIC[column])
         return button
 
-    def on_button_clicked(self, row, column):
+    def on_button_clicked(self, row: int, column: int) -> Callable[[], None]:
         """
         Returns an event handler function to manage button clicks.
         """
 
-        def event_handler():
+        def event_handler() -> None:
             logger.debug("Button clicked: %s%s", RANK_DIC[row], SUIT_DIC[column])
             self.process_button_clicked(row, column)
 
         return event_handler
 
-    def process_button_clicked(self, row, column):
+    def process_button_clicked(self, row: int, column: int) -> None:
         """
         Handles clicks on a button to select/deselect a card.
         """
@@ -144,21 +146,21 @@ class CardSelector(QWidget):
             logger.debug("Maximum number of cards selected, creating a new hand")
             self.new_hand()
 
-    def select_button(self, button_index):
+    def select_button(self, button_index: list[int]) -> None:
         """
         Updates the style of the selected button.
         """
         button = self.button_list[button_index[1]][button_index[0]]
         button.setStyleSheet(theme.card_button_qss(SUIT_DIC[button_index[1]], selected=True))
 
-    def deselect_button(self, button_index):
+    def deselect_button(self, button_index: list[int]) -> None:
         """
         Updates the style of the deselected button.
         """
         button = self.button_list[button_index[1]][button_index[0]]
         button.setStyleSheet(theme.card_button_qss(SUIT_DIC[button_index[1]]))
 
-    def new_hand(self):
+    def new_hand(self) -> None:
         """
         Emits handChanged with the selected cards.
         """
@@ -166,7 +168,7 @@ class CardSelector(QWidget):
         logger.debug("New hand generated: %s", hand)
         self.handChanged.emit(hand)
 
-    def get_selected_hand(self):
+    def get_selected_hand(self) -> str:
         """
         Returns the selected cards as a string.
         """
@@ -179,7 +181,7 @@ class CardSelector(QWidget):
     # Backward-compatible alias
     get_hand = get_selected_hand
 
-    def set_num_cards(self, num_cards):
+    def set_num_cards(self, num_cards: int) -> None:
         """
         Changes the number of cards to select (2 for NL, 4 for PLO/PLO8, 5 for PLO5).
         Resets current selection when num_cards changes.
@@ -193,7 +195,7 @@ class CardSelector(QWidget):
             self.selected_cards = []
             self.selection_counter = 0
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent) -> None:
         """
         Handles button resizing when the widget size changes.
         """
@@ -201,7 +203,7 @@ class CardSelector(QWidget):
         self.update_button_sizes()
         super().resizeEvent(event)
 
-    def update_size_caps(self):
+    def update_size_caps(self) -> None:
         """Stops the grid from growing at the results table's expense.
 
         Two bounds. Across, a button stops at ``MAX_BUTTON_WIDTH``: the grid sits in a
@@ -221,7 +223,7 @@ class CardSelector(QWidget):
         if height_cap != self.maximumHeight():
             self.setMaximumHeight(height_cap)
 
-    def update_button_sizes(self):
+    def update_button_sizes(self) -> None:
         """
         Scales the card labels to the room each button has.
 
@@ -232,7 +234,7 @@ class CardSelector(QWidget):
         """
         button_width = self.size().width() // NUM_ROWS - self.button_pad * 2
         button_height = self.size().height() // NUM_COLUMNS - self.button_pad * 2
-        font = QFont(theme.FONT_FAMILY, self.label_point_size(button_width, button_height), QFont.Bold)
+        font = QFont(theme.FONT_FAMILY, self.label_point_size(button_width, button_height), QFont.Weight.Bold)
 
         for suit in range(NUM_COLUMNS):
             for rank in range(NUM_ROWS):
@@ -240,7 +242,7 @@ class CardSelector(QWidget):
         logger.debug("Card labels scaled for buttons of %dx%d", button_width, button_height)
 
     @staticmethod
-    def label_point_size(button_width, button_height):
+    def label_point_size(button_width: int, button_height: int) -> int:
         """Point size for a "A<suit>" label that has to fit inside the button.
 
         Two glyphs wide, so the width is what binds; the height only matters once the

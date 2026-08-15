@@ -23,11 +23,37 @@ import hashlib
 import logging
 import os
 import sqlite3
+from collections.abc import Iterable, Iterator
+from typing import Any, Protocol
 
 from .errors import RangeFilesChanging
 from .hand_convert_helper import normalize_monker_hand
 
 logger = logging.getLogger(__name__)
+
+
+class Progress(Protocol):
+    """What reports the progress of a build, as the GUI layer supplies it."""
+
+    def update(self, done: int, total: int) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class ProgressFactory(Protocol):
+    """Builds a :class:`Progress` for one folder and one file count."""
+
+    def __call__(self, folder: str, total: int) -> Progress: ...
+
+
+class Ingestible(Protocol):
+    """The part of a database connection :meth:`TreeStore._ingest` uses.
+
+    Positional-only, because that is how ``sqlite3.Connection`` declares it.
+    """
+
+    def executemany(self, statement: str, parameters: Iterable[Any], /) -> Any: ...
+
 
 DB_NAME = "preflop.db"
 
@@ -51,25 +77,25 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 #: Open stores, keyed by folder. One database per tree folder, one connection per process.
-_STORES = {}
+_STORES: dict[str, "TreeStore"] = {}
 
 #: Folders whose build failed, and the fingerprint it failed on. Keeps a failure from
 #: being re-lived on every grid refresh.
-_FAILED = {}
+_FAILED: dict[str, str] = {}
 
 #: Set by the GUI layer to a callable ``(folder, total) -> progress`` where progress has
 #: ``update(done, total)`` and ``close()``. Left unset everywhere else, so this module
 #: never imports a toolkit and stays usable from tests and scripts.
-_PROGRESS_FACTORY = None
+_PROGRESS_FACTORY: ProgressFactory | None = None
 
 
-def set_progress_factory(factory):
+def set_progress_factory(factory: ProgressFactory | None) -> None:
     """Register what to show while a database is being built."""
     global _PROGRESS_FACTORY
     _PROGRESS_FACTORY = factory
 
 
-def clear_stores():
+def clear_stores() -> None:
     """Close and forget every open store, and every remembered failure."""
     for store in _STORES.values():
         store.close()
@@ -77,7 +103,7 @@ def clear_stores():
     _FAILED.clear()
 
 
-def get_store(folder, ending):
+def get_store(folder: str, ending: str) -> "TreeStore | None":
     """Open the store of a tree folder, building the database if it is missing or stale.
 
     :param folder: Tree folder holding the range files.
@@ -123,14 +149,14 @@ def get_store(folder, ending):
     return store
 
 
-def forget(folder):
+def forget(folder: str) -> None:
     """Close and drop one folder's store, so the next use opens it afresh."""
     store = _STORES.pop(folder, None)
     if store is not None:
         store.close()
 
 
-def tree_fingerprint(folder, ending):
+def tree_fingerprint(folder: str, ending: str) -> str:
     """Identify the state of a folder's range files: each one's name, size and mtime.
 
     Every file, not merely how many there are and which is the newest. Putting one file
@@ -152,7 +178,7 @@ def tree_fingerprint(folder, ending):
     return f"{len(files)}:{digest.hexdigest()}"
 
 
-def parse_range_file(path):
+def parse_range_file(path: str) -> Iterator[tuple[str, float, float]]:
     """Yield ``(hand, frequency, ev)`` from a range file.
 
     Tolerant of a header and of stray lines: a line without ``;`` is a pending hand, the
@@ -191,19 +217,19 @@ class TreeStore:
     #: re-exported settles; one being written to continuously is not worth waiting for.
     BUILD_ATTEMPTS = 3
 
-    def __init__(self, folder, ending):
+    def __init__(self, folder: str, ending: str) -> None:
         self.folder = folder
         self.ending = ending
         self.db_path = os.path.join(folder, DB_NAME)
-        self.fingerprint = None
-        self._conn = None
-        self._filenames = frozenset()
+        self.fingerprint: str | None = None
+        self._conn: sqlite3.Connection | None = None
+        self._filenames: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def ensure_ready(self):
+    def ensure_ready(self) -> None:
         """Build the database if it is missing or no longer matches the range files."""
         self.fingerprint = self._build_if_needed()
 
@@ -213,7 +239,7 @@ class TreeStore:
         self._filenames = frozenset(row[0] for row in cursor)
         logger.debug("SQLite store ready: %s, %d files indexed", self.db_path, len(self._filenames))
 
-    def _build_if_needed(self):
+    def _build_if_needed(self) -> str:
         """Bring the database in step with the range files, and say what it was built from.
 
         A build reads the files one after another and takes minutes on a large tree, so an
@@ -238,7 +264,7 @@ class TreeStore:
             )
         raise RangeFilesChanging(f"Range files of {self.folder} kept changing while the database was being built")
 
-    def _stored_fingerprint(self):
+    def _stored_fingerprint(self) -> str | None:
         """What the existing database was built from, or ``None`` if there is none to ask."""
         if not os.path.isfile(self.db_path):
             return None
@@ -253,7 +279,7 @@ class TreeStore:
             return None
         return stored.get("fingerprint")
 
-    def build(self, fingerprint):
+    def build(self, fingerprint: str) -> bool:
         """Ingest every range file of the folder, publishing the result atomically.
 
         The database is written aside and renamed over the old one, so a build that fails
@@ -309,7 +335,7 @@ class TreeStore:
             if progress is not None:
                 progress.close()
 
-    def _ingest(self, conn, path):
+    def _ingest(self, conn: Ingestible, path: str) -> None:
         """Load one range file into the open database.
 
         Rows are streamed rather than collected: the files this is meant for run to
@@ -327,7 +353,7 @@ class TreeStore:
             ((basename, hand, frequency, ev) for hand, frequency, ev in parse_range_file(path)),
         )
 
-    def close(self):
+    def close(self) -> None:
         """Release the connection."""
         if self._conn is not None:
             self._conn.close()
@@ -337,15 +363,21 @@ class TreeStore:
     # Queries
     # ------------------------------------------------------------------
 
-    def has_file(self, basename):
+    def has_file(self, basename: str) -> bool:
         """Whether the database holds any hand of that range file."""
         return basename in self._filenames
 
-    def lookup_hand(self, basename, hand):
+    def lookup_hand(self, basename: str, hand: str) -> tuple[float, float] | None:
         """Look a hand up in one range file.
 
         :return: ``(frequency, ev)``, or ``None`` when the file does not hold that hand.
         """
+        if self._conn is None:
+            # Closed under the caller: a processor holds its store, and another one
+            # rebuilding the same folder drops it. Raised as the database error it is, so
+            # the reader falls back to the range files rather than seeing an attribute
+            # error it does not catch.
+            raise sqlite3.ProgrammingError(f"The store of {self.folder} is closed")
         cursor = self._conn.execute(
             "SELECT freq, ev FROM hands WHERE filename = ? AND hand = ?",
             (basename, hand),

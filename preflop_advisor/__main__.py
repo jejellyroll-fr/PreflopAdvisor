@@ -10,7 +10,7 @@ from . import gui, theme
 from .gui import MainWindow
 
 
-def configure_logging(verbose=False):
+def configure_logging(verbose: bool = False) -> None:
     """Set up logging for the whole application.
 
     The single place logging is configured: modules only ever call
@@ -24,7 +24,7 @@ def configure_logging(verbose=False):
     )
 
 
-def parse_args(argv=None):
+def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(prog="preflop_advisor", description="Preflop Advisor based on Monker")
     parser.add_argument(
         "-v",
@@ -35,7 +35,7 @@ def parse_args(argv=None):
     return parser.parse_known_args(argv)
 
 
-def main():
+def main() -> None:
     args, qt_args = parse_args(sys.argv[1:])
     configure_logging(args.verbose)
 

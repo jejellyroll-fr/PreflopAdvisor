@@ -11,6 +11,8 @@ from PySide6.QtWidgets import QApplication
 
 from preflop_advisor.card_selector import CardSelector
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
+from preflop_advisor.hand_convert_helper import convert_hand
+from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector
@@ -374,7 +376,8 @@ def test_the_window_can_be_made_short(main_window):
     """The floor is the layout's own, and it has to clear a laptop screen."""
     main_window.resize(200, 200)
 
-    assert main_window.minimumSizeHint().height() <= 500
+    # The tab bar over the two modes costs about thirty pixels of it.
+    assert main_window.minimumSizeHint().height() <= 560
 
 
 def test_enlarging_the_window_does_not_raise_its_floor(main_window):
@@ -403,13 +406,21 @@ def test_the_card_grid_stops_growing_before_its_buttons_become_slabs(main_window
 
 
 def test_the_divider_position_survives_a_restart(qtbot, main_window):
-    """It is what makes the layout fit a screen this code cannot see."""
+    """It is what makes the layout fit a screen this code cannot see.
+
+    Both windows are shown: a divider is only placed once its page has a real size, and
+    only a placed one is worth saving.
+    """
+    main_window.show()
+    qtbot.wait(20)
     main_window.splitter.setSizes([500, 860])
     moved = main_window.splitter.sizes()
     main_window.save_layout()
 
     reopened = MainWindow()
     qtbot.addWidget(reopened)
+    reopened.show()
+    qtbot.wait(20)
 
     assert reopened.splitter.sizes() == moved
 
@@ -542,3 +553,269 @@ def test_showing_the_window_trims_it(qtbot, main_window):
     qtbot.wait(20)
 
     assert main_window.height() <= available.height()
+
+
+# --------------------------------------------------------------------------------------
+# Trainer tab
+# --------------------------------------------------------------------------------------
+
+
+def test_the_window_offers_both_the_advisor_and_the_trainer(main_window):
+    tabs = [main_window.tabs.tabText(index) for index in range(main_window.tabs.count())]
+
+    assert tabs == ["Advisor", "Trainer"]
+
+
+def test_dealing_asks_a_spot_the_selected_tree_can_answer(main_window):
+    """The trainer reads the Advisor's tree, so there is one answer to which tree it is."""
+    trainer = main_window.trainer
+
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert trainer.question.results, "a question must carry the solver's answer"
+    assert trainer.spot_label.text() == trainer.question.spot.label
+    assert len(trainer.buttons) == len(trainer.question.actions())
+
+
+def test_only_the_actions_of_the_node_are_offered(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+
+    offered = [button.text() for button in trainer.buttons]
+    expected = [short_action_label(action) for action in trainer.question.actions()]
+
+    assert offered == expected
+
+
+def test_answering_grades_the_choice_and_reveals_the_strategy(qtbot, main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    question = trainer.question
+
+    qtbot.mouseClick(trainer.buttons[0], Qt.LeftButton)
+
+    assert trainer.session.hands == 1
+    assert trainer.verdict_label.text(), "the answer must be scored on screen"
+    assert len(trainer.tiles) == len(question.results), "every action's numbers are shown"
+    assert all(not button.isEnabled() for button in trainer.buttons), "no answering twice"
+
+
+def test_the_session_tally_follows_the_answers(qtbot, main_window):
+    trainer = main_window.trainer
+
+    for _ in range(3):
+        trainer.next_hand()
+        qtbot.mouseClick(trainer.buttons[0], Qt.LeftButton)
+
+    assert trainer.session.hands == 3
+    assert trainer.stat_labels["Hands"].text() == "3"
+    assert sum(trainer.session.counts.values()) == 3
+
+
+def test_a_new_hand_clears_the_previous_answer(qtbot, main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    qtbot.mouseClick(trainer.buttons[0], Qt.LeftButton)
+
+    trainer.next_hand()
+
+    assert trainer.verdict_label.text() == ""
+    assert trainer.tiles == []
+    assert all(button.isEnabled() for button in trainer.buttons)
+
+
+def test_a_window_that_was_never_shown_saves_no_layout(qtbot):
+    """Its divider holds the proportions of a page that was never laid out.
+
+    Saved, they are what the next launch opens on.
+    """
+    from PySide6.QtCore import QSettings
+
+    from preflop_advisor.gui import SPLITTER_KEY
+
+    QSettings().remove(SPLITTER_KEY)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.save_layout()
+
+    assert QSettings().value(SPLITTER_KEY) is None
+
+
+def test_every_spot_is_looked_at_before_calling_a_tree_empty(main_window, monkeypatch):
+    """Sampling with replacement can miss a spot that is there.
+
+    A nine-handed catalogue is 81 spots; a tree exporting one line would have been
+    declared empty better than half the time.
+    """
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    # "UTG" is not seated at the heads-up tree, so these answer nothing.
+    barren = [Spot(f"nowhere {index}", "UTG", []) for index in range(60)]
+    real = Spot("SB first in", "SB", [])
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [*barren, real])
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is not None
+    assert main_window.trainer.question.spot.label == "SB first in"
+
+
+def test_a_tree_with_nothing_to_drill_says_so(main_window, monkeypatch):
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "UTG", [])])
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is None
+    assert "No spot" in main_window.trainer.spot_label.text()
+
+
+def test_a_question_never_carries_a_nameless_action(main_window, tmp_path):
+    """A node that lacks the hand dealt answers ["", 0.0, 0.0] -- a placeholder.
+
+    Asked as it stands, it renders a nameless button and grades whatever is pressed as
+    costing nothing. The sparse tree here holds one hand, so the question that comes back
+    is about that hand, and every action in it is named.
+    """
+    folder = tmp_path / "sparse"
+    folder.mkdir()
+    (folder / "1.rng").write_text("AAAA\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "AAAA"
+    assert all(question.actions()), "no action of a question may be nameless"
+    assert all(button.text() for button in main_window.trainer.buttons)
+
+
+def test_a_selector_with_no_configured_tree_says_so_rather_than_raising(qtbot, raw_config):
+    """It is read on the way to the first render, before anything can report a problem.
+
+    Raising there ended the application instead of leaving an empty selector the user can
+    still fix their configuration from.
+    """
+    raw_config.remove_section("TreeInfos")
+    raw_config.add_section("TreeInfos")
+    selector = TreeSelector(None, raw_config["TreeSelector"], raw_config["TreeInfos"], raw_config["TreeToolTips"])
+    qtbot.addWidget(selector)
+
+    assert selector.get_tree_infos() is None
+
+
+def test_the_window_refreshes_quietly_when_no_tree_is_configured(main_window, monkeypatch):
+    monkeypatch.setattr(main_window.tree_selector, "get_tree_infos", lambda: None)
+
+    main_window.update_output_frame()  # must not raise
+
+
+def test_the_trainer_asks_for_a_tree_when_none_is_configured(main_window, monkeypatch):
+    monkeypatch.setattr(main_window.trainer, "tree_source", lambda: None)
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is None
+    assert "tree" in main_window.trainer.spot_label.text().lower()
+
+
+def test_a_node_holding_one_hand_is_still_asked(main_window, tmp_path, monkeypatch):
+    """A truncated export may hold a handful of a node's sixteen thousand hands.
+
+    Dealing at random would miss them however many times it tried, so the node is asked
+    which hands it has and one of those is dealt back out.
+    """
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "partial"
+    folder.mkdir()
+    # One hand in the whole tree: "(3K)(4A)", which is what AhKs4h3s converts to.
+    (folder / "1.rng").write_text("(3K)(4A)\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    # Every random deal misses, as it would in practice.
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c3d4h5s")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None, "the node holds a hand, so it has a question in it"
+    assert convert_hand(question.hand) == "(3K)(4A)"
+
+
+def test_a_line_with_no_file_is_not_dealt_again(main_window, tmp_path, monkeypatch):
+    """Another hand cannot conjure a file, so it is looked at once and left."""
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    folder = tmp_path / "empty"
+    folder.mkdir()
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "SB", [])])
+
+    deals = []
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: deals.append(1) or "AhKs4h3s")
+    main_window.trainer.next_hand()
+
+    assert deals == [1], "one look at a line that has no ranges behind it"
+
+
+def test_a_sparse_monker_2_node_is_asked(main_window, tmp_path, monkeypatch):
+    """The file holds the Monker 2 spelling, which the reader normalises on the way in."""
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "monker2"
+    folder.mkdir()
+    (folder / "1.rng").write_text("AK(23)\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c3d4h5s")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "KA(23)"
+
+
+def test_a_sparse_holdem_node_is_asked(main_window, tmp_path, monkeypatch):
+    """A two-card tree, whose keys carry their suitedness in a letter."""
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "holdem"
+    folder.mkdir()
+    (folder / "1.rng").write_text("AKs\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "NL", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c7d")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "AKs"
+
+
+def test_an_empty_action_file_does_not_hide_a_full_one(main_window, tmp_path, monkeypatch):
+    """A spot is one file per action, and a truncated export can leave one of them empty.
+
+    Looking only at the first that exists let the empty Fold hide the Call beside it, and
+    the spot was passed over as though the tree had nothing for it.
+    """
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "lopsided"
+    folder.mkdir()
+    (folder / "0.rng").write_text("")  # Fold: exists, holds nothing
+    (folder / "1.rng").write_text("AAAA\n1.0;4000.0\n")  # Call: holds a hand
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c3d4h5s")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "AAAA"

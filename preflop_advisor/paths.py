@@ -20,13 +20,13 @@ PROJECT_ROOT = os.path.dirname(PACKAGE_ROOT)
 RANGES_DIRNAME = "ranges"
 
 
-def search_roots():
+def search_roots() -> list[str]:
     """Directories a relative range folder may be resolved against.
 
     A PyInstaller bundle unpacks its data next to the executable rather than next to the
     sources, so ``sys._MEIPASS`` is checked first when frozen.
     """
-    roots = []
+    roots: list[str] = []
     bundle_dir = getattr(sys, "_MEIPASS", None)
     if bundle_dir:
         roots.append(bundle_dir)
@@ -34,7 +34,7 @@ def search_roots():
     return roots
 
 
-def resolve_range_folder(folder):
+def resolve_range_folder(folder: str | None) -> str | None:
     """Locate a configured range folder.
 
     Tries, in order: the path as given, the path relative to each search root, and
@@ -64,6 +64,6 @@ def resolve_range_folder(folder):
     return None
 
 
-def package_file(*parts):
+def package_file(*parts: str) -> str:
     """Path to a file shipped inside the package (config.ini, popup-pics, ...)."""
     return os.path.join(PACKAGE_ROOT, *parts)

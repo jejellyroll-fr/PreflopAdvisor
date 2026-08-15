@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
 import logging
+from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QResizeEvent
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -15,7 +16,9 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from .settings import ConfigSource
 from .tree_reader import TreeReader
+from .types import Grid, Result
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +60,7 @@ EMPTY_STATE_TEXT = "Pick a full hand on the left to see the strategy."
 SUIT_SIGN_DIC = theme.SUIT_SYMBOLS
 
 
-def short_action_label(action):
+def short_action_label(action: str) -> str:
     """Human-readable label for a Monker action key.
 
     ``Raise100`` is the internal name of a sizing, not something a player reads. The
@@ -75,7 +78,7 @@ def short_action_label(action):
     return key
 
 
-def format_ev(ev):
+def format_ev(ev: str | float) -> str:
     """Signs an EV figure so gain and loss are told apart at a glance, not by a glyph."""
     try:
         value = float(ev)
@@ -94,10 +97,10 @@ class ActionTile(QWidget):
     eye to latch onto.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -109,18 +112,18 @@ class ActionTile(QWidget):
         self.ev_label.setObjectName("ev")
 
         for label in (self.action_label, self.frequency_label, self.ev_label):
-            label.setAlignment(Qt.AlignCenter)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(label)
 
         self.action = ""
 
-    def text(self):
+    def text(self) -> str:
         """Flat rendering of the tile, for logging and assertions."""
         if not self.action:
             return ""
         return f"{self.action_label.text()} {self.frequency_label.text()} {self.ev_label.text()}"
 
-    def set_action(self, action, frequency, ev, selected=False):
+    def set_action(self, action: str, frequency: str, ev: str, selected: bool = False) -> None:
         self.action = action
         self.action_label.setText(short_action_label(action))
         self.frequency_label.setText(f"{frequency}%")
@@ -151,14 +154,14 @@ class ActionTile(QWidget):
         """)
         self.show()
 
-    def clear(self):
+    def clear(self) -> None:
         self.action = ""
         for label in (self.action_label, self.frequency_label, self.ev_label):
             label.setText("")
         self.setStyleSheet("")
         self.hide()
 
-    def apply_fonts(self, height, width=None):
+    def apply_fonts(self, height: int, width: int | None = None) -> None:
         """Scales the three lines together, preserving their relative weight.
 
         Bounded by the room in both directions. Sized on height alone, a cell in a
@@ -179,16 +182,16 @@ class ActionTile(QWidget):
         if width is not None:
             primary = max(9, min(primary, int(width / PIXELS_PER_POINT)))
 
-        font = QFont(theme.FONT_FAMILY, primary, QFont.Bold)
+        font = QFont(theme.FONT_FAMILY, primary, QFont.Weight.Bold)
         self.frequency_label.setFont(font)
         self.action_label.setFont(QFont(theme.FONT_FAMILY, secondary))
-        self.ev_label.setFont(QFont(theme.FONT_FAMILY, secondary, QFont.Bold))
+        self.ev_label.setFont(QFont(theme.FONT_FAMILY, secondary, QFont.Weight.Bold))
 
 
 class TableEntry(QWidget):
     """One cell of the results grid: either a header label or up to two actions."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
         self.cell_layout = QVBoxLayout(self)
@@ -196,7 +199,7 @@ class TableEntry(QWidget):
         self.cell_layout.setSpacing(3)
 
         self.info_text = QLabel("", self)
-        self.info_text.setAlignment(Qt.AlignCenter)
+        self.info_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.info_text.setWordWrap(True)
 
         # Header text and action tiles never show at the same time, and an empty header
@@ -215,13 +218,13 @@ class TableEntry(QWidget):
         self.cell_layout.addWidget(self.tiles, stretch=1)
 
         # Cells grow with the window instead of being pinned to a fixed pixel size.
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(MIN_CELL_WIDTH, MIN_CELL_HEIGHT)
 
         # A QWidget subclass does not paint the border or background from its own
         # stylesheet unless it is told to. Without this the cells have no outline at all
         # and the grid reads as boxes floating in space rather than a table.
-        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         self.setStyleSheet(
             f"""
@@ -239,18 +242,18 @@ class TableEntry(QWidget):
         )
         self.clear_entry()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent) -> None:
         """Scales the fonts with the cell so the grid stays legible at any window size."""
-        self.info_text.setFont(QFont(theme.FONT_FAMILY, max(10, min(10 + self.width() // 12, 17)), QFont.Bold))
+        self.info_text.setFont(QFont(theme.FONT_FAMILY, max(10, min(10 + self.width() // 12, 17)), QFont.Weight.Bold))
         for tile in (self.label_left, self.label_right):
             tile.apply_fonts(self.height(), self.tile_width())
         super().resizeEvent(event)
 
-    def tile_width(self):
+    def tile_width(self) -> int:
         """Room the *text* of one tile has, once the tile's own frame is taken off."""
         return max(self.width() // MAX_DISPLAYED_ACTIONS - TILE_CHROME, 20)
 
-    def set_description_label(self, text=""):
+    def set_description_label(self, text: str = "") -> None:
         """Renders the cell as a row or column header."""
         self.clear_entry()
         self.info_text.setText(text)
@@ -260,7 +263,7 @@ class TableEntry(QWidget):
         # header text to the top of the cell with dead space under it.
         self.tiles.hide()
 
-    def set_result_label(self, results, tooltip="", highlight=None):
+    def set_result_label(self, results: list[Result], tooltip: str = "", highlight: str | None = None) -> None:
         """Renders up to two actions, tinted by frequency and coloured by EV.
 
         The tint carries the frequency, which is the figure a player scans for: a line
@@ -296,23 +299,23 @@ class TableEntry(QWidget):
         # highlight would match nothing and the randomizer would silently pick an action
         # the grid never shows. Name it above the tiles instead.
         rolled_but_not_shown = highlight is not None and all(entry[0] != highlight for entry in results)
-        if rolled_but_not_shown:
+        if highlight is not None and rolled_but_not_shown:
             self.mark_rolled_action(highlight)
         else:
             # Otherwise the header line is hidden so the tiles get the whole cell.
             self.info_text.hide()
 
-    def mark_rolled_action(self, action):
+    def mark_rolled_action(self, action: str) -> None:
         """Names the action the roll selected, above the tiles."""
         self.info_text.setText(f"▸ {short_action_label(action)}")
         self.info_text.setStyleSheet(f"color: {theme.ACCENT}; font-weight: bold;")
         self.info_text.show()
 
-    def displayed_actions(self):
+    def displayed_actions(self) -> list[str]:
         """Names of the actions currently shown, in display order."""
         return [tile.action for tile in (self.label_left, self.label_right) if tile.action]
 
-    def clear_entry(self):
+    def clear_entry(self) -> None:
         """Resets all fields and styles."""
         self.setToolTip("")
         self.info_text.setText("")
@@ -324,10 +327,9 @@ class TableEntry(QWidget):
 
 
 class OutputFrame(QWidget):
-    def __init__(self, parent, output_configs, tree_reader_configs):
+    def __init__(self, parent: QWidget | None, output_configs: ConfigSource, tree_reader_configs: ConfigSource) -> None:
         super().__init__(parent)
         logger.debug("Initializing OutputFrame")
-        self.parent = parent
         self.output_configs = output_configs
         self.tree_reader_configs = tree_reader_configs
 
@@ -338,7 +340,7 @@ class OutputFrame(QWidget):
         self.info_layout = QGridLayout(self.info_frame)
         self.info_layout.setContentsMargins(4, 4, 4, 4)
 
-        self.card_labels_list = []
+        self.card_labels_list: list[QLabel] = []
         self.card_labels()
         self.info_layout.addWidget(self.general_infos_label, 0, len(self.card_labels_list))
         self.info_layout.setColumnStretch(len(self.card_labels_list), 1)
@@ -355,17 +357,17 @@ class OutputFrame(QWidget):
         self.scroll_area.setWidget(self.output_frame)
 
         # The grid is built to fit each result set; nothing is allocated up front.
-        self.table_entries = []
+        self.table_entries: list[list[TableEntry]] = []
 
         # Latest randomizer roll, and enough state to re-render without re-reading the
         # ranges when only the roll changes.
-        self.roll = None
-        self._last_render = None
+        self.roll: int | None = None
+        self._last_render: tuple[Grid, str, str, str] | None = None
 
         # The grid is only built once a hand is picked, so without this the panel is
         # blank on startup with nothing saying what to do.
         self.placeholder = QLabel(EMPTY_STATE_TEXT, self.output_frame)
-        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.placeholder.setWordWrap(True)
         self.placeholder.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 15px;")
         self.output_layout.addWidget(self.placeholder, 0, 0)
@@ -378,16 +380,16 @@ class OutputFrame(QWidget):
     # Header
     # ------------------------------------------------------------------
 
-    def card_labels(self):
+    def card_labels(self) -> None:
         self.card_labels_list = []
         for i in range(5):
             label = QLabel("", self.info_frame)
-            label.setFont(QFont(theme.FONT_FAMILY, 20, QFont.Bold))
-            label.setAlignment(Qt.AlignCenter)
+            label.setFont(QFont(theme.FONT_FAMILY, 20, QFont.Weight.Bold))
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.card_labels_list.append(label)
             self.info_layout.addWidget(label, 0, i)
 
-    def set_card_label(self, hand):
+    def set_card_label(self, hand: str) -> None:
         hand_remaining = hand
         for label in self.card_labels_list:
             if not hand_remaining:
@@ -399,7 +401,7 @@ class OutputFrame(QWidget):
             label.setStyleSheet(f"color: {theme.SUIT_COLORS[suit]};")
             label.setText(card[0] + theme.SUIT_SYMBOLS[suit])
 
-    def update_info_frame(self, hand, position, treeinfo):
+    def update_info_frame(self, hand: str, position: str, treeinfo: str) -> None:
         self.set_card_label(hand)
         self.general_infos_label.setText(f"   Position: {position}   {treeinfo}")
 
@@ -407,13 +409,13 @@ class OutputFrame(QWidget):
     # Results grid
     # ------------------------------------------------------------------
 
-    def set_roll(self, value):
+    def set_roll(self, value: int) -> None:
         """Applies a randomizer roll and re-highlights the selected actions."""
         self.roll = value
         if self._last_render is not None:
             self.render_results(*self._last_render)
 
-    def action_for_roll(self, results):
+    def action_for_roll(self, results: list[Result]) -> str | None:
         """Action a mixed strategy resolves to for the current roll.
 
         Walks the node's cumulative frequencies, folding included, so a roll of 25 on a
@@ -425,10 +427,10 @@ class OutputFrame(QWidget):
         for action, frequency, _ in results:
             cumulative += frequency * 100
             if self.roll < cumulative:
-                return action
-        return results[-1][0]
+                return str(action)
+        return str(results[-1][0])
 
-    def update_output_frame(self, hand, position, tree):
+    def update_output_frame(self, hand: str, position: str, tree: dict[str, Any]) -> None:
         logger.debug("Updating output frame")
         tree_reader = TreeReader(hand, position, tree, self.tree_reader_configs)
         results = tree_reader.get_results()
@@ -437,7 +439,7 @@ class OutputFrame(QWidget):
         self._last_render = (results, hand, position, tree_infos)
         self.render_results(results, hand, position, tree_infos)
 
-    def render_results(self, results, hand, position, tree_infos):
+    def render_results(self, results: Grid, hand: str, position: str, tree_infos: str) -> None:
         """Paints a result grid; separated from reading so a roll can re-render cheaply."""
         self.update_info_frame(hand, position, tree_infos)
 
@@ -464,7 +466,7 @@ class OutputFrame(QWidget):
                     )
         logger.debug("Output frame updated: %dx%d", rows, columns)
 
-    def create_result_grid(self, rows, columns):
+    def create_result_grid(self, rows: int, columns: int) -> None:
         """Builds the grid to the size of the current result set.
 
         The grid used to be a fixed 7x8: heads-up left 53 of 56 cells empty, and any
@@ -497,7 +499,7 @@ class OutputFrame(QWidget):
         self.spread_grid(rows, columns)
         logger.debug("Results grid created: %dx%d", rows, columns)
 
-    def spread_grid(self, rows, columns):
+    def spread_grid(self, rows: int, columns: int) -> None:
         """Shares the panel out between the cells that exist, and only those.
 
         A QGridLayout keeps the stretch of every row and column it has ever been given,
@@ -513,7 +515,7 @@ class OutputFrame(QWidget):
         for index in range(max(columns, self.output_layout.columnCount())):
             self.output_layout.setColumnStretch(index, 1 if index < columns else 0)
 
-    def describe_cell(self, results, row_index, column_index):
+    def describe_cell(self, results: Grid, row_index: int, column_index: int) -> str:
         """Tooltip naming the scenario a cell stands for.
 
         The grid is dense and its axes are abbreviated; spelling out "4bet / vs BU" on
@@ -526,7 +528,7 @@ class OutputFrame(QWidget):
         return " / ".join(parts)
 
     @staticmethod
-    def describe_strategy(raw_results):
+    def describe_strategy(raw_results: list[Result]) -> str:
         """Full strategy of a node, folding included.
 
         The grid never shows a Fold column, so the visible frequencies do not add up to
@@ -538,7 +540,7 @@ class OutputFrame(QWidget):
         lines = [f"{short_action_label(action)}  {frequency * 100:.0f}%" for action, frequency, _ in raw_results]
         return "Strategy: " + ", ".join(lines)
 
-    def preprocess_results(self, results):
+    def preprocess_results(self, results: list[Result]) -> list[Result]:
         """Formats solver results for display: frequency in %, EV in big blinds.
 
         Entries are addressed by action name rather than by position. Folding is the
