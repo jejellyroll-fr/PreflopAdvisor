@@ -33,6 +33,8 @@ RANGE_ENDING = ".rng"
 sys.path.insert(0, PROJECT_ROOT)
 
 from preflop_advisor.paths import resolve_range_folder
+from preflop_advisor.settings import normalize
+from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_reader_helpers import ActionProcessor
 
 # Global constants
@@ -305,17 +307,23 @@ def declared_player_count(tree_folder, tree_infos_section):
     return None
 
 
-def seated_positions(position_list, num_players=None):
-    """Seat the configured positions the way ``TreeReader.init_position_list`` does.
+def seated_positions(position_list, num_players=None, configs=None):
+    """Seat the configured positions the way ``TreeReader`` seats them.
 
-    ``Positions`` is written shortest-stack first, so it is trimmed to the seats the tree
-    actually has and then reversed into acting order -- that order is what
-    ``ActionProcessor`` fills folds against. Handing all six seats to the two-player tree
-    shipped in the checkout asked it for 6-max filenames it does not contain, and the
-    report came back as zeros. A folder absent from ``[TreeInfos]`` -- an export of the
-    user's own -- keeps the full list, since nothing declares its size.
+    Through the reader's own ``seats_for``, so a table size that names its seats
+    differently -- seven-handed and up, where ``Positions7`` and its siblings apply --
+    is seated here exactly as the application seats it. Trimming ``Positions`` alone left
+    this report on six seats for a nine-handed tree, and asked it for filenames built in
+    the wrong acting order.
+
+    The result is reversed into acting order, which is what ``ActionProcessor`` fills
+    folds against. A folder absent from ``[TreeInfos]`` -- an export of the user's own --
+    keeps the full list, since nothing declares its size.
     """
-    seats = position_list if num_players is None else position_list[:num_players]
+    if num_players is None:
+        return list(reversed(position_list))
+    settings = normalize(configs) if configs is not None else {}
+    seats = TreeReader.seats_for(settings, num_players, position_list)[:num_players]
     return list(reversed(seats))
 
 
@@ -377,7 +385,7 @@ def main():
     # has_section, not a dict get: ConfigParser.get() takes a section *and* an option.
     tree_declarations = config["TreeInfos"] if config.has_section("TreeInfos") else None
     num_players = declared_player_count(tree_folder, tree_declarations)
-    seats = seated_positions(position_list, num_players)
+    seats = seated_positions(position_list, num_players, configs)
 
     print(f"Reading ranges from: {tree_folder}")
     if num_players is None:
