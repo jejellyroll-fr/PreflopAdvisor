@@ -27,7 +27,7 @@ from . import theme
 from .errors import PreflopAdvisorError
 from .outputframe import CHIPS_PER_BB, ActionTile, short_action_label
 from .settings import ConfigSource, get
-from .trainer import Question, Session, deal, grade, spots_for
+from .trainer import Question, Session, deal, grade, playable, spots_for
 from .tree_reader import TreeReader
 
 logger = logging.getLogger(__name__)
@@ -141,7 +141,9 @@ class TrainerPanel(QWidget):
         A tree holds the lines its solver was run for and no others, so a spot is only a
         question once the ranges behind it exist. Rather than filter the catalogue up
         front -- which would mean reading the whole tree to build a menu -- the shuffled
-        catalogue is walked and a spot that answers nothing is passed over.
+        catalogue is walked and a spot that answers nothing is passed over -- including
+        one whose file exists but does not hold the hand, which comes back as a placeholder
+        rather than as nothing at all.
 
         Walked, not sampled. Drawing at random with replacement can miss a spot that is
         there: a nine-handed catalogue is 81 of them, so a tree exporting one line would
@@ -157,7 +159,7 @@ class TrainerPanel(QWidget):
 
         for spot in spots:
             hand = deal(cards, self.rng)
-            results = reader.action_processor.get_results(hand, spot.line, spot.hero)
+            results = playable(reader.action_processor.get_results(hand, spot.line, spot.hero))
             if results:
                 return Question(spot, hand, results)
         logger.warning("No spot of %s answered", tree.get("folder"))

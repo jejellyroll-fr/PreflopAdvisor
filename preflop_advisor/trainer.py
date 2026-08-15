@@ -129,6 +129,18 @@ def spots_for(seats: list[str]) -> list[Spot]:
     return spots
 
 
+def playable(results: list[Result]) -> list[Result]:
+    """The entries of a node that actually name an action.
+
+    A range file that exists but does not hold the hand dealt comes back as
+    ``["", 0.0, 0.0]``: a placeholder for "not found", not a strategy. It is a list, and a
+    non-empty one, so a question built from it looks answerable -- with a nameless button,
+    and every answer costing nothing against a best action that is also nothing. Asked at
+    all, it would be scored Correct whatever the player pressed.
+    """
+    return [entry for entry in results if str(entry[0])]
+
+
 def grade(results: list[Result], chosen: str, chips_per_bb: float) -> Verdict:
     """Score an answer by what it gives up against the best action of the node.
 

@@ -17,6 +17,7 @@ from preflop_advisor.trainer import (
     Verdict,
     deal,
     grade,
+    playable,
     spots_for,
 )
 from preflop_advisor.tree_reader import TreeReader
@@ -179,3 +180,23 @@ def test_every_spot_of_the_shipped_tree_can_be_asked_and_graded(hu_tree, tree_co
             assert verdict.label in ("Correct", "Inaccuracy", "Mistake", "Blunder")
 
     assert asked >= 3, "the heads-up tree should answer at least open, defend and 3bet"
+
+
+# --------------------------------------------------------------------------------------
+# Placeholders are not a strategy
+# --------------------------------------------------------------------------------------
+
+
+def test_a_not_found_placeholder_is_not_a_playable_action():
+    """A file that exists without the hand in it answers ["", 0.0, 0.0].
+
+    It is a non-empty list, so a question built from it looks answerable: a button with no
+    name, and every answer costing nothing against a best action that is also nothing.
+    """
+    assert playable([["", 0.0, 0.0]]) == []
+
+
+def test_the_real_actions_of_a_half_answered_node_are_kept():
+    node = [["", 0.0, 0.0], ["Call", 1.0, 400.0]]
+
+    assert playable(node) == [["Call", 1.0, 400.0]]

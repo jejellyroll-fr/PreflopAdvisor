@@ -672,3 +672,19 @@ def test_a_tree_with_nothing_to_drill_says_so(main_window, monkeypatch):
 
     assert main_window.trainer.question is None
     assert "No spot" in main_window.trainer.spot_label.text()
+
+
+def test_a_hand_the_file_does_not_hold_is_not_asked(main_window, tmp_path):
+    """The node exists, the hand is not in it, and the answer comes back empty-named.
+
+    Asked, it renders a nameless button and grades whatever is pressed as costing nothing.
+    """
+    folder = tmp_path / "sparse"
+    folder.mkdir()
+    (folder / "1.rng").write_text("AAAA\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is None
+    assert main_window.trainer.buttons == []
