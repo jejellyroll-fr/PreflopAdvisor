@@ -32,6 +32,7 @@ class Seat:
     committed: float | None
     action: str
     hero: bool = False
+    button: bool = False
 
     @property
     def folded(self) -> bool:
@@ -53,6 +54,17 @@ class TableState:
 
     def seat(self, name: str) -> Seat | None:
         return next((seat for seat in self.seats if seat.name == name), None)
+
+
+def button_seat(seats: list[str]) -> str | None:
+    """Whose button it is.
+
+    The seat before the blinds, which is the third from the end of the acting order --
+    except heads-up, where the small blind is the button and acts first.
+    """
+    if len(seats) < 2:
+        return None
+    return seats[-2] if len(seats) == 2 else seats[-3]
 
 
 def raise_to(sizing: Sizing, pot: float, owed: float, already_in: float, stack: float) -> float:
@@ -134,6 +146,7 @@ def table_state(
         )
         highest = max(highest, committed[seat])
 
+    dealer = button_seat(seats)
     return TableState(
         seats=[
             Seat(
@@ -142,6 +155,7 @@ def table_state(
                 committed=round(committed[name], 2) if readable else None,
                 action=actions[name],
                 hero=name == hero,
+                button=name == dealer,
             )
             for name in seats
         ],

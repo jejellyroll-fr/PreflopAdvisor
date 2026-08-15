@@ -97,6 +97,8 @@ class TrainerTable(QWidget):
         for index, seat in enumerate(state.seats):
             centre = self.seat_centre(index, len(state.seats), hero_index)
             self.paint_seat(painter, seat, centre)
+            if seat.button:
+                self.paint_button(painter, centre)
             if seat.hero and self.hand:
                 self.paint_hand(painter, centre)
 
@@ -147,6 +149,36 @@ class TrainerTable(QWidget):
         painter.drawText(
             QRectF(plate.left() - 20, top, plate.width() + 40, 16), int(Qt.AlignmentFlag.AlignCenter), label
         )
+
+    def button_point(self, centre: QPointF) -> QPointF:
+        """Where the dealer button sits: on the felt, beside its seat.
+
+        Inward from the plate and along the rim, which keeps it clear of both the action
+        written under the seat and the hero's cards.
+        """
+        felt = self.felt()
+        away_x, away_y = centre.x() - felt.center().x(), centre.y() - felt.center().y()
+        length = math.hypot(away_x, away_y) or 1.0
+        # Enough to clear the plate and the rim, so the whole disc lies on the felt: the
+        # rim curves away under the sideways nudge, and half a button hanging over the
+        # edge reads as a mistake rather than as a marker.
+        inset = SEAT_HEIGHT + BUTTON_RADIUS * 2
+        return QPointF(
+            centre.x() - away_x / length * inset - away_y / length * (SEAT_WIDTH / 2),
+            centre.y() - away_y / length * inset + away_x / length * (SEAT_WIDTH / 2),
+        )
+
+    def paint_button(self, painter: QPainter, centre: QPointF) -> None:
+        """The dealer button, which says where the action starts."""
+        point = self.button_point(centre)
+        painter.setBrush(QBrush(QColor(theme.TEXT_PRIMARY)))
+        painter.setPen(QPen(QColor(FELT_EDGE), 1))
+        painter.drawEllipse(point, BUTTON_RADIUS, BUTTON_RADIUS)
+
+        painter.setPen(QPen(QColor(FELT_EDGE)))
+        painter.setFont(QFont(theme.FONT_FAMILY, 10, QFont.Weight.Bold))
+        box = QRectF(point.x() - BUTTON_RADIUS, point.y() - BUTTON_RADIUS, BUTTON_RADIUS * 2, BUTTON_RADIUS * 2)
+        painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), "D")
 
     def paint_hand(self, painter: QPainter, centre: QPointF) -> None:
         """The hero's cards, under their plate.

@@ -8,7 +8,7 @@ that such a sizing produces no number at all rather than a plausible one.
 import pytest
 
 from preflop_advisor.sizings import UNKNOWN, Sizing, sizing_for_code, sizings_for
-from preflop_advisor.table_state import table_state
+from preflop_advisor.table_state import button_seat, table_state
 
 SIX_MAX = ["UTG", "MP", "CO", "BU", "SB", "BB"]
 HEADS_UP = ["SB", "BB"]
@@ -203,3 +203,28 @@ def test_the_pot_code_raises_the_pot_and_not_nothing():
 
     state = table_state(SIX_MAX, [("UTG", "RaisePot")], hero="BB", sizings=sizings)
     assert state.seat("UTG").committed == 3.5
+
+
+# --------------------------------------------------------------------------------------
+# The button
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "seats,expected",
+    [
+        (["SB", "BB"], "SB"),
+        (["BU", "SB", "BB"], "BU"),
+        (SIX_MAX, "BU"),
+        (["UTG", "UTG1", "MP", "LJ", "HJ", "CO", "BU", "SB", "BB"], "BU"),
+    ],
+)
+def test_the_button_is_the_seat_before_the_blinds(seats, expected):
+    """Heads-up it is the small blind, which is also why that seat acts first."""
+    state = table_state(seats, [], hero=seats[0], sizings=SIZINGS)
+
+    assert [seat.name for seat in state.seats if seat.button] == [expected]
+
+
+def test_a_table_of_one_has_no_button():
+    assert button_seat(["BB"]) is None
