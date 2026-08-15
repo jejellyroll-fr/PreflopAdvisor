@@ -18,14 +18,18 @@ Everything else is **unknown**, and says so. Monker also has fixed sizings in sm
 whoever wrote that configuration: the documentation does not say, and guessing would put a
 wrong number on the table with nothing to mark it as a guess. A tree whose sizings this
 cannot read is drawn without its pot rather than with an invented one, and the owner can
-declare them if they know:
+declare them if they know. Comments go on their own line, as they do everywhere else in
+the configuration: nothing strips a comment written after a value, so the number would be
+read with the sentence still attached to it and thrown out as unreadable.
 
 .. code-block:: ini
 
+    # 3xOpen raises to three big blinds
     3xOpen=15
-    3xOpen.blinds=3      ; raises to three big blinds
+    3xOpen.blinds=3
+    # HouseSize raises 45 percent of the pot
     HouseSize=17
-    HouseSize.pot=0.45   ; 45 percent of the pot
+    HouseSize.pot=0.45
 """
 
 import logging

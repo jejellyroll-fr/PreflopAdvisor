@@ -5,8 +5,12 @@ family. Everything else has no published meaning, and the point of most of these
 that such a sizing produces no number at all rather than a plausible one.
 """
 
+import re
+from configparser import ConfigParser
+
 import pytest
 
+from preflop_advisor import sizings
 from preflop_advisor.sizings import UNKNOWN, Sizing, sizing_for_code, sizings_for
 from preflop_advisor.table_state import button_seat, table_state
 
@@ -341,3 +345,23 @@ def test_a_seat_is_out_by_its_code_not_by_its_name():
     assert state.seat("UTG").folded
     assert state.seat("UTG").action == "Muck", "and it still says what the tree called it"
     assert not state.seat("MP").folded
+
+
+def test_the_documented_declaration_actually_parses():
+    """The example in the sizings docstring, read the way the application reads config.ini.
+
+    It carried its explanations after the values, and nothing strips a comment written
+    there: the number reached the reader with the sentence still attached and was thrown
+    out, leaving the code unknown and the whole table without a pot. A documented syntax
+    the application cannot read is worse than none at all.
+    """
+    block = re.search(r"code-block:: ini\n\n((?:    .*\n|\n)+)", sizings.__doc__ or "")
+    assert block, "the docstring still documents a declaration"
+    example = "\n".join(line.removeprefix("    ") for line in block.group(1).splitlines())
+
+    parser = ConfigParser()
+    parser.read_string("[TreeReader]\n" + example)
+    declared = sizings_for({"3xOpen": "15", "HouseSize": "17"}, dict(parser["TreeReader"]))
+
+    assert declared["3xopen"] == Sizing("blinds", 3.0)
+    assert declared["housesize"] == Sizing("pot", 0.45)

@@ -924,6 +924,11 @@ def test_the_situations_are_offered_before_the_first_deal(qtbot, main_window):
         ("ante structure", "0.125", 0.125),
         ("no Rake", "0.2", 0.2),
         ("ANTE", "much", None),
+        # A description saying there is none is not a description saying there is one.
+        ("no ante", None, 0.0),
+        ("No Ante", None, 0.0),
+        ("sans ante", None, 0.0),
+        ("100bb, antes", None, None),
     ],
 )
 def test_a_tree_says_whether_it_has_an_ante(raw_config, description, declared, expected):

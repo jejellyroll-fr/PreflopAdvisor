@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
+import re
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
@@ -21,6 +22,13 @@ logger = logging.getLogger(__name__)
 #: What separates a tree's name from a fact about it: Table5 declares a tree, Table5.ante
 #: describes one.
 METADATA_MARKER = "."
+#: A description saying the tree has an ante -- a whole word, so that a description merely
+#: containing the letters does not count.
+MENTIONS_ANTE = re.compile(r"\bantes?\b", re.IGNORECASE)
+#: And one saying it has none, which the descriptions in the shipped configuration are
+#: full of ("no Rake"). Read as a mention of an ante, it hid every number of a tree whose
+#: description was telling us there was nothing to hide.
+DENIES_ANTE = re.compile(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", re.IGNORECASE)
 
 
 def ante_of(table: str, description: str, tree_infos: ConfigSource) -> float | None:
@@ -41,7 +49,9 @@ def ante_of(table: str, description: str, tree_infos: ConfigSource) -> float | N
         except ValueError:
             logger.warning("Ignoring %s.ante=%r: not a number", table, declared)
             return None
-    return None if "ante" in description.lower() else 0.0
+    if DENIES_ANTE.search(description):
+        return 0.0
+    return None if MENTIONS_ANTE.search(description) else 0.0
 
 
 class TreeSelector(QWidget):
