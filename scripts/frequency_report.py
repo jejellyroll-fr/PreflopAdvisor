@@ -2,7 +2,8 @@
 """Standalone report of preflop action frequencies, aggregated over whole ranges.
 
 Not part of the application: it was used to generate the tooltip overviews shipped in
-popup-pics/. Run it as ``python scripts/frequency_report.py [range-folder]``.
+popup-pics/. Run it as ``python scripts/frequency_report.py <range-folder>``, naming a
+single tree such as ``ranges/HU-100bb-with-limp`` -- not the ``ranges/`` container.
 """
 
 import itertools
@@ -27,8 +28,11 @@ from PySide6.QtWidgets import (
 
 # This script lives outside the package, so make the repository importable.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+RANGES_DIRNAME = "ranges"
+RANGE_ENDING = ".rng"
 sys.path.insert(0, PROJECT_ROOT)
 
+from preflop_advisor.paths import resolve_range_folder
 from preflop_advisor.tree_reader_helpers import ActionProcessor
 
 # Global constants
@@ -251,8 +255,88 @@ def format_cell(cell):
         return ""
 
 
+def holds_range_files(folder, ending=RANGE_ENDING):
+    """Whether the folder itself holds range files.
+
+    Only the directory given is looked at, the way ``ActionProcessor`` indexes it: a
+    folder of tree folders -- ``ranges/`` first among them -- holds none, and an empty
+    directory is a directory all the same. Either one indexes zero nodes and reports
+    zero everywhere.
+    """
+    try:
+        return any(entry.endswith(ending) for entry in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def available_trees(ending=RANGE_ENDING):
+    """Tree folders under ranges/, i.e. the directories that hold range files."""
+    container = os.path.join(PROJECT_ROOT, RANGES_DIRNAME)
+    if not os.path.isdir(container):
+        return []
+    return sorted(
+        name
+        for name in os.listdir(container)
+        if os.path.isdir(os.path.join(container, name)) and holds_range_files(os.path.join(container, name), ending)
+    )
+
+
+def declared_player_count(tree_folder, tree_infos_section):
+    """Seat count declared for this folder in ``[TreeInfos]``, or ``None`` if unlisted.
+
+    Entries read ``plrs,bb,game,folder,infos``. Folders are compared once resolved, so
+    the relative path of an entry still matches an absolute argument.
+    """
+    if tree_infos_section is None:
+        return None
+
+    target = os.path.realpath(tree_folder)
+    for entry in tree_infos_section.values():
+        fields = [field.strip() for field in entry.split(",")]
+        if len(fields) < 4:
+            continue
+        declared = resolve_range_folder(fields[3])
+        if declared and os.path.realpath(declared) == target:
+            try:
+                return int(fields[0])
+            except ValueError:
+                print(f"Ignoring non-numeric player count in [TreeInfos]: {fields[0]!r}")
+                return None
+    return None
+
+
+def seated_positions(position_list, num_players=None):
+    """Seat the configured positions the way ``TreeReader.init_position_list`` does.
+
+    ``Positions`` is written shortest-stack first, so it is trimmed to the seats the tree
+    actually has and then reversed into acting order -- that order is what
+    ``ActionProcessor`` fills folds against. Handing all six seats to the two-player tree
+    shipped in the checkout asked it for 6-max filenames it does not contain, and the
+    report came back as zeros. A folder absent from ``[TreeInfos]`` -- an export of the
+    user's own -- keeps the full list, since nothing declares its size.
+    """
+    seats = position_list if num_players is None else position_list[:num_players]
+    return list(reversed(seats))
+
+
+def usage(ending=RANGE_ENDING):
+    """Usage text listing the trees that are actually present.
+
+    The tree folder has to be named explicitly. Defaulting to ranges/ pointed at the
+    *container* of the trees rather than a tree, and since range files are only read
+    from the directory given, the report came out as zeros everywhere with no error.
+    """
+    lines = ["Usage: python scripts/frequency_report.py <range-folder>", ""]
+    trees = available_trees(ending)
+    if trees:
+        lines.append("Trees available in this checkout:")
+        lines.extend(f"  {RANGES_DIRNAME}/{name}" for name in trees)
+    else:
+        lines.append(f"No tree found under {RANGES_DIRNAME}/. Export one from Monker first.")
+    return "\n".join(lines)
+
+
 def main():
-    app = QApplication([])
     config_path = os.path.join(PROJECT_ROOT, "preflop_advisor", "config.ini")
 
     # Load the configuration file
@@ -273,9 +357,38 @@ def main():
             return
 
     position_list = [position.strip() for position in configs["Positions"].split(",")]
-    tree_folder = sys.argv[1] if len(sys.argv) > 1 else os.path.join(PROJECT_ROOT, "ranges")
+
+    ending = configs.get("Ending", RANGE_ENDING)
+
+    argument = sys.argv[1] if len(sys.argv) > 1 else None
+    if argument is None:
+        print(usage(ending))
+        return 2
+    # Resolved the way ActionProcessor will resolve it, so the folder checked here is
+    # the folder read from.
+    tree_folder = resolve_range_folder(argument)
+    if tree_folder is None:
+        print(f"Not a directory: {argument}\n\n{usage(ending)}")
+        return 2
+    if not holds_range_files(tree_folder, ending):
+        print(f"No {ending} file in: {tree_folder}\n\n{usage(ending)}")
+        return 2
+
+    # has_section, not a dict get: ConfigParser.get() takes a section *and* an option.
+    tree_declarations = config["TreeInfos"] if config.has_section("TreeInfos") else None
+    num_players = declared_player_count(tree_folder, tree_declarations)
+    seats = seated_positions(position_list, num_players)
+
     print(f"Reading ranges from: {tree_folder}")
-    tree_infos = {"folder": tree_folder, "NumPlayers": len(position_list)}
+    if num_players is None:
+        print(f"Not listed in [TreeInfos]; assuming all {len(seats)} seats: {', '.join(seats)}")
+    else:
+        print(f"{num_players}-handed tree: {', '.join(seats)}")
+    tree_infos = {"folder": tree_folder, "NumPlayers": len(seats)}
+
+    # Created only once the arguments hold up, so a usage error does not spin up the GUI
+    # toolkit; reused when one already exists, since constructing a second raises.
+    app = QApplication.instance() or QApplication([])
 
     # Load weights from a pickle file if available
     game_type = configs.get("GameType", "DefaultGame")
@@ -286,7 +399,7 @@ def main():
             WEIGHTS = pickle.load(f)
 
     window = QMainWindow()
-    viewer = FrequencyViewer(position_list, tree_infos, configs, parent=window)
+    viewer = FrequencyViewer(seats, tree_infos, configs, parent=window)
     window.setCentralWidget(viewer)
     window.setWindowTitle("Frequency Viewer")
     window.setStyleSheet("background-color: #1e1e1e; color: white;")  # Dark theme for the entire application
@@ -301,4 +414,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
