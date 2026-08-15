@@ -332,7 +332,14 @@ class ActionProcessor:
         :return: The matching info line, or ``None``.
         """
         for stored, info in entries.items():
-            if normalize_monker_hand(stored) == hand:
+            # This walks a file that nothing has validated, so a line the converter
+            # cannot make sense of is skipped rather than allowed to end the lookup.
+            try:
+                normalized = normalize_monker_hand(stored)
+            except (AttributeError, IndexError, KeyError):
+                logger.debug("Skipping unreadable entry %r while looking up %s", stored, hand)
+                continue
+            if normalized == hand:
                 logger.debug("Matched %s as a Monker 2 export of %s", stored, hand)
                 return info
         return None

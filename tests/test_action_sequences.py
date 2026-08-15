@@ -210,6 +210,28 @@ def test_a_monker_2_export_is_read_through_its_ordering(tmp_path, hu_tree, tree_
     clear_cache()
 
 
+def test_a_junk_line_does_not_end_the_monker_2_scan(tmp_path, hu_tree, tree_configs):
+    """The fallback walks a file nothing has validated, so it must survive its contents.
+
+    A line the converter cannot parse is skipped: it should cost the entry, never the
+    lookup, and the hand that follows it still has to be found.
+    """
+    from preflop_advisor.tree_reader_helpers import clear_cache
+
+    clear_cache()
+    folder = tmp_path / "with-junk"
+    folder.mkdir()
+    (folder / "2.rng").write_text("(2345\n0.1;1.0\nAKQJZ\n0.2;2.0\n(4A)(3K)\n0.75;1500.0\n")
+    processor = ActionProcessor(HU_POSITIONS, dict(hu_tree, folder=str(folder)), dict(tree_configs))
+
+    action, frequency, ev = processor.get_results(REFERENCE_HAND, [], "SB")[0]
+
+    assert action == "RaisePot"
+    assert frequency == pytest.approx(0.75)
+    assert ev == pytest.approx(1500.0)
+    clear_cache()
+
+
 def test_a_monker_1_export_never_reaches_the_fallback(synthetic_tree, tree_configs, monkeypatch):
     """The canonical case must not pay for the Monker 2 rescue.
 

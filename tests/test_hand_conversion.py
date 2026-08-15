@@ -303,6 +303,21 @@ def test_plo5_suited_groups_are_ordered_on_every_rank():
     assert sort_omaha5_hand("(248)(24)") == convert_hand("2s4s2d4d8d")
 
 
+def test_a_five_rank_key_without_a_suited_group_is_sorted_rather_than_fatal():
+    """No solver writes one -- five cards cannot hold five distinct suits.
+
+    It still must not raise: the read-path fallback normalizes every line of a file it
+    has not validated, and an IndexError there would end a lookup that should merely
+    have missed.
+    """
+    assert sort_omaha5_hand("AKQJ2") == "2JQKA"
+    assert normalize_monker_hand("AKQJ2") == "2JQKA"
+
+
+def test_an_unreadable_five_rank_key_is_returned_unchanged():
+    assert sort_omaha5_hand("AKQJZ") == "AKQJZ"
+
+
 def test_every_monker_2_ordering_of_a_plo5_hand_normalizes_to_its_key():
     """Whatever order a solver writes the tokens in, they must fold back to one key.
 

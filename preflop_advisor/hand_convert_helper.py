@@ -227,6 +227,15 @@ def sort_omaha5_hand(hand):
     """
     Sorts a 5-card Omaha hand to ensure a consistent representation.
     """
+    if "(" not in hand:
+        # Five cards cannot hold five distinct suits, so no solver exports a rainbow
+        # five-card key. It still has to come back as something rather than raise on an
+        # empty group list: the read-path fallback normalizes every line of a file whose
+        # contents it has not validated.
+        if any(card not in RANK_ORDER for card in hand):
+            logger.warning(f"Unknown hand: {hand}")
+            return hand
+        return "".join(sorted(hand, key=lambda x: RANK_ORDER[x]))
     if hand.count("(") == 1:
         # Hand with one suited combination
         suited = re.search(r"\((.+?)\)", hand).group(1)
