@@ -688,3 +688,32 @@ def test_a_hand_the_file_does_not_hold_is_not_asked(main_window, tmp_path):
 
     assert main_window.trainer.question is None
     assert main_window.trainer.buttons == []
+
+
+def test_a_selector_with_no_configured_tree_says_so_rather_than_raising(qtbot, raw_config):
+    """It is read on the way to the first render, before anything can report a problem.
+
+    Raising there ended the application instead of leaving an empty selector the user can
+    still fix their configuration from.
+    """
+    raw_config.remove_section("TreeInfos")
+    raw_config.add_section("TreeInfos")
+    selector = TreeSelector(None, raw_config["TreeSelector"], raw_config["TreeInfos"], raw_config["TreeToolTips"])
+    qtbot.addWidget(selector)
+
+    assert selector.get_tree_infos() is None
+
+
+def test_the_window_refreshes_quietly_when_no_tree_is_configured(main_window, monkeypatch):
+    monkeypatch.setattr(main_window.tree_selector, "get_tree_infos", lambda: None)
+
+    main_window.update_output_frame()  # must not raise
+
+
+def test_the_trainer_asks_for_a_tree_when_none_is_configured(main_window, monkeypatch):
+    monkeypatch.setattr(main_window.trainer, "tree_source", lambda: None)
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is None
+    assert "tree" in main_window.trainer.spot_label.text().lower()

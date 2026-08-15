@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .errors import RangeFolderNotFound
 from .settings import ConfigSource, Settings
 from .tooltip import CreateToolTip
 
@@ -186,12 +185,16 @@ class TreeSelector(QWidget):
         if self.current_tree:
             self.treeChanged.emit(self.current_tree)
 
-    def get_tree_infos(self) -> dict[str, Any]:
+    def get_tree_infos(self) -> dict[str, Any] | None:
         """
         Retrieves information of the selected tree.
 
-        :return: Dictionary containing current tree information.
+        A selector with nothing configured in ``[TreeInfos]`` has no tree, and says so
+        rather than raising: this is read on the way to the first render, before anything
+        is in place to report a problem, so an exception here ends the application instead
+        of leaving an empty selector the user can still fix their configuration from.
+
+        :return: Dictionary containing current tree information, or ``None`` when no tree
+            is configured.
         """
-        if self.current_tree is None:  # pragma: no cover - a tree is selected on startup
-            raise RangeFolderNotFound("No tree is selected")
         return self.current_tree

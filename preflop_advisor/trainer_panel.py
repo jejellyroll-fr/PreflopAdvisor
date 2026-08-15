@@ -46,7 +46,7 @@ class TrainerPanel(QWidget):
 
     def __init__(
         self,
-        tree_source: Callable[[], dict[str, Any]],
+        tree_source: Callable[[], dict[str, Any] | None],
         tree_reader_configs: ConfigSource,
         output_configs: ConfigSource,
         parent: QWidget | None = None,
@@ -117,8 +117,14 @@ class TrainerPanel(QWidget):
     def next_hand(self) -> None:
         """Deal a new spot and hand, or say why it could not be done."""
         self.clear_answer()
+        tree = self.tree_source()
+        if tree is None:
+            self.spot_label.setText(EMPTY_STATE)
+            self.hand_label.setText("")
+            return
+
         try:
-            question = self.draw()
+            question = self.draw(tree)
         except PreflopAdvisorError as error:
             self.spot_label.setText(str(error))
             self.hand_label.setText("")
@@ -135,7 +141,7 @@ class TrainerPanel(QWidget):
         self.show_answers(question)
         self.next_button.setText("Deal a hand")
 
-    def draw(self) -> Question | None:
+    def draw(self, tree: dict[str, Any]) -> Question | None:
         """Pick a spot and a hand the selected tree can answer.
 
         A tree holds the lines its solver was run for and no others, so a spot is only a
@@ -151,7 +157,6 @@ class TrainerPanel(QWidget):
         saying the tree has nothing to drill, which costs 81 lookups at worst -- a few
         milliseconds, against an answer that would have been wrong.
         """
-        tree = self.tree_source()
         reader = TreeReader("", "", tree, self.tree_reader_configs)
         cards = CARDS_PER_GAME.get(str(tree.get("game", "PLO")).upper(), 4)
         spots = spots_for(reader.position_list)
