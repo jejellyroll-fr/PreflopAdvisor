@@ -379,7 +379,7 @@ def test_a_selected_seat_is_clearly_distinct_from_an_available_one(qtbot, raw_co
 
     selector = PositionSelector(None, raw_config["PositionSelector"])
     qtbot.addWidget(selector)
-    selector.update_active_positions(2)
+    selector.update_active_positions(["SB", "BB"])
     selector.process_button_clicked(selector.convert_position_name_to_index("SB"))
 
     selected = selector.button_list[selector.convert_position_name_to_index("SB")]

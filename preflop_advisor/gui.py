@@ -26,6 +26,8 @@ from .outputframe import OutputFrame
 from .paths import package_file
 from .position_selector import PositionSelector
 from .randomizer import RandomButton
+from .settings import normalize
+from .tree_reader import TreeReader
 from .tree_selector import TreeSelector
 
 logger = logging.getLogger(__name__)
@@ -43,12 +45,13 @@ SPLITTER_KEY = "window/splitter"
 #: Opening size, when nothing has been remembered yet. Wide rather than tall: the results
 #: are a table, the card grid is four rows, and the screens this runs on are short. Kept
 #: inside 1366x768, the smallest display still common, with room for the window chrome.
-#: The height is the point at which the seven rows of a position view stop needing a
-#: scrollbar; below it they scroll, above it they simply grow.
-DEFAULT_WINDOW_SIZE = (1360, 660)
-#: Opening split. Thirteen card columns give the input side a floor of its own, so this is
-#: about what is left: the results, which are what gets read.
-DEFAULT_SPLIT = (740, 620)
+#: The width is what a seven-handed overview needs: nine columns of 112, which is the
+#: narrowest a cell can be without cutting the numbers in it.
+DEFAULT_WINDOW_SIZE = (1360, 690)
+#: Opening split, band over table. The band is sized to hold the card grid and no more;
+#: everything else belongs to the results, which is what runs out of room on a seven-
+#: handed tree.
+DEFAULT_SPLIT = (330, 360)
 
 
 class DatabaseProgress:
@@ -164,14 +167,13 @@ class MainWindow(QMainWindow):
         # Input and output are separated by a handle rather than by fixed proportions:
         # how much room the results deserve against the card grid depends on the screen,
         # and on whether the tree is heads-up or six-handed.
-        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter = QSplitter(Qt.Vertical)
         self.splitter.addWidget(self.input_frame)
         self.splitter.addWidget(self.output_frame)
         self.splitter.setChildrenCollapsible(False)
-        # Every pixel past the opening width goes to the results. A wider card grid is
-        # just wider cards; a wider table is another seat's column read without scrolling,
-        # which is what a six- or nine-handed tree needs. Dragging the handle still
-        # overrides this, and where it is dragged to is remembered.
+        # Every pixel past the opening height goes to the results. The band is as tall as
+        # the card grid needs and no taller; the table is what benefits from more room.
+        # Dragging the handle still overrides this, and where it is left is remembered.
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         main_layout.addWidget(self.splitter, 0, 0)
@@ -206,25 +208,35 @@ class MainWindow(QMainWindow):
         return column
 
     def assemble_layouts(self):
-        # Ensure components and frames can be resized
-        self.input_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        """Input as a band across the top, results underneath.
+
+        The results are the wide thing: a seven-handed overview is nine columns, and a
+        column cannot go under 112 pixels without the numbers in it being cut. Beside a
+        card grid that needs 740 of its own, nine columns do not fit on any ordinary
+        screen; across the whole window they fit on a laptop.
+        """
+        self.input_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.output_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        self.input_layout.addWidget(self.section_label("Choose your hand:", size=16, bold=True))
-        self.input_layout.addWidget(self.card_selector, stretch=8)
+        cards = QVBoxLayout()
+        cards.setContentsMargins(0, 0, 0, 0)
+        cards.addWidget(self.section_label("Choose your hand:", size=16, bold=True))
+        cards.addWidget(self.card_selector)
 
-        # Tree, roll and position sit on one row rather than stacked. Stacked, their three
-        # captioned blocks cost 348 pixels of height on their own -- as much as the card
-        # grid -- while the width they each need is a fraction of the column's.
-        controls = QHBoxLayout()
-        controls.setSpacing(10)
-        controls.addLayout(self.section(self.section_label("Select a game tree:"), self.tree_selector), stretch=4)
-        controls.addLayout(self.section(self.section_label("Randomize:"), self.rand_button), stretch=2)
-        controls.addLayout(self.section(self.section_label("Choose your position:"), self.position_selector), stretch=5)
-        self.input_layout.addLayout(controls)
-        # Whatever height is left once the card grid has reached its cap goes here, rather
-        # than into stretching the controls.
-        self.input_layout.addStretch(1)
+        # Tree, roll and position stand beside the cards rather than under them: the band
+        # is as tall as the card grid either way, and that height is taken from the table.
+        controls = QVBoxLayout()
+        controls.setSpacing(4)
+        controls.addLayout(self.section(self.section_label("Select a game tree:"), self.tree_selector))
+        controls.addLayout(self.section(self.section_label("Randomize:"), self.rand_button))
+        controls.addLayout(self.section(self.section_label("Choose your position:"), self.position_selector))
+        controls.addStretch(1)
+
+        band = QHBoxLayout()
+        band.setSpacing(16)
+        band.addLayout(cards, stretch=1)
+        band.addLayout(controls)
+        self.input_layout.addLayout(band)
 
         # Add the output component
         self.output_layout.addWidget(self.output)
@@ -313,7 +325,14 @@ class MainWindow(QMainWindow):
             self.card_selector.set_num_cards(2)
         elif game in ["PLO5"]:
             self.card_selector.set_num_cards(5)
-        self.position_selector.update_active_positions(num_players)
+        # The seats come from the reader, which is where a table size may override the
+        # names, rather than being guessed a second time here.
+        seats = TreeReader.seats_for(
+            normalize(self._get_section_config("TreeReader")),
+            num_players,
+            [seat.strip() for seat in self._get_section_config("TreeReader")["Positions"].split(",")],
+        )
+        self.position_selector.update_active_positions(seats[:num_players])
 
     def _get_section_config(self, section):
         """Helper to retrieve a configuration section.
@@ -329,7 +348,7 @@ class MainWindow(QMainWindow):
                 "BackgroundPressed": "#444444",
             },
             "PositionSelector": {
-                "PositionList": "X,UTG,MP,CO,BU,SB,BB",
+                "PositionList": "X,UTG,MP,HJ,CO,BU,SB,BB",
                 "PositionInactive": "SB,BB",
                 "ButtonHeight": "30",
                 "ButtonWidth": "40",
@@ -347,7 +366,7 @@ class MainWindow(QMainWindow):
                 "DefaultTree": "0",
             },
             "TreeReader": {
-                "Positions": "BB,SB,BU,CO,MP,UTG",
+                "Positions": "BB,SB,BU,CO,HJ,MP,UTG",
             },
         }
         return default_configs.get(section, {})

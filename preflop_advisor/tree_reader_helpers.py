@@ -103,10 +103,14 @@ class ActionProcessor:
         return str(self._setting("UseDatabase", "no")).strip().lower() in ("yes", "true", "1")
 
     def _build_action_codes(self):
-        """Map every action name to the numeric code used in range file names."""
+        """Map every action name to the numeric code used in range file names.
+
+        ``Positions`` and its per-table-size variants name seats, not actions, so the
+        whole family is skipped rather than each spelling being listed.
+        """
         codes = dict(DEFAULT_ACTION_CODES)
         for key, value in self._settings.items():
-            if key not in _META_KEYS:
+            if key not in _META_KEYS and not key.startswith("positions"):
                 codes[key] = value
         return codes
 

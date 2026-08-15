@@ -122,21 +122,26 @@ class PositionSelector(QWidget):
         logger.debug("Current position: %s", self.position_list[self.current_position])
         return self.position_list[self.current_position]
 
-    def get_active_positions(self, num_players):
+    def get_active_positions(self, seats):
         """
-        Returns the positions that can be selected for a given table size.
+        Returns the positions that can be selected, given the seats a tree has.
 
-        Seats are filled from the blinds backwards, and the overview entry (the last of
-        the configured list once reversed) is always available.
-        """
-        reversed_positions = list(reversed(self.position_list))
-        return [reversed_positions[-1]] + reversed_positions[:num_players]
+        The seats are handed in rather than derived here. Deriving them meant trimming
+        the configured list, which is the reader's job and repeated its one hard case:
+        cutting a seven-name list down to six drops UTG and keeps HJ, so a six-handed
+        table offered a seat it does not have and hid one it does.
 
-    def update_active_positions(self, num_players):
+        :param seats: Seat names of the current table.
+        :return: Those seats plus the overview entry, which is always available.
         """
-        Activates or deactivates positions based on the number of players.
+        overview = list(reversed(self.position_list))[-1]
+        return [overview] + list(seats)
+
+    def update_active_positions(self, seats):
         """
-        active_positions = self.get_active_positions(num_players)
+        Activates or deactivates positions based on the seats of the current table.
+        """
+        active_positions = self.get_active_positions(seats)
 
         for position in self.position_list:
             index = self.convert_position_name_to_index(position)

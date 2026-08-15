@@ -42,6 +42,9 @@ BUTTON_FONT = QFont(theme.FONT_FAMILY, 16, QFont.Bold)
 # Smallest a card button may become: enough for "A" and a suit symbol side by side.
 MIN_BUTTON_WIDTH = 34
 MIN_BUTTON_HEIGHT = 26
+# Largest it is worth making one. Past this the grid is only taking height from the
+# results table, which is the thing that runs out of room first on a seven-handed tree.
+MAX_BUTTON_WIDTH = 40
 # Height a button is allowed to reach, as a multiple of its width. A playing card is about
 # this shape, and it keeps the grid from turning into four rows of tall slabs.
 CARD_ASPECT = 1.4
@@ -194,23 +197,29 @@ class CardSelector(QWidget):
         """
         Handles button resizing when the widget size changes.
         """
-        self.update_height_cap()
+        self.update_size_caps()
         self.update_button_sizes()
         super().resizeEvent(event)
 
-    def update_height_cap(self):
-        """Stops the grid from stretching its buttons into columns.
+    def update_size_caps(self):
+        """Stops the grid from growing at the results table's expense.
 
-        Four rows in a column as tall as the window leaves each button far taller than it
-        is wide -- 58 by 140 at the default size. The grid is capped at the height that
-        keeps a button roughly card-shaped, and the room left over goes to the controls
-        under it.
+        Two bounds. Across, a button stops at ``MAX_BUTTON_WIDTH``: the grid sits in a
+        band over the table, and past that size it is only taking room from it. Down, the
+        grid stops at the height that keeps a button roughly card-shaped -- four rows in a
+        full-height panel left each one 58 by 140.
         """
-        button_width = max(self.size().width() // NUM_ROWS - self.button_pad * 2, MIN_BUTTON_WIDTH)
-        rows = NUM_COLUMNS * (int(button_width * CARD_ASPECT) + self.button_pad * 2)
-        cap = rows + self.button_pad * 2 + GRID_MARGINS * 2
-        if cap != self.maximumHeight():
-            self.setMaximumHeight(cap)
+        width_cap = NUM_ROWS * (MAX_BUTTON_WIDTH + self.button_pad * 2) + GRID_MARGINS * 2
+        if width_cap != self.maximumWidth():
+            self.setMaximumWidth(width_cap)
+
+        button_width = min(
+            max(self.size().width() // NUM_ROWS - self.button_pad * 2, MIN_BUTTON_WIDTH),
+            MAX_BUTTON_WIDTH,
+        )
+        height_cap = NUM_COLUMNS * (int(button_width * CARD_ASPECT) + self.button_pad * 2) + GRID_MARGINS * 2
+        if height_cap != self.maximumHeight():
+            self.setMaximumHeight(height_cap)
 
     def update_button_sizes(self):
         """

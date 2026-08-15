@@ -9,11 +9,19 @@ import pytest
 from PySide6.QtCore import Qt
 
 from preflop_advisor.card_selector import CardSelector
-from preflop_advisor.gui import DatabaseProgress, MainWindow
+from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
 from preflop_advisor.position_selector import PositionSelector
+from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector
 
+from .conftest import REFERENCE_HAND
+
 # Grid coordinates of the card buttons: column 0 is hearts, rows are A, K, Q, J.
+# Seats of a table that size, in acting order, as the reader hands them to the selector.
+HEADS_UP = ["SB", "BB"]
+SIX_MAX = ["UTG", "MP", "CO", "BU", "SB", "BB"]
+SEVEN_MAX = ["UTG", "MP", "HJ", "CO", "BU", "SB", "BB"]
+
 ACE_OF_HEARTS = (0, 0)
 KING_OF_HEARTS = (1, 0)
 QUEEN_OF_HEARTS = (2, 0)
@@ -116,21 +124,22 @@ def test_small_blind_is_selectable_heads_up(position_selector):
     It used to be listed in PositionInactive, which disables a seat regardless of table
     size.
     """
-    position_selector.update_active_positions(2)
+    position_selector.update_active_positions(HEADS_UP)
 
     index = position_selector.convert_position_name_to_index("SB")
     assert position_selector.button_list[index].isEnabled()
 
 
 @pytest.mark.parametrize(
-    "num_players,expected",
+    "seats,expected",
     [
-        (2, {"X", "SB", "BB"}),
-        (6, {"X", "UTG", "MP", "CO", "BU", "SB", "BB"}),
+        (HEADS_UP, {"X", "SB", "BB"}),
+        (SIX_MAX, {"X", "UTG", "MP", "CO", "BU", "SB", "BB"}),
+        (SEVEN_MAX, {"X", "UTG", "MP", "HJ", "CO", "BU", "SB", "BB"}),
     ],
 )
-def test_active_seats_follow_the_table_size(position_selector, num_players, expected):
-    position_selector.update_active_positions(num_players)
+def test_active_seats_follow_the_table_size(position_selector, seats, expected):
+    position_selector.update_active_positions(seats)
 
     enabled = {
         position
@@ -141,13 +150,13 @@ def test_active_seats_follow_the_table_size(position_selector, num_players, expe
 
 
 def test_shrinking_the_table_falls_back_to_the_default_seat(position_selector):
-    position_selector.update_active_positions(6)
+    position_selector.update_active_positions(SIX_MAX)
     position_selector.process_button_clicked(position_selector.convert_position_name_to_index("UTG"))
     assert position_selector.get_position() == "UTG"
 
-    position_selector.update_active_positions(2)
+    position_selector.update_active_positions(HEADS_UP)
 
-    assert position_selector.get_position() in position_selector.get_active_positions(2)
+    assert position_selector.get_position() in position_selector.get_active_positions(HEADS_UP)
 
 
 def test_shrinking_the_table_does_not_recurse(position_selector):
@@ -156,12 +165,12 @@ def test_shrinking_the_table_does_not_recurse(position_selector):
     Going through process_button_clicked made the notification re-enter this method via
     the output refresh.
     """
-    position_selector.update_active_positions(6)
+    position_selector.update_active_positions(SIX_MAX)
     position_selector.process_button_clicked(position_selector.convert_position_name_to_index("UTG"))
 
     emitted = []
     position_selector.positionChanged.connect(emitted.append)
-    position_selector.update_active_positions(2)
+    position_selector.update_active_positions(HEADS_UP)
 
     assert len(emitted) == 1
 
@@ -394,16 +403,52 @@ def test_the_divider_position_survives_a_restart(qtbot, main_window):
     assert reopened.splitter.sizes() == moved
 
 
-def test_widening_the_window_goes_to_the_results(qtbot, main_window):
-    """A wider card grid is wider cards; a wider table is another seat read at a glance."""
+def test_a_taller_window_goes_to_the_results(qtbot, main_window):
+    """The band holds a card grid and nothing else; the table is what wants the room."""
     main_window.show()
-    main_window.resize(1360, 660)
+    main_window.resize(1360, 720)
     qtbot.wait(20)
-    input_width = main_window.input_frame.width()
-    output_width = main_window.output_frame.width()
+    band_height = main_window.input_frame.height()
+    output_height = main_window.output_frame.height()
 
-    main_window.resize(1900, 660)
+    main_window.resize(1360, 1040)
     qtbot.wait(20)
 
-    assert main_window.input_frame.width() == input_width
-    assert main_window.output_frame.width() > output_width + 400
+    assert main_window.input_frame.height() == band_height
+    assert main_window.output_frame.height() > output_height + 250
+
+
+def test_a_seven_handed_overview_fits_across_the_window(qtbot, main_window):
+    """PLO is dealt seven-handed, which is nine columns: a row label, the open, and seven
+    seats to face. Beside the card grid they did not fit on any ordinary screen, which is
+    why the input sits above the table rather than next to it.
+    """
+    main_window.show()
+    main_window.resize(*DEFAULT_WINDOW_SIZE)
+    qtbot.wait(20)
+
+    main_window.output.create_result_grid(8, 9)
+    qtbot.wait(20)
+
+    used = sum(entry.width() for entry in main_window.output.table_entries[0])
+    assert used <= main_window.output.scroll_area.viewport().width()
+    assert not main_window.output.scroll_area.horizontalScrollBar().isVisible()
+
+
+def test_a_seven_handed_tree_gets_seven_named_seats(raw_config, hu_tree):
+    """PLO is dealt seven-handed, and a tree declaring more seats than there are names
+    for is quietly cut down to the names that exist -- six of them, until now.
+    """
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=7), raw_config["TreeReader"])
+    selectable = [seat.strip() for seat in raw_config["PositionSelector"]["PositionList"].split(",")]
+
+    assert reader.position_list == SEVEN_MAX
+    for seat in reader.position_list:
+        assert seat in selectable, f"{seat} has no button in the position selector"
+
+
+def test_six_max_keeps_its_own_seat_names(raw_config, hu_tree):
+    """Trimming the seven-handed list would drop UTG and keep the hijack."""
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=6), raw_config["TreeReader"])
+
+    assert reader.position_list == SIX_MAX
