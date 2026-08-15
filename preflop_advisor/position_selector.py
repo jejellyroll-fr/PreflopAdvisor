@@ -3,6 +3,7 @@
 import logging
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
@@ -13,6 +14,9 @@ from PySide6.QtWidgets import (
 from . import theme
 
 logger = logging.getLogger(__name__)
+
+#: Room a seat button keeps around its label, for its border and padding.
+LABEL_PADDING = 18
 
 
 class PositionSelector(QWidget):
@@ -61,13 +65,21 @@ class PositionSelector(QWidget):
         Creates a button for a position.
         """
         button = QPushButton(self.position_list[row], self)
-        button.setFixedSize(self.button_width, self.button_height)
+        # A floor, not a fixed size. Pinned to the configured 40 pixels, a longer seat
+        # name was cut rather than shown: "UTG1" rendered as "JTG1", the clipped upright
+        # of the U reading as a J. A wrong label, and a quiet one.
+        button.setMinimumSize(max(self.button_width, self.label_width(button)), self.button_height)
         button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         button.setStyleSheet(theme.position_button_qss(font_size=self.fontsize))
         button.clicked.connect(self.on_button_clicked(row))
         self.layout.addWidget(button)
         logger.debug("Button created for %s", self.position_list[row])
         return button
+
+    @staticmethod
+    def label_width(button):
+        """Width the button's own text needs, with room for its border and padding."""
+        return QFontMetrics(button.font()).horizontalAdvance(button.text()) + LABEL_PADDING
 
     def on_button_clicked(self, row):
         """

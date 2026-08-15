@@ -429,18 +429,21 @@ def test_a_taller_window_goes_to_the_results(qtbot, main_window):
     assert main_window.output_frame.height() > output_height + 250
 
 
-def test_a_seven_handed_overview_fits_across_the_window(qtbot, main_window):
-    """PLO is dealt seven-handed, which is nine columns: a row label, the open, and seven
-    seats to face. Beside the card grid they did not fit on any ordinary screen, which is
-    why the input sits above the table rather than next to it.
+@pytest.mark.parametrize("players", [7, 8, 9])
+def test_an_overview_fits_across_the_window(qtbot, main_window, players):
+    """A table of N seats is N+2 columns: a row label, the open, and every seat to face.
+
+    Nine-handed that is eleven, and a column cannot go under 112 without cutting the
+    numbers in it. Beside the card grid they fit on no ordinary screen, which is why the
+    input sits above the table rather than next to it.
     """
     main_window.show()
     # The preferred width, not the opening one: on a screen narrower than this the table
-    # scrolls and should, so what is being pinned down is that 1360 is enough.
+    # scrolls and should, so what is being pinned down is that the preferred size is enough.
     main_window.resize(DEFAULT_WINDOW_SIZE[0], main_window.height())
     qtbot.wait(20)
 
-    main_window.output.create_result_grid(8, 9)
+    main_window.output.create_result_grid(players + 1, players + 2)
     qtbot.wait(20)
 
     used = sum(entry.width() for entry in main_window.output.table_entries[0])
@@ -467,6 +470,27 @@ def test_six_max_keeps_its_own_seat_names(raw_config, hu_tree):
     assert reader.position_list == SIX_MAX
 
 
+@pytest.mark.parametrize(
+    "num_players,expected",
+    [
+        (2, ["SB", "BB"]),
+        (5, ["MP", "CO", "BU", "SB", "BB"]),
+        (6, SIX_MAX),
+        (7, SEVEN_MAX),
+        (8, ["UTG", "MP", "LJ", "HJ", "CO", "BU", "SB", "BB"]),
+        (9, ["UTG", "UTG1", "MP", "LJ", "HJ", "CO", "BU", "SB", "BB"]),
+    ],
+)
+def test_every_table_size_names_its_seats(raw_config, hu_tree, num_players, expected):
+    """Two through nine, each with the seat its own table adds where it adds it."""
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=num_players), raw_config["TreeReader"])
+    selectable = [seat.strip() for seat in raw_config["PositionSelector"]["PositionList"].split(",")]
+
+    assert reader.position_list == expected
+    for seat in reader.position_list:
+        assert seat in selectable, f"{seat} has no button in the position selector"
+
+
 @pytest.mark.parametrize("num_players,expected", [(6, SIX_MAX), (7, SEVEN_MAX)])
 def test_the_fallback_configuration_names_seats_correctly_too(main_window, hu_tree, num_players, expected):
     """The defaults used when config.ini has no [TreeReader] are a configuration as well.
@@ -480,3 +504,16 @@ def test_the_fallback_configuration_names_seats_correctly_too(main_window, hu_tr
     reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=num_players), defaults)
 
     assert reader.position_list == expected
+
+
+def test_a_long_seat_name_is_shown_whole(position_selector):
+    """Pinned to the configured width, "UTG1" was cut down to what looked like "JTG1".
+
+    The clipped upright of the U reads as a J, so the button did not look broken -- it
+    looked like a seat nobody has.
+    """
+    from PySide6.QtGui import QFontMetrics
+
+    for button in position_selector.button_list:
+        needed = QFontMetrics(button.font()).horizontalAdvance(button.text())
+        assert needed <= button.minimumWidth(), f"{button.text()!r} does not fit its button"

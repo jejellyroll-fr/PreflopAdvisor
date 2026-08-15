@@ -44,11 +44,11 @@ SPLITTER_KEY = "window/splitter"
 
 #: Opening size, when nothing has been remembered yet. Wide rather than tall: the results
 #: are a table, the card grid is four rows, and the screens this runs on are short. The
-#: width is what a seven-handed overview needs: nine columns of 112, which is the
-#: narrowest a cell can be without cutting the numbers in it. The height is what its eight
+#: width is what a nine-handed overview needs: eleven columns of 112, which is the
+#: narrowest a cell can be without cutting the numbers in it. The height is what its ten
 #: rows need. Both are trimmed to the screen, so a 1366x768 laptop opens to what it has
 #: and a larger display opens to a table that fits whole.
-DEFAULT_WINDOW_SIZE = (1360, 1000)
+DEFAULT_WINDOW_SIZE = (1400, 1040)
 #: Taken off the screen's usable height for the window's own title bar, which
 #: availableGeometry does not account for.
 WINDOW_CHROME_ALLOWANCE = 40
@@ -372,7 +372,7 @@ class MainWindow(QMainWindow):
                 "BackgroundPressed": "#444444",
             },
             "PositionSelector": {
-                "PositionList": "X,UTG,MP,HJ,CO,BU,SB,BB",
+                "PositionList": "X,UTG,UTG1,MP,LJ,HJ,CO,BU,SB,BB",
                 "PositionInactive": "SB,BB",
                 "ButtonHeight": "30",
                 "ButtonWidth": "40",
@@ -396,6 +396,8 @@ class MainWindow(QMainWindow):
                 # under the wrong seat names.
                 "Positions": "BB,SB,BU,CO,MP,UTG",
                 "Positions7": "BB,SB,BU,CO,HJ,MP,UTG",
+                "Positions8": "BB,SB,BU,CO,HJ,LJ,MP,UTG",
+                "Positions9": "BB,SB,BU,CO,HJ,LJ,MP,UTG1,UTG",
             },
         }
         return default_configs.get(section, {})
