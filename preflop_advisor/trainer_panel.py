@@ -28,7 +28,7 @@ from . import theme
 from .errors import PreflopAdvisorError
 from .outputframe import CHIPS_PER_BB, ActionTile, short_action_label
 from .settings import ConfigSource, get
-from .sizings import sizings_for
+from .sizings import Sizing, sizings_for
 from .table_state import table_state
 from .trainer import Question, Session, Spot, deal, grade, hand_for_key, playable, spots_for
 from .trainer_table import TrainerTable
@@ -71,6 +71,16 @@ class TrainerPanel(QWidget):
         self.session = Session()
         self.question: Question | None = None
         self.rng = random.Random()
+
+        # What the table is worth, replaced by whichever tree the next hand comes from.
+        # Held from the start rather than only once a hand has been dealt: a panel whose
+        # attributes appear halfway through its first draw is one method call from an
+        # AttributeError, and these have honest empty values.
+        self.sizings: dict[str, Sizing] = {}
+        self.seats: list[str] = []
+        self.stack = 100.0
+        self.game = "PLO"
+        self.ante: float | None = 0.0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -211,7 +221,7 @@ class TrainerPanel(QWidget):
         processor = reader.action_processor
         self.sizings = sizings_for(processor.action_codes, dict(self.tree_reader_configs))
         self.stack = float(tree.get("bb", 100))
-        self.game = tree.get("game", "PLO")
+        self.game = str(tree.get("game", "PLO"))
         self.ante = tree.get("ante", 0.0)
         self.seats = reader.position_list
         for spot in spots:
@@ -239,14 +249,19 @@ class TrainerPanel(QWidget):
 
     def question_for(self, processor: ActionProcessor, spot: Spot, hand: str, results: list[Any]) -> Question:
         """A question, with the table the line of play left."""
-        sequence = processor.find_valid_raise_sizes(processor.get_action_sequence(spot.line))
+        # Expanded through the hero, then with the hero's own turn dropped: the folds that
+        # had to happen to reach them sit between the last action of the line and the hero,
+        # and the reader only fills those in when it is told who acts next. Without it, a
+        # cutoff opening first in was drawn with everyone before it still to act.
+        played = processor.get_action_sequence([*spot.line, (spot.hero, "Fold")])[:-1]
+        sequence = processor.find_valid_raise_sizes(played)
         state = table_state(
             self.seats,
             sequence,
             spot.hero,
             self.sizings,
             stack=self.stack,
-            game=str(self.game),
+            game=self.game,
             ante=self.ante,
         )
         return Question(spot, hand, results, state)

@@ -14,7 +14,10 @@ from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindo
 from preflop_advisor.hand_convert_helper import convert_hand
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
+from preflop_advisor.sizings import sizings_for
+from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
+from preflop_advisor.tree_reader_helpers import ActionProcessor
 from preflop_advisor.tree_selector import TreeSelector
 
 from .conftest import REFERENCE_HAND
@@ -932,3 +935,34 @@ def test_a_tree_says_whether_it_has_an_ante(raw_config, description, declared, e
         section["table99.ante"] = declared
 
     assert ante_of("Table99", description, section) == expected
+
+
+def test_an_ante_declaration_is_not_read_as_a_tree(qtbot, raw_config):
+    """Table5.ante describes a tree; enumerated as one, its single field broke startup."""
+    raw_config["TreeInfos"]["Table12.ante"] = "0.125"
+
+    selector = TreeSelector(None, raw_config["TreeSelector"], raw_config["TreeInfos"], raw_config["TreeToolTips"])
+    qtbot.addWidget(selector)
+
+    # configparser keeps its keys in lower case; what matters is that one tree was found.
+    assert [tree["table_key"] for tree in selector.trees] == ["table12"]
+    assert selector.get_tree_infos()["ante"] == 0.125
+
+
+def test_the_table_shows_the_folds_that_had_to_happen(main_window, raw_config):
+    """The reader fills those in only when told who acts next.
+
+    Left out, a cutoff opening first in was drawn with everyone before it still to act.
+    """
+    seats = ["UTG", "MP", "CO", "BU", "SB", "BB"]
+    processor = ActionProcessor(seats, main_window.tree_selector.get_tree_infos(), raw_config["TreeReader"])
+
+    trainer = main_window.trainer
+    trainer.seats = seats
+    trainer.sizings = sizings_for(processor.action_codes, dict(raw_config["TreeReader"]))
+    question = trainer.question_for(processor, Spot("CO first in", "CO", []), "AhKs4h3s", [])
+
+    assert question.table.seat("UTG").folded
+    assert question.table.seat("MP").folded
+    assert question.table.seat("CO").action == "", "the hero has not acted yet"
+    assert question.table.seat("BU").action == "", "and neither have the seats after them"

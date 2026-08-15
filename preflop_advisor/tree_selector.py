@@ -18,6 +18,10 @@ from .tooltip import CreateToolTip
 
 logger = logging.getLogger(__name__)
 
+#: What separates a tree's name from a fact about it: Table5 declares a tree, Table5.ante
+#: describes one.
+METADATA_MARKER = "."
+
 
 def ante_of(table: str, description: str, tree_infos: ConfigSource) -> float | None:
     """What each seat posts before the blinds, in big blinds.
@@ -110,7 +114,11 @@ class TreeSelector(QWidget):
         :param tree_infos: Section containing tree configurations.
         """
         logger.debug("Processing tree information...")
-        for index, table in enumerate(tree_infos):
+        # A key with a dot in it describes a tree rather than declaring one -- Table5.ante
+        # says how much its ante is. Enumerated as a tree of its own, its single field
+        # reached the player count and the application would not start.
+        tables = [key for key in tree_infos if METADATA_MARKER not in key]
+        for index, table in enumerate(tables):
             infos = tree_infos[table].split(",")
             table_dic = {
                 "index": index,
