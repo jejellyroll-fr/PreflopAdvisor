@@ -37,6 +37,7 @@ hiddenimports = [
     'preflop_advisor.tree_reader',
     'preflop_advisor.tree_reader_helpers',
     'preflop_advisor.hand_convert_helper',
+    'preflop_advisor.sqlite_store',
     'preflop_advisor.errors',
 ]
 

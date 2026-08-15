@@ -9,7 +9,7 @@ import pytest
 from PySide6.QtCore import Qt
 
 from preflop_advisor.card_selector import CardSelector
-from preflop_advisor.gui import MainWindow
+from preflop_advisor.gui import DatabaseProgress, MainWindow
 from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.tree_selector import TreeSelector
 
@@ -258,3 +258,37 @@ def test_the_card_count_follows_the_selected_game(main_window):
     main_window.update_card_and_position_selector(tree_infos)
 
     assert main_window.card_selector.num_cards == 4  # PLO
+
+
+# --------------------------------------------------------------------------------------
+# Database build progress
+# --------------------------------------------------------------------------------------
+
+
+def test_the_build_progress_reports_files_and_closes(qtbot):
+    """The dialog is driven by hand from the build loop, not by the event loop."""
+    progress = DatabaseProgress("/ranges/some-tree", 4)
+    qtbot.addWidget(progress.dialog)
+
+    progress.update(3, 4)
+
+    assert "/ranges/some-tree" in progress.dialog.labelText()
+    assert "3 / 4 range files" in progress.dialog.labelText()
+    assert progress.dialog.value() == 3
+
+    progress.close()
+    assert not progress.dialog.isVisible()
+
+
+def test_the_window_registers_a_progress_dialog_for_database_builds(main_window):
+    """Without it a build reports nowhere, and the window looks frozen for minutes."""
+    from preflop_advisor import sqlite_store
+
+    factory = sqlite_store._PROGRESS_FACTORY
+
+    assert factory is not None
+    progress = factory("/ranges/some-tree", 2)
+    try:
+        assert isinstance(progress, DatabaseProgress)
+    finally:
+        progress.close()
