@@ -152,6 +152,48 @@ def test_restoring_an_older_file_rebuilds_the_database(small_tree):
     assert store.lookup_hand("2.rng", REFERENCE_HAND_MONKER) == pytest.approx((0.99, -7.0))
 
 
+def test_a_re_export_is_picked_up_without_restarting(small_tree):
+    """The store is held for the session, so reusing it has to be conditional.
+
+    Re-exporting a tree while the advisor is open is an ordinary thing to do -- run the
+    solver, export, switch back -- and the grid must not go on showing what the ranges
+    said before.
+    """
+    store = sqlite_store.get_store(small_tree, ".rng")
+    assert store.lookup_hand("2.rng", REFERENCE_HAND_MONKER) == pytest.approx((0.75, 1500.0))
+
+    path = os.path.join(small_tree, "2.rng")
+    with open(path, "w") as handle:
+        handle.write(f"{REFERENCE_HAND_MONKER}\n0.33;12.0\n")
+
+    reopened = sqlite_store.get_store(small_tree, ".rng")
+
+    assert reopened.lookup_hand("2.rng", REFERENCE_HAND_MONKER) == pytest.approx((0.33, 12.0))
+
+
+def test_an_export_landing_mid_build_is_not_published(small_tree, monkeypatch):
+    """A build reads its files one by one, so it can straddle two exports.
+
+    Publishing that would record half of one generation and half of the next as current,
+    and the fingerprint would agree. The folder is looked at again before the rename.
+    """
+    monkeypatch.setattr(sqlite_store, "tree_fingerprint", lambda *args: "after the export")
+
+    store = sqlite_store.TreeStore(small_tree, ".rng")
+
+    assert store.build("before the export") is False
+    assert not os.path.exists(database_of(small_tree))
+    assert not os.path.exists(database_of(small_tree) + ".tmp")
+
+
+def test_files_that_never_settle_give_no_store_rather_than_a_mixed_one(small_tree, monkeypatch):
+    counter = iter(range(100))
+    monkeypatch.setattr(sqlite_store, "tree_fingerprint", lambda *args: f"changing-{next(counter)}")
+
+    assert sqlite_store.get_store(small_tree, ".rng") is None
+    assert not os.path.exists(database_of(small_tree))
+
+
 def test_an_untouched_tree_is_not_rebuilt(small_tree):
     sqlite_store.get_store(small_tree, ".rng")
     sqlite_store.clear_stores()

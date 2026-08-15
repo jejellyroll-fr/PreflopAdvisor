@@ -153,9 +153,10 @@ UseDatabase=yes
 #+END_SRC
 
 The database is built the first time a tree is read, behind a progress dialog, and rebuilt
-whenever the range files change -- the number of files and the newest modification time are
-recorded in it and checked on open. The range files are never deleted: they are what a
-rebuild reads.
+whenever the range files change. Each file's name, size and modification time are recorded
+in it and checked every time the tree is read, so re-exporting a tree from the solver is
+picked up without restarting the advisor -- the check is one stat per range file, 0.2 ms
+over the tree above. The range files are never deleted: they are what a rebuild reads.
 
 What it buys, measured on the heads-up tree shipped in =ranges/= (31 files, 15.4 MB):
 

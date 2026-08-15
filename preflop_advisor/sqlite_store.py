@@ -24,6 +24,7 @@ import logging
 import os
 import sqlite3
 
+from .errors import RangeFilesChanging
 from .hand_convert_helper import normalize_monker_hand
 
 logger = logging.getLogger(__name__)
@@ -81,17 +82,36 @@ def get_store(folder, ending):
     """
     store = _STORES.get(folder)
     if store is not None:
-        return store
+        # Checked on every use, not only on the first: a tree re-exported while the
+        # application is open would otherwise keep being served from the database built
+        # before, for as long as the session lasts. The check is a stat per range file --
+        # 0.2ms over the 31 of the shipped tree -- against a grid that costs milliseconds.
+        try:
+            if store.fingerprint == tree_fingerprint(folder, ending):
+                return store
+        except OSError as error:
+            logger.warning("Range folder %s unreadable (%s); reading range files instead", folder, error)
+            _drop(folder)
+            return None
+        logger.info("Range files of %s changed; rebuilding its database", folder)
+        _drop(folder)
 
     try:
         store = TreeStore(folder, ending)
         store.ensure_ready()
-    except (OSError, sqlite3.Error) as error:
+    except (OSError, sqlite3.Error, RangeFilesChanging) as error:
         logger.warning("No SQLite store for %s (%s); reading range files instead", folder, error)
         return None
 
     _STORES[folder] = store
     return store
+
+
+def _drop(folder):
+    """Close and forget one folder's store."""
+    store = _STORES.pop(folder, None)
+    if store is not None:
+        store.close()
 
 
 def tree_fingerprint(folder, ending):
@@ -151,10 +171,15 @@ def parse_range_file(path):
 class TreeStore:
     """The ``preflop.db`` of one tree folder."""
 
+    #: How many times a build is retried when the range files move under it. A tree being
+    #: re-exported settles; one being written to continuously is not worth waiting for.
+    BUILD_ATTEMPTS = 3
+
     def __init__(self, folder, ending):
         self.folder = folder
         self.ending = ending
         self.db_path = os.path.join(folder, DB_NAME)
+        self.fingerprint = None
         self._conn = None
         self._filenames = frozenset()
 
@@ -164,15 +189,38 @@ class TreeStore:
 
     def ensure_ready(self):
         """Build the database if it is missing or no longer matches the range files."""
-        fingerprint = tree_fingerprint(self.folder, self.ending)
-        if self._stored_fingerprint() != fingerprint:
-            self.build(fingerprint)
+        self.fingerprint = self._build_if_needed()
 
         self._conn = sqlite3.connect(self.db_path)
         self._conn.execute("PRAGMA query_only=ON")
         cursor = self._conn.execute("SELECT DISTINCT filename FROM hands")
         self._filenames = frozenset(row[0] for row in cursor)
         logger.debug("SQLite store ready: %s, %d files indexed", self.db_path, len(self._filenames))
+
+    def _build_if_needed(self):
+        """Bring the database in step with the range files, and say what it was built from.
+
+        A build reads the files one after another and takes minutes on a large tree, so an
+        export landing in the middle of it would leave half of one generation and half of
+        the next -- recorded, in that same build, as current. The folder is fingerprinted
+        again before publishing, and the attempt discarded if it moved.
+
+        :return: The fingerprint the database now holds.
+        :raises RangeFilesChanging: if the files never settled.
+        """
+        for attempt in range(1, self.BUILD_ATTEMPTS + 1):
+            fingerprint = tree_fingerprint(self.folder, self.ending)
+            if self._stored_fingerprint() == fingerprint:
+                return fingerprint
+            if self.build(fingerprint):
+                return fingerprint
+            logger.warning(
+                "Range files of %s changed while its database was being built (attempt %d of %d)",
+                self.folder,
+                attempt,
+                self.BUILD_ATTEMPTS,
+            )
+        raise RangeFilesChanging(f"Range files of {self.folder} kept changing while the database was being built")
 
     def _stored_fingerprint(self):
         """What the existing database was built from, or ``None`` if there is none to ask."""
@@ -196,6 +244,9 @@ class TreeStore:
         -- a file that cannot be read, an interrupted run -- leaves the previous database,
         or no database, rather than a half-filled one that would answer with part of the
         tree and record a fingerprint saying it is current.
+
+        :param fingerprint: What the folder held when the build was decided on.
+        :return: Whether the result was published, i.e. whether the folder still matches.
         """
         paths = sorted(
             entry.path for entry in os.scandir(self.folder) if entry.name.endswith(self.ending) and entry.is_file()
@@ -228,7 +279,14 @@ class TreeStore:
                     )
             finally:
                 conn.close()
+
+            # Checked against the folder one last time: publishing a database assembled
+            # from two exports, under a fingerprint claiming it is the newer one, would
+            # make it authoritative and wrong at once.
+            if tree_fingerprint(self.folder, self.ending) != fingerprint:
+                return False
             os.replace(temporary, self.db_path)
+            return True
         finally:
             if os.path.exists(temporary):
                 os.remove(temporary)
