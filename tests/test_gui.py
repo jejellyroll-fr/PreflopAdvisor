@@ -911,3 +911,24 @@ def test_the_situations_are_offered_before_the_first_deal(qtbot, main_window):
 
     assert "BB vs SB open" in offered
     assert main_window.trainer.question is None, "offering situations must not deal one"
+
+
+@pytest.mark.parametrize(
+    "description,declared,expected",
+    [
+        ("no Rake", None, 0.0),
+        ("ANTE", None, None),
+        ("ante structure", "0.125", 0.125),
+        ("no Rake", "0.2", 0.2),
+        ("ANTE", "much", None),
+    ],
+)
+def test_a_tree_says_whether_it_has_an_ante(raw_config, description, declared, expected):
+    """Declared beside its tree, or unknown when the description says there is one."""
+    from preflop_advisor.tree_selector import ante_of
+
+    section = dict(raw_config["TreeInfos"])
+    if declared is not None:
+        section["table99.ante"] = declared
+
+    assert ante_of("Table99", description, section) == expected

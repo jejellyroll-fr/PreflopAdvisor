@@ -102,7 +102,7 @@ def test_a_pot_open_from_early_position_is_three_and_a_half_blinds():
     assert state.seat("UTG").committed == 3.5
     assert state.seat("UTG").stack == 96.5
     assert state.pot == 5.0
-    assert state.to_call == 3.5
+    assert state.to_call == 2.5  # what the big blind owes, having one in already
 
 
 def test_a_pot_open_from_the_small_blind_is_three_blinds():
@@ -228,3 +228,66 @@ def test_the_button_is_the_seat_before_the_blinds(seats, expected):
 
 def test_a_table_of_one_has_no_button():
     assert button_seat(["BB"]) is None
+
+
+# --------------------------------------------------------------------------------------
+# Antes, no-limit raises, and what the hero owes
+# --------------------------------------------------------------------------------------
+
+
+def test_an_ante_is_in_the_pot_before_anyone_acts():
+    state = table_state(SIX_MAX, [], hero="UTG", sizings=SIZINGS, ante=0.125)
+
+    assert state.pot == pytest.approx(1.5 + 6 * 0.125)
+    # Shown to the penny, as every figure on the table is.
+    assert state.seat("UTG").committed == pytest.approx(0.125, abs=0.01)
+    assert state.seat("BB").committed == pytest.approx(1.125, abs=0.01)
+
+
+def test_an_ante_makes_every_raise_after_it_larger():
+    """Every number here is built on what is in the middle."""
+    without = table_state(SIX_MAX, [("UTG", "RaisePot")], hero="BB", sizings=SIZINGS)
+    with_ante = table_state(SIX_MAX, [("UTG", "RaisePot")], hero="BB", sizings=SIZINGS, ante=0.125)
+
+    assert with_ante.seat("UTG").committed > without.seat("UTG").committed
+
+
+def test_a_tree_with_an_ante_of_unknown_size_reports_nothing():
+    """The size is not in the export, and a pot short of it is a pot that is wrong."""
+    state = table_state(SIX_MAX, [("UTG", "RaisePot")], hero="BB", sizings=SIZINGS, ante=None)
+
+    assert state.pot is None
+    assert all(seat.stack is None for seat in state.seats)
+    assert state.seat("UTG").action == "RaisePot"
+
+
+def test_an_over_pot_raise_is_capped_only_where_the_pot_is_the_ceiling():
+    """A no-limit tree may hold a 150 percent raise, and it is not a pot raise."""
+    sizings = dict(SIZINGS) | {"raise150": Sizing("pot", 1.5)}
+
+    omaha = table_state(SIX_MAX, [("UTG", "Raise150")], hero="BB", sizings=sizings, game="PLO")
+    holdem = table_state(SIX_MAX, [("UTG", "Raise150")], hero="BB", sizings=sizings, game="NL")
+
+    assert omaha.seat("UTG").committed == 3.5  # the pot, and no more
+    assert holdem.seat("UTG").committed == pytest.approx(1 + 1.5 * 2.5)
+
+
+@pytest.mark.parametrize(
+    "line,hero,owed",
+    [
+        ([], "UTG", 1.0),  # nothing in front of it, so the whole blind
+        ([], "BB", 0.0),  # already has the blind in
+        ([("UTG", "RaisePot")], "BB", 2.5),  # a raise to 3.5 against its 1
+        ([("UTG", "RaisePot")], "SB", 3.0),  # against its half
+    ],
+)
+def test_to_call_is_what_the_hero_owes_not_the_level_of_the_bet(line, hero, owed):
+    state = table_state(SIX_MAX, line, hero=hero, sizings=SIZINGS)
+
+    assert state.to_call == pytest.approx(owed)
+
+
+def test_what_is_owed_never_exceeds_what_is_left():
+    state = table_state(SIX_MAX, [("UTG", "All_In")], hero="BB", sizings=SIZINGS, stack=20)
+
+    assert state.to_call == pytest.approx(19.0)

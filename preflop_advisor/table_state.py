@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 SMALL_BLIND = 0.5
 BIG_BLIND = 1.0
+#: Games where a raise may not exceed the pot. Anywhere else it may.
+POT_LIMIT_GAMES = ("PLO", "PLO5", "PLO8")
 
 
 @dataclass(frozen=True)
@@ -67,7 +69,7 @@ def button_seat(seats: list[str]) -> str | None:
     return seats[-2] if len(seats) == 2 else seats[-3]
 
 
-def raise_to(sizing: Sizing, pot: float, owed: float, already_in: float, stack: float) -> float:
+def raise_to(sizing: Sizing, pot: float, owed: float, already_in: float, stack: float, pot_limit: bool = True) -> float:
     """What a seat's total commitment becomes when it raises, under the pot-limit rule.
 
     Call first, then raise by no more than the pot that call makes. The total is what was
@@ -85,7 +87,12 @@ def raise_to(sizing: Sizing, pot: float, owed: float, already_in: float, stack: 
         return sizing.value * BIG_BLIND
 
     pot_after_call = pot + owed
-    raise_by = pot_after_call if sizing.value >= 1 else min(pot_after_call, sizing.value * pot_after_call)
+    raise_by = sizing.value * pot_after_call
+    if pot_limit:
+        # Where the pot is the ceiling, that is what an over-pot sizing comes to. Where it
+        # is not -- a no-limit tree with a 150 percent raise in it -- capping would report
+        # the same number for two different actions.
+        raise_by = min(raise_by, pot_after_call)
     return already_in + owed + raise_by
 
 
@@ -95,6 +102,8 @@ def table_state(
     hero: str,
     sizings: dict[str, Sizing],
     stack: float = 100.0,
+    game: str = "PLO",
+    ante: float | None = 0.0,
 ) -> TableState:
     """Play the line out and report where it leaves everyone.
 
@@ -105,17 +114,25 @@ def table_state(
     :param sizings: What each action costs, keyed by lower-case name, from
         :func:`sizings.sizings_for`.
     :param stack: What everyone started with, in big blinds.
+    :param game: Which game, since a raise may exceed the pot only outside pot-limit.
+    :param ante: What each seat posts before the blinds, in big blinds, or ``None`` when
+        the tree has one and its size is not declared. Every number here is built on what
+        is in the middle, so an ante left out understates all of them -- the pot, each
+        percentage raise, every stack, and the ratio the tally reports.
     """
     committed = dict.fromkeys(seats, 0.0)
     actions = dict.fromkeys(seats, "")
-    readable = True
+    readable = ante is not None
+    if ante:
+        for seat in seats:
+            committed[seat] = ante
 
     # The blinds are posted by the last two seats of the acting order, which is where they
     # sit: everyone else acts before them preflop.
     if len(seats) >= 2:
-        committed[seats[-2]] = SMALL_BLIND
-        committed[seats[-1]] = BIG_BLIND
-    highest = BIG_BLIND if len(seats) >= 2 else 0.0
+        committed[seats[-2]] += SMALL_BLIND
+        committed[seats[-1]] += BIG_BLIND
+    highest = committed[seats[-1]] if len(seats) >= 2 else 0.0
 
     for seat, action in sequence:
         if seat not in committed:
@@ -141,6 +158,7 @@ def table_state(
                 owed=highest - committed[seat],
                 already_in=committed[seat],
                 stack=stack,
+                pot_limit=game.upper() in POT_LIMIT_GAMES,
             ),
             stack,
         )
@@ -160,5 +178,9 @@ def table_state(
             for name in seats
         ],
         pot=round(sum(committed.values()), 2) if readable else None,
-        to_call=round(highest, 2) if readable else None,
+        # What the hero owes, not the level of the bet: a big blind facing a raise to 3
+        # puts in 2, and never more than it has.
+        to_call=round(min(max(highest - committed.get(hero, 0.0), 0.0), stack - committed.get(hero, 0.0)), 2)
+        if readable
+        else None,
     )

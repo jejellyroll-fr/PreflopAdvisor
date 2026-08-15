@@ -211,6 +211,8 @@ class TrainerPanel(QWidget):
         processor = reader.action_processor
         self.sizings = sizings_for(processor.action_codes, dict(self.tree_reader_configs))
         self.stack = float(tree.get("bb", 100))
+        self.game = tree.get("game", "PLO")
+        self.ante = tree.get("ante", 0.0)
         self.seats = reader.position_list
         for spot in spots:
             hand = deal(cards, self.rng)
@@ -238,7 +240,15 @@ class TrainerPanel(QWidget):
     def question_for(self, processor: ActionProcessor, spot: Spot, hand: str, results: list[Any]) -> Question:
         """A question, with the table the line of play left."""
         sequence = processor.find_valid_raise_sizes(processor.get_action_sequence(spot.line))
-        state = table_state(self.seats, sequence, spot.hero, self.sizings, self.stack)
+        state = table_state(
+            self.seats,
+            sequence,
+            spot.hero,
+            self.sizings,
+            stack=self.stack,
+            game=str(self.game),
+            ante=self.ante,
+        )
         return Question(spot, hand, results, state)
 
     def offer_spots(self, seats: list[str]) -> None:

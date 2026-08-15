@@ -19,6 +19,23 @@ from .tooltip import CreateToolTip
 logger = logging.getLogger(__name__)
 
 
+def ante_of(table: str, description: str, tree_infos: ConfigSource) -> float | None:
+    """What each seat posts before the blinds, in big blinds.
+
+    Declared beside the tree it belongs to, as ``Table5.ante=0.125``. A tree whose
+    description says it has one without saying how much comes back as ``None``: the size
+    is not in the export, and every number built on the pot would be short without it.
+    """
+    declared = dict(tree_infos).get(f"{table}.ante".lower())
+    if declared is not None:
+        try:
+            return float(declared)
+        except ValueError:
+            logger.warning("Ignoring %s.ante=%r: not a number", table, declared)
+            return None
+    return None if "ante" in description.lower() else 0.0
+
+
 class TreeSelector(QWidget):
     """
     Widget allowing the selection of a tree from a list defined in the configurations.
@@ -103,6 +120,7 @@ class TreeSelector(QWidget):
                 "game": infos[2],
                 "folder": infos[3],
                 "infos": infos[4].strip(),
+                "ante": ante_of(table, infos[4], tree_infos),
             }
             self.trees.append(table_dic)
         logger.debug("Processed tree information: %s", self.trees)
