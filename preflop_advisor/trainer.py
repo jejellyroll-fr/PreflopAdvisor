@@ -134,10 +134,18 @@ def spots_for(seats: list[str]) -> list[Spot]:
     defending against an open, and facing the raise back. Everything a bigger catalogue
     would add -- squeezes, 4bets, blind-on-blind -- is another line of play in the same
     shape, not another mechanism.
+
+    The big blind is the one seat with no unopened decision: everyone folding to it ends
+    the hand, and there is no node behind that. What it actually faces there is the small
+    blind's limp, which is what the advisor's own grid puts in that column.
     """
     spots = []
     for index, opener in enumerate(seats):
-        spots.append(Spot(f"{opener} first in", opener, []))
+        if index == len(seats) - 1 and len(seats) >= 2:
+            limper = seats[-2]
+            spots.append(Spot(f"{opener} vs {limper} limp", opener, [(limper, "Call")]))
+        else:
+            spots.append(Spot(f"{opener} first in", opener, []))
         for defender in seats[index + 1 :]:
             spots.append(Spot(f"{defender} vs {opener} open", defender, [(opener, "Raise")]))
             spots.append(
