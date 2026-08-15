@@ -291,3 +291,38 @@ def test_what_is_owed_never_exceeds_what_is_left():
     state = table_state(SIX_MAX, [("UTG", "All_In")], hero="BB", sizings=SIZINGS, stack=20)
 
     assert state.to_call == pytest.approx(19.0)
+
+
+def test_a_fixed_raise_keeps_the_ante_that_was_already_posted():
+    """ "Raise to 3 big blinds" is a level of betting, not a total contribution.
+
+    Folded into one number, the raise replaced the ante instead of sitting on top of it.
+    """
+    sizings = dict(SIZINGS) | {"open": Sizing("blinds", 3.0)}
+
+    state = table_state(SIX_MAX, [("UTG", "Open")], hero="BB", sizings=sizings, ante=0.125)
+
+    assert state.seat("UTG").committed == pytest.approx(3.125, abs=0.01)
+    assert state.seat("UTG").stack == pytest.approx(100 - 3.125, abs=0.01)
+
+
+def test_calling_with_an_ante_matches_the_bet_and_keeps_the_ante():
+    state = table_state(SIX_MAX, [("UTG", "RaisePot"), ("MP", "Call")], hero="CO", sizings=SIZINGS, ante=0.5)
+
+    assert state.seat("MP").committed == pytest.approx(0.5 + state.seat("UTG").committed - 0.5)
+    assert state.seat("MP").stack == pytest.approx(100 - state.seat("MP").committed)
+
+
+def test_an_ante_comes_out_of_the_stack_it_is_posted_from():
+    state = table_state(SIX_MAX, [], hero="UTG", sizings=SIZINGS, ante=0.5)
+
+    assert state.seat("UTG").stack == 99.5
+    assert state.seat("BB").stack == 98.5  # its ante and its blind
+    assert state.pot == pytest.approx(1.5 + 3.0)
+
+
+def test_going_all_in_with_an_ante_leaves_nothing_behind():
+    state = table_state(SIX_MAX, [("UTG", "All_In")], hero="BB", sizings=SIZINGS, stack=20, ante=0.5)
+
+    assert state.seat("UTG").stack == 0
+    assert state.seat("UTG").committed == 20

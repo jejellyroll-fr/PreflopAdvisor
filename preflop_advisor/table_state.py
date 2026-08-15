@@ -113,29 +113,33 @@ def table_state(
     :param hero: The seat to act.
     :param sizings: What each action costs, keyed by lower-case name, from
         :func:`sizings.sizings_for`.
-    :param stack: What everyone started with, in big blinds.
+    :param stack: What everyone started with, in big blinds, ante included.
     :param game: Which game, since a raise may exceed the pot only outside pot-limit.
     :param ante: What each seat posts before the blinds, in big blinds, or ``None`` when
         the tree has one and its size is not declared. Every number here is built on what
         is in the middle, so an ante left out understates all of them -- the pot, each
         percentage raise, every stack, and the ratio the tally reports.
     """
-    committed = dict.fromkeys(seats, 0.0)
+    # Antes are dead money: they sit in the pot and are not part of anyone's bet. Kept
+    # apart from the bets, because everything the betting depends on -- what a seat owes,
+    # what a raise comes to, what "raise to 3 big blinds" means -- is a level of betting,
+    # while the pot and the stacks are the two together. Folded into one number, a fixed
+    # raise to 3 swallowed the ante that was already in.
+    posted = ante or 0.0
+    available = max(stack - posted, 0.0)
+    bets = dict.fromkeys(seats, 0.0)
     actions = dict.fromkeys(seats, "")
     readable = ante is not None
-    if ante:
-        for seat in seats:
-            committed[seat] = ante
 
     # The blinds are posted by the last two seats of the acting order, which is where they
     # sit: everyone else acts before them preflop.
     if len(seats) >= 2:
-        committed[seats[-2]] += SMALL_BLIND
-        committed[seats[-1]] += BIG_BLIND
-    highest = committed[seats[-1]] if len(seats) >= 2 else 0.0
+        bets[seats[-2]] = min(SMALL_BLIND, available)
+        bets[seats[-1]] = min(BIG_BLIND, available)
+    highest = bets[seats[-1]] if len(seats) >= 2 else 0.0
 
     for seat, action in sequence:
-        if seat not in committed:
+        if seat not in bets:
             logger.warning("%s is not seated at this table", seat)
             continue
         actions[seat] = action
@@ -144,43 +148,43 @@ def table_state(
         if action == "Fold" or sizing.kind == "fold":
             continue
         if sizing.kind == "call":
-            committed[seat] = min(highest, stack)
+            bets[seat] = min(highest, available)
             continue
         if not sizing.known:
             # One unreadable sizing and every number after it would be made up.
             readable = False
             continue
 
-        committed[seat] = min(
+        bets[seat] = min(
             raise_to(
                 sizing,
-                pot=sum(committed.values()),
-                owed=highest - committed[seat],
-                already_in=committed[seat],
-                stack=stack,
+                pot=sum(bets.values()) + posted * len(seats),
+                owed=highest - bets[seat],
+                already_in=bets[seat],
+                stack=available,
                 pot_limit=game.upper() in POT_LIMIT_GAMES,
             ),
-            stack,
+            available,
         )
-        highest = max(highest, committed[seat])
+        highest = max(highest, bets[seat])
 
     dealer = button_seat(seats)
     return TableState(
         seats=[
             Seat(
                 name=name,
-                stack=round(stack - committed[name], 2) if readable else None,
-                committed=round(committed[name], 2) if readable else None,
+                stack=round(stack - posted - bets[name], 2) if readable else None,
+                committed=round(posted + bets[name], 2) if readable else None,
                 action=actions[name],
                 hero=name == hero,
                 button=name == dealer,
             )
             for name in seats
         ],
-        pot=round(sum(committed.values()), 2) if readable else None,
+        pot=round(sum(bets.values()) + posted * len(seats), 2) if readable else None,
         # What the hero owes, not the level of the bet: a big blind facing a raise to 3
-        # puts in 2, and never more than it has.
-        to_call=round(min(max(highest - committed.get(hero, 0.0), 0.0), stack - committed.get(hero, 0.0)), 2)
+        # puts in 2, and never more than it has left behind its ante.
+        to_call=round(min(max(highest - bets.get(hero, 0.0), 0.0), available - bets.get(hero, 0.0)), 2)
         if readable
         else None,
     )
