@@ -575,3 +575,36 @@ def test_the_cell_floor_fits_what_a_tile_has_to_show(qtbot):
     ):
         needed = QFontMetrics(label.font()).horizontalAdvance(text)
         assert needed <= label.width(), f"{text!r} needs {needed}px, has {label.width()}px"
+
+
+@pytest.mark.parametrize("height", [MIN_CELL_HEIGHT, 60, 80, 120, 160])
+def test_the_three_lines_of_a_tile_fit_the_cell_they_are_in(qtbot, height):
+    """Sized independently, the three lines asked for more room than the cell had.
+
+    At the floor they came out at 13 and 15 point -- 70 pixels of text in 64 pixels of
+    cell -- and the line that lost was the frequency, which is the figure the grid is
+    read for.
+    """
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.resize(MIN_CELL_WIDTH, height)
+    entry.set_result_label([["Call", "38", "1.68"], ["Raise100", "62", "2.41"]])
+    force_layout(entry)
+
+    tile = entry.label_left
+    for label, text in ((tile.action_label, "Call"), (tile.frequency_label, "62%"), (tile.ev_label, "+1.68")):
+        glyphs = QFontMetrics(label.font()).tightBoundingRect(text)
+        assert glyphs.height() <= label.height(), f"{text!r} is {glyphs.height()}px tall in {label.height()}px"
+        assert glyphs.width() <= label.width(), f"{text!r} is {glyphs.width()}px wide in {label.width()}px"
+
+
+def test_the_frequency_stays_the_largest_line_at_the_floor(qtbot):
+    """Shrinking the outer lines must not end with them outgrowing the middle one."""
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.resize(MIN_CELL_WIDTH, MIN_CELL_HEIGHT)
+    entry.set_result_label([["Call", "38", "1.68"]])
+    force_layout(entry)
+
+    tile = entry.label_left
+    assert tile.frequency_label.font().pointSize() > tile.action_label.font().pointSize()

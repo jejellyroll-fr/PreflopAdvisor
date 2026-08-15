@@ -34,13 +34,19 @@ MAX_DISPLAYED_ACTIONS = 2
 # guessed: below this the EV renders as "-1.6" and the sizing as "R10", which is worse
 # than a scrollbar. It is what decides how many seats fit across a panel.
 MIN_CELL_WIDTH = 112
-MIN_CELL_HEIGHT = 64
+# And down: three lines at the smallest fonts the tiles use cost 37 pixels, plus the
+# tile's own frame. It is what decides how many seats fit down one, so a nine-handed
+# overview -- ten rows -- turns on it.
+MIN_CELL_HEIGHT = 52
 # What a tile's own frame costs it, on top of the text: borders, padding, the gap to its
 # neighbour. Subtracted before deciding what font the text may have.
 TILE_CHROME = 16
 # What the frequency line costs in pixels per point of font size, measured on a rendered
 # "62%". Used to bound the font by the room the text actually has.
 PIXELS_PER_POINT = 2.7
+# And what one line costs down: a rendered line is about a third taller than its point
+# size (8pt occupies 11 pixels, 15pt occupies 20).
+POINTS_TO_LINE = 1.35
 
 # Shown instead of an empty box, so "no data" is distinguishable from a rendering bug.
 EMPTY_CELL_TEXT = "—"
@@ -155,15 +161,23 @@ class ActionTile(QWidget):
     def apply_fonts(self, height, width=None):
         """Scales the three lines together, preserving their relative weight.
 
-        Bounded by the width as well as the height. Sized on height alone, a cell in a
+        Bounded by the room in both directions. Sized on height alone, a cell in a
         nine-handed grid -- as tall as any other, and a third as wide -- asked for a 24
         point "98%" in a tile with room for half of it. ``PIXELS_PER_POINT`` is what the
-        widest of the three lines costs per point of font size.
+        widest line costs per point of font size across, ``POINTS_TO_LINE`` what any of
+        them costs down.
+
+        The two outer lines grow from the floor rather than from nothing, and the middle
+        one takes what they leave. Sized independently, a cell at the floor was given 13
+        and 15 point text -- 70 pixels of it, in 64 pixels of cell -- and the frequency,
+        the figure the grid is read for, was the line that got clipped.
         """
-        primary = max(11, min(11 + height // 4, 24))
+        secondary = max(8, min(8 + max(height - MIN_CELL_HEIGHT, 0) // 10, 13))
+        remaining = int((height - TILE_CHROME) / POINTS_TO_LINE) - 2 * secondary
+
+        primary = max(9, min(11 + height // 4, 24, remaining))
         if width is not None:
             primary = max(9, min(primary, int(width / PIXELS_PER_POINT)))
-        secondary = max(8, min(8 + height // 12, 13))
 
         font = QFont(theme.FONT_FAMILY, primary, QFont.Bold)
         self.frequency_label.setFont(font)

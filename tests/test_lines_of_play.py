@@ -12,6 +12,7 @@ inspected through a recording double.
 import pytest
 
 from preflop_advisor.tree_reader import TreeReader
+from preflop_advisor.tree_reader_helpers import ActionProcessor
 
 from .conftest import REFERENCE_HAND
 
@@ -221,3 +222,45 @@ def test_big_blind_first_in_row_models_a_limp_from_the_small_blind(reader):
 
     bb_first_in = [call for call in reader.action_processor.calls if call[1] == "BB"]
     assert (("SB", "Call"),) == bb_first_in[0][0]
+
+
+# --------------------------------------------------------------------------------------
+# What the seat names do, and what they do not
+# --------------------------------------------------------------------------------------
+
+
+def test_renaming_a_seat_does_not_change_the_file_read(hu_tree, tree_configs):
+    """Names label columns; the file comes from the action codes and the seating order.
+
+    Worth pinning down, because the per-table-size lists are a guess at what a solver
+    calls the middle seats. Getting one wrong mislabels a column -- it never reads
+    somebody else's ranges.
+    """
+    line = [("CO", "Raise"), ("BB", "Call")]
+    named = ActionProcessor(["UTG", "MP", "HJ", "CO", "BU", "SB", "BB"], dict(hu_tree), tree_configs)
+    renamed = ActionProcessor(["UTG", "UTG1", "LJ", "CO", "BU", "SB", "BB"], dict(hu_tree), tree_configs)
+
+    def filename(processor):
+        sequence = processor.find_valid_raise_sizes(processor.get_action_sequence(line))
+        return processor.get_filename(sequence)
+
+    assert filename(named) == filename(renamed)
+
+
+def test_each_table_size_adds_one_seat_to_the_one_below(raw_config, hu_tree):
+    """Seven-handed is six-handed plus a hijack, and so on up.
+
+    The names are editable, so this is the shape to keep if they are edited: every seat of
+    the smaller table still there, in the same order, with the new one slotted in.
+    """
+    sizes = {}
+    for players in range(6, 10):
+        reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=players), raw_config["TreeReader"])
+        sizes[players] = reader.position_list
+
+    for players in range(7, 10):
+        smaller, larger = sizes[players - 1], sizes[players]
+        assert len(larger) == len(smaller) + 1
+        kept = [seat for seat in larger if seat in smaller]
+        assert kept == smaller, f"{players}-handed reorders the seats of {players - 1}-handed"
+        assert larger[-3:] == ["BU", "SB", "BB"], "the button and the blinds always come last"
