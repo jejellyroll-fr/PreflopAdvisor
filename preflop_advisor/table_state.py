@@ -90,7 +90,8 @@ def table_state(
     :param sequence: The line as the reader fills it in, folds included and with the
         sizings it resolved rather than a generic "Raise".
     :param hero: The seat to act.
-    :param sizings: What each action name costs, from :func:`sizings.sizings_for`.
+    :param sizings: What each action costs, keyed by lower-case name, from
+        :func:`sizings.sizings_for`.
     :param stack: What everyone started with, in big blinds.
     """
     committed = dict.fromkeys(seats, 0.0)
@@ -110,7 +111,7 @@ def table_state(
             continue
         actions[seat] = action
 
-        sizing = sizings.get(action, Sizing("unknown"))
+        sizing = sizings.get(action.lower(), Sizing("unknown"))
         if action == "Fold" or sizing.kind == "fold":
             continue
         if sizing.kind == "call":

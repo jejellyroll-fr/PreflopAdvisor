@@ -12,8 +12,9 @@ from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QShowEvent
 from PySide6.QtWidgets import (
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -27,7 +28,10 @@ from . import theme
 from .errors import PreflopAdvisorError
 from .outputframe import CHIPS_PER_BB, ActionTile, short_action_label
 from .settings import ConfigSource, get
+from .sizings import sizings_for
+from .table_state import table_state
 from .trainer import Question, Session, Spot, deal, grade, hand_for_key, playable, spots_for
+from .trainer_table import TrainerTable
 from .tree_reader import TreeReader
 from .tree_reader_helpers import ActionProcessor
 
@@ -44,6 +48,8 @@ NODE_SAMPLES = 8
 TILE_HEIGHT = 120
 
 EMPTY_STATE = "Pick a tree in the Advisor tab, then deal a hand."
+#: Chooser entry standing for the whole catalogue.
+ANY_SPOT = "Any situation"
 
 
 class TrainerPanel(QWidget):
@@ -70,15 +76,23 @@ class TrainerPanel(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
+        chooser = QHBoxLayout()
+        chooser.setSpacing(8)
+        chooser.addWidget(QLabel("Situation:"))
+        self.spot_choice = QComboBox()
+        self.spot_choice.setMinimumWidth(220)
+        self.spot_choice.addItem(ANY_SPOT)
+        chooser.addWidget(self.spot_choice)
+        chooser.addStretch(1)
+        layout.addLayout(chooser)
+
         self.spot_label = QLabel(EMPTY_STATE)
         self.spot_label.setFont(QFont(theme.FONT_FAMILY, 15, QFont.Weight.Bold))
         self.spot_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.spot_label)
 
-        self.hand_label = QLabel("")
-        self.hand_label.setFont(QFont(theme.FONT_FAMILY, 26, QFont.Weight.Bold))
-        self.hand_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.hand_label)
+        self.table = TrainerTable(self)
+        layout.addWidget(self.table, stretch=1)
 
         self.answers = QHBoxLayout()
         self.answers.setSpacing(8)
@@ -87,7 +101,6 @@ class TrainerPanel(QWidget):
         self.strategy = QHBoxLayout()
         self.strategy.setSpacing(6)
         layout.addLayout(self.strategy)
-        layout.addStretch(1)
 
         self.verdict_label = QLabel("")
         self.verdict_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -119,30 +132,52 @@ class TrainerPanel(QWidget):
     # Asking
     # ------------------------------------------------------------------
 
+    def showEvent(self, event: QShowEvent) -> None:
+        """Fill the chooser when the tab is opened.
+
+        Left to the first deal, the list held nothing but "any situation" until a hand had
+        been played -- so choosing what to drill was only possible after drilling something
+        else.
+        """
+        super().showEvent(event)
+        self.refresh_spots()
+
+    def refresh_spots(self) -> None:
+        """Offer the situations the selected tree's table size has."""
+        tree = self.tree_source()
+        if tree is None:
+            return
+        try:
+            reader = TreeReader("", "", tree, self.tree_reader_configs)
+        except PreflopAdvisorError as error:
+            logger.debug("No situations to offer: %s", error)
+            return
+        self.offer_spots(reader.position_list)
+
     def next_hand(self) -> None:
         """Deal a new spot and hand, or say why it could not be done."""
         self.clear_answer()
         tree = self.tree_source()
         if tree is None:
             self.spot_label.setText(EMPTY_STATE)
-            self.hand_label.setText("")
+            self.table.show_state(None)
             return
 
         try:
             question = self.draw(tree)
         except PreflopAdvisorError as error:
             self.spot_label.setText(str(error))
-            self.hand_label.setText("")
+            self.table.show_state(None)
             return
 
         if question is None:
-            self.spot_label.setText("No spot in this tree answered; try another tree.")
-            self.hand_label.setText("")
+            self.spot_label.setText(self.nothing_to_ask())
+            self.table.show_state(None)
             return
 
         self.question = question
         self.spot_label.setText(question.spot.label)
-        self.hand_label.setText(self.render_hand(question.hand))
+        self.table.show_state(question.table, question.hand)
         self.show_answers(question)
         self.next_button.setText("Deal a hand")
 
@@ -169,15 +204,19 @@ class TrainerPanel(QWidget):
         """
         reader = TreeReader("", "", tree, self.tree_reader_configs)
         cards = CARDS_PER_GAME.get(str(tree.get("game", "PLO")).upper(), 4)
-        spots = spots_for(reader.position_list)
+        self.offer_spots(reader.position_list)
+        spots = self.chosen_spots(reader.position_list)
         self.rng.shuffle(spots)
 
         processor = reader.action_processor
+        self.sizings = sizings_for(processor.action_codes, dict(self.tree_reader_configs))
+        self.stack = float(tree.get("bb", 100))
+        self.seats = reader.position_list
         for spot in spots:
             hand = deal(cards, self.rng)
             results = playable(processor.get_results(hand, spot.line, spot.hero))
             if results:
-                return Question(spot, hand, results)
+                return self.question_for(processor, spot, hand, results)
 
             # The spot did not answer for that hand. Rather than deal again and hope, ask
             # what its files hold and deal one of those back out.
@@ -192,9 +231,45 @@ class TrainerPanel(QWidget):
                     continue
                 results = playable(processor.get_results(held, spot.line, spot.hero))
                 if results:
-                    return Question(spot, held, results)
+                    return self.question_for(processor, spot, held, results)
         logger.warning("No spot of %s answered", tree.get("folder"))
         return None
+
+    def question_for(self, processor: ActionProcessor, spot: Spot, hand: str, results: list[Any]) -> Question:
+        """A question, with the table the line of play left."""
+        sequence = processor.find_valid_raise_sizes(processor.get_action_sequence(spot.line))
+        state = table_state(self.seats, sequence, spot.hero, self.sizings, self.stack)
+        return Question(spot, hand, results, state)
+
+    def offer_spots(self, seats: list[str]) -> None:
+        """Fill the chooser with the situations a table of these seats has.
+
+        Rebuilt only when the seats change, so choosing a situation survives dealing the
+        next hand -- which is the point of choosing one.
+        """
+        labels = [ANY_SPOT] + [spot.label for spot in spots_for(seats)]
+        if labels == [self.spot_choice.itemText(index) for index in range(self.spot_choice.count())]:
+            return
+        chosen = self.spot_choice.currentText()
+        self.spot_choice.clear()
+        self.spot_choice.addItems(labels)
+        if chosen in labels:
+            self.spot_choice.setCurrentText(chosen)
+
+    def chosen_spots(self, seats: list[str]) -> list[Spot]:
+        """The catalogue, or the one situation asked for."""
+        catalogue = spots_for(seats)
+        chosen = self.spot_choice.currentText()
+        if chosen == ANY_SPOT:
+            return catalogue
+        return [spot for spot in catalogue if spot.label == chosen] or catalogue
+
+    def nothing_to_ask(self) -> str:
+        """Why no question came back, in the terms the player chose."""
+        chosen = self.spot_choice.currentText()
+        if chosen != ANY_SPOT:
+            return f"{chosen} has no ranges in this tree."
+        return "No situation in this tree answered; try another tree."
 
     @staticmethod
     def hands_of(processor: ActionProcessor, spot: Spot) -> list[str]:
@@ -250,8 +325,10 @@ class TrainerPanel(QWidget):
             return
 
         verdict = grade(question.results, action, self.chips_per_bb)
-        pot = sum(1 for _, played in question.spot.line if played) * 2.0 + 1.5
-        self.session.record(verdict, pot)
+        # The real pot, now that the line of play can be costed. It used to be guessed
+        # from how many actions preceded, which made "EV lost / pot" a ratio of a real
+        # number to an invented one.
+        self.session.record(verdict, question.table.pot if question.table else None)
 
         for button in self.buttons:
             button.setEnabled(False)

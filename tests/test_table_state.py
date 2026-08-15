@@ -12,14 +12,15 @@ from preflop_advisor.table_state import table_state
 
 SIX_MAX = ["UTG", "MP", "CO", "BU", "SB", "BB"]
 HEADS_UP = ["SB", "BB"]
+# Keyed in lower case, as sizings_for returns them.
 SIZINGS = {
-    "Fold": Sizing("fold"),
-    "Call": Sizing("call"),
-    "RaisePot": Sizing("pot", 1.0),
-    "Raise100": Sizing("pot", 1.0),
-    "Raise75": Sizing("pot", 0.75),
-    "All_In": Sizing("allin"),
-    "Mystery": UNKNOWN,
+    "fold": Sizing("fold"),
+    "call": Sizing("call"),
+    "raisepot": Sizing("pot", 1.0),
+    "raise100": Sizing("pot", 1.0),
+    "raise75": Sizing("pot", 0.75),
+    "all_in": Sizing("allin"),
+    "mystery": UNKNOWN,
 }
 
 
@@ -60,8 +61,8 @@ def test_a_name_carries_nothing_and_the_code_carries_it_all():
     """Names are labels their owner chose; the code is what came from the solver."""
     sizings = sizings_for({"HouseSize": "40062", "Whatever": "40100"})
 
-    assert sizings["HouseSize"] == Sizing("pot", 0.62)
-    assert sizings["Whatever"] == Sizing("pot", 1.0)
+    assert sizings["housesize"] == Sizing("pot", 0.62)
+    assert sizings["whatever"] == Sizing("pot", 1.0)
 
 
 def test_a_configuration_can_declare_what_a_code_means():
@@ -70,14 +71,14 @@ def test_a_configuration_can_declare_what_a_code_means():
         {"3xOpen.blinds": "3", "HouseSize.pot": "0.45"},
     )
 
-    assert sizings["3xOpen"] == Sizing("blinds", 3.0)
-    assert sizings["HouseSize"] == Sizing("pot", 0.45)
+    assert sizings["3xopen"] == Sizing("blinds", 3.0)
+    assert sizings["housesize"] == Sizing("pot", 0.45)
 
 
 def test_a_declaration_that_is_not_a_number_is_ignored():
     sizings = sizings_for({"3xOpen": "15"}, {"3xOpen.blinds": "three"})
 
-    assert not sizings["3xOpen"].known
+    assert not sizings["3xopen"].known
 
 
 # --------------------------------------------------------------------------------------
@@ -189,3 +190,16 @@ def test_the_line_itself_is_still_reported():
 
     assert state.seat("UTG").action == "Mystery"
     assert state.seat("MP").folded
+
+
+def test_the_pot_code_raises_the_pot_and_not_nothing():
+    """Code 2 is Monker's own pot raise, and it carries its share like any other sizing.
+
+    Left without one it defaulted to nought, and a pot raise was played out as a call.
+    """
+    sizings = sizings_for({"RaisePot": "2"})
+
+    assert sizings["raisepot"] == Sizing("pot", 1.0)
+
+    state = table_state(SIX_MAX, [("UTG", "RaisePot")], hero="BB", sizings=sizings)
+    assert state.seat("UTG").committed == 3.5

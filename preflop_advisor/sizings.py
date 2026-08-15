@@ -34,8 +34,6 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-#: Codes every Monker export uses for the actions it adds to a tree by itself.
-SPECIAL_CODES = {"0": "fold", "1": "call", "2": "pot", "3": "allin"}
 #: Raises are coded as this plus their percentage: 40075 is 75 percent.
 PERCENT_BASE = 40000
 #: Suffixes a configuration may add to a sizing's name to declare what the code means.
@@ -56,12 +54,15 @@ class Sizing:
 
 
 UNKNOWN = Sizing("unknown")
+#: Codes every Monker export uses for the actions it adds to a tree by itself. The pot
+#: raise carries its share like any other, or it would be read as a raise of nothing.
+SPECIAL_CODES = {"0": Sizing("fold"), "1": Sizing("call"), "2": Sizing("pot", 1.0), "3": Sizing("allin")}
 
 
 def sizing_for_code(code: str) -> Sizing:
     """Read a Monker action code, or report that it cannot be read."""
     if code in SPECIAL_CODES:
-        return Sizing(SPECIAL_CODES[code])
+        return SPECIAL_CODES[code]
 
     if re.fullmatch(r"\d+", code) and int(code) > PERCENT_BASE:
         percent = int(code) - PERCENT_BASE
@@ -79,12 +80,16 @@ def sizings_for(action_codes: dict[str, str], settings: dict[str, str] | None = 
     :param settings: The configuration section, read for ``<name>.pot`` and
         ``<name>.blinds`` declarations, which override what the code says and are the only
         way to give a meaning to a code that has none.
+    :return: Sizings by action name, in lower case.
     """
     declared = {key.lower(): value for key, value in (settings or {}).items()}
-    sizings = {}
-    for name, code in action_codes.items():
-        sizings[name] = _declared_sizing(name, declared) or sizing_for_code(str(code))
-    return sizings
+    # Keyed in lower case, because that is the one spelling both sides agree on: the
+    # reader lower-cases configuration keys when it builds its action codes, while an
+    # action inside a line of play keeps the case its RaiseSizeList entry was written in.
+    return {
+        name.lower(): _declared_sizing(name, declared) or sizing_for_code(str(code))
+        for name, code in action_codes.items()
+    }
 
 
 def _declared_sizing(name: str, declared: dict[str, str]) -> Sizing | None:

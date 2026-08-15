@@ -17,6 +17,7 @@ import random
 import re
 from dataclasses import dataclass, field
 
+from .table_state import TableState
 from .types import ActionSequence, Result
 
 logger = logging.getLogger(__name__)
@@ -48,11 +49,16 @@ class Spot:
 
 @dataclass(frozen=True)
 class Question:
-    """A spot dealt to a hand, with the solver's answer already read."""
+    """A spot dealt to a hand, with the solver's answer already read.
+
+    ``table`` is what the line of play left on the table, when it could be worked out; a
+    tree whose sizings cannot be read still asks its question, without the numbers.
+    """
 
     spot: Spot
     hand: str
     results: list[Result]
+    table: TableState | None = None
 
     def actions(self) -> list[str]:
         """The actions this node offers, which are the only answers to allow."""
@@ -80,20 +86,25 @@ class Session:
     hands: int = 0
     ev_loss: float = 0.0
     pot_loss: float = 0.0
+    #: Hands whose pot could be worked out, which is what the pot ratio averages over.
+    costed_hands: int = 0
     counts: dict[str, int] = field(default_factory=lambda: dict.fromkeys(VERDICTS, 0))
 
-    def record(self, verdict: Verdict, pot: float) -> None:
+    def record(self, verdict: Verdict, pot: float | None) -> None:
         """Add one answer to the tally.
 
         :param verdict: What the answer was worth.
         :param pot: Size of the pot the decision was made into, in big blinds, so the loss
             can be reported as a share of what was at stake rather than in the abstract.
+            ``None`` when the tree's sizings could not be read, in which case the answer
+            still counts and only the ratio abstains.
         """
         self.hands += 1
         self.ev_loss += verdict.loss
         self.counts[verdict.label] += 1
-        if pot > 0:
+        if pot:
             self.pot_loss += verdict.loss / pot
+            self.costed_hands += 1
 
     @property
     def accuracy(self) -> float:
@@ -102,8 +113,12 @@ class Session:
 
     @property
     def average_pot_loss(self) -> float:
-        """Mean EV given up per hand, as a share of the pot played for."""
-        return self.pot_loss / self.hands if self.hands else 0.0
+        """Mean EV given up per hand, as a share of the pot played for.
+
+        Over the hands whose pot is known, not over all of them: a tree whose sizings
+        cannot be read would otherwise drag the ratio down by counting as a nought.
+        """
+        return self.pot_loss / self.costed_hands if self.costed_hands else 0.0
 
 
 def deal(num_cards: int, rng: random.Random | None = None) -> str:

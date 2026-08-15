@@ -257,3 +257,30 @@ def test_a_holdem_key_deals_back_out(key):
 
     assert hand is not None
     assert convert_hand(hand) == key
+
+
+# --------------------------------------------------------------------------------------
+# The tally, when the pot cannot be read
+# --------------------------------------------------------------------------------------
+
+
+def test_an_unreadable_pot_still_counts_the_answer():
+    """The verdict is known even when what it was played for is not."""
+    session = Session()
+
+    session.record(Verdict("Blunder", 1.5, "Fold", "Call"), pot=None)
+
+    assert session.hands == 1
+    assert session.ev_loss == pytest.approx(1.5)
+    assert session.counts["Blunder"] == 1
+
+
+def test_the_pot_ratio_averages_only_over_the_hands_it_knows():
+    """Counting an unknown pot as a nought would drag the ratio down with a non-answer."""
+    session = Session()
+
+    session.record(Verdict("Mistake", 0.5, "Fold", "Call"), pot=2.0)
+    session.record(Verdict("Mistake", 0.5, "Fold", "Call"), pot=None)
+
+    assert session.costed_hands == 1
+    assert session.average_pot_loss == pytest.approx(0.25)
