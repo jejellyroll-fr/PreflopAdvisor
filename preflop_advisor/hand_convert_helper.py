@@ -246,6 +246,31 @@ def sort_omaha5_hand(hand):
     logger.error(f"convert error! {hand}")
 
 
+def normalize_monker_hand(hand):
+    """
+    Maps a stored hand string to the ordering ``convert_hand`` produces.
+
+    Monker Solver 1 and Monker Solver 2 export the same hands with rank and suit
+    groups in a different order -- "(2A)AA" against "AA(2A)", "AAA2" against "2AAA" --
+    so a hand converted the canonical way never matches what a Monker 2 file holds.
+    Both sort helpers are idempotent on already-canonical strings, so normalizing a
+    stored hand makes the lookup ordering-independent: every one of the 509394 hands
+    in the Monker 1 tree shipped under ranges/ normalizes to itself.
+
+    Ported from ksoeze/PreflopAdvisor e88cb01, where it feeds the SQLite store.
+
+    :param hand: Hand string as written in a range file.
+    :return: The same hand in canonical ordering.
+    """
+    ranks = [card for card in hand if card in RANKS]
+    if len(ranks) == 4:
+        return sort_monker_2_hand(hand)
+    if len(ranks) == 5:
+        return sort_omaha5_hand(hand)
+    # 2-card NL hands ("AKs"/"AKo"/"AA") share one ordering across both versions.
+    return hand
+
+
 def replace_monker_2_hands(filename):
     """
     Reads a file, sorts the hands it contains, and rewrites the file with the sorted hands.

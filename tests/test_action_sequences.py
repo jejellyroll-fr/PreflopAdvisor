@@ -180,6 +180,50 @@ def test_cached_and_uncached_reads_agree(hu_tree, tree_configs):
         )
 
 
+def _monker_2_tree(tmp_path, hu_tree, frequency=0.75, ev=1500.0):
+    """A one-node tree whose hand is written the way Monker 2 orders it.
+
+    "(4A)(3K)" is the same hand as the canonical "(3K)(4A)" -- the two solvers emit the
+    suited groups in opposite order -- so a reader that only compares strings finds
+    nothing in this file.
+    """
+    folder = tmp_path / "monker-2"
+    folder.mkdir()
+    (folder / "2.rng").write_text(f"(4A)(3K)\n{frequency};{ev}\n")
+    return dict(hu_tree, folder=str(folder))
+
+
+@pytest.mark.parametrize("cache_size", ["0", "100"])
+def test_a_monker_2_export_is_read_through_its_ordering(tmp_path, hu_tree, tree_configs, cache_size):
+    """Both read paths fall back to the normalized ordering when the direct match misses."""
+    from preflop_advisor.tree_reader_helpers import clear_cache
+
+    clear_cache()
+    tree = _monker_2_tree(tmp_path, hu_tree)
+    processor = ActionProcessor(HU_POSITIONS, tree, dict(tree_configs) | {"cachesize": cache_size})
+
+    action, frequency, ev = processor.get_results(REFERENCE_HAND, [], "SB")[0]
+
+    assert action == "RaisePot"
+    assert frequency == pytest.approx(0.75)
+    assert ev == pytest.approx(1500.0)
+    clear_cache()
+
+
+def test_a_monker_1_export_never_reaches_the_fallback(synthetic_tree, tree_configs, monkeypatch):
+    """The canonical case must not pay for the Monker 2 rescue.
+
+    Normalizing every stored hand up front costs roughly seven times the price of
+    reading the file, so the fallback only runs once a lookup has already missed.
+    """
+    processor = ActionProcessor(HU_POSITIONS, synthetic_tree, dict(tree_configs) | {"cachesize": "0"})
+    calls = []
+    monkeypatch.setattr(processor, "_find_monker_2_entry", lambda *args: calls.append(args) or None)
+
+    assert processor.read_hand("(3K)(4A)", [("SB", "RaisePot")])[0] == "RaisePot"
+    assert calls == []
+
+
 def test_missing_file_degrades_gracefully(synthetic_tree, tree_configs):
     processor = ActionProcessor(HU_POSITIONS, synthetic_tree, tree_configs)
     missing = os.path.join(processor.path, "does-not-exist.rng")

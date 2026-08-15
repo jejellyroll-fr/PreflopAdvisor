@@ -21,6 +21,7 @@ from preflop_advisor.hand_convert_helper import (
     convert_omaha_hand,
     move_plo5_file,
     move_plo5_postflop_file,
+    normalize_monker_hand,
     replace_all_monker_2_files,
     replace_monker_2_hands,
     sort_monker_2_hand,
@@ -206,6 +207,50 @@ def test_sort_monker_2_hand_is_idempotent():
     for hand in ("2QKA", "(98)(T7)", "(QA)(3A)", "AK(23)"):
         once = sort_monker_2_hand(hand)
         assert sort_monker_2_hand(once) == once
+
+
+# --------------------------------------------------------------------------------------
+# Monker 1 / Monker 2 ordering
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "monker_2,monker_1",
+    [
+        ("(3K)(4A)", "(3K)(4A)"),  # already canonical
+        ("(4A)(3K)", "(3K)(4A)"),  # suited groups the other way round
+        ("(2A)AA", "AA(2A)"),  # suited group written first
+        ("AAA2", "2AAA"),  # rainbow, ranks descending
+        ("AAA(2A)", "AAA(2A)"),  # PLO5, already canonical
+        ("A(2A)AA", "AAA(2A)"),  # PLO5, suited group in the middle
+        ("AKs", "AKs"),  # NL: one ordering across both versions
+        ("AA", "AA"),
+    ],
+)
+def test_both_solver_orderings_normalize_to_the_same_key(monker_2, monker_1):
+    assert normalize_monker_hand(monker_2) == monker_1
+
+
+def test_normalizing_is_idempotent():
+    for hand in ("(4A)(3K)", "(2A)AA", "AAA2", "A(2A)AA", "AKs"):
+        once = normalize_monker_hand(hand)
+        assert normalize_monker_hand(once) == once
+
+
+def test_normalizing_leaves_a_monker_1_range_file_untouched(hu_tree):
+    """The shipped tree is a Monker 1 export, so normalization must be a no-op on it.
+
+    That is what makes it safe to apply on the read path: it can only ever rescue a
+    lookup that already missed.
+    """
+    import os
+
+    range_file = os.path.join(hu_tree["folder"], "0.rng")
+    with open(range_file) as handle:
+        hands = [line.strip() for line in handle if ";" not in line and line.strip()]
+
+    assert len(hands) > 10000, "unexpected range file, oracle would be meaningless"
+    assert [normalize_monker_hand(hand) for hand in hands] == hands
 
 
 def test_suits_and_ranks_constants_describe_a_full_deck():
