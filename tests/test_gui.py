@@ -405,13 +405,21 @@ def test_the_card_grid_stops_growing_before_its_buttons_become_slabs(main_window
 
 
 def test_the_divider_position_survives_a_restart(qtbot, main_window):
-    """It is what makes the layout fit a screen this code cannot see."""
+    """It is what makes the layout fit a screen this code cannot see.
+
+    Both windows are shown: a divider is only placed once its page has a real size, and
+    only a placed one is worth saving.
+    """
+    main_window.show()
+    qtbot.wait(20)
     main_window.splitter.setSizes([500, 860])
     moved = main_window.splitter.sizes()
     main_window.save_layout()
 
     reopened = MainWindow()
     qtbot.addWidget(reopened)
+    reopened.show()
+    qtbot.wait(20)
 
     assert reopened.splitter.sizes() == moved
 
