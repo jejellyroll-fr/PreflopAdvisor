@@ -30,7 +30,6 @@ from .settings import ConfigSource, get
 from .trainer import Question, Session, Spot, deal, grade, hand_for_key, playable, spots_for
 from .tree_reader import TreeReader
 from .tree_reader_helpers import ActionProcessor
-from .types import ActionSequence
 
 logger = logging.getLogger(__name__)
 
@@ -180,14 +179,13 @@ class TrainerPanel(QWidget):
             if results:
                 return Question(spot, hand, results)
 
-            node = self.node_of(processor, spot)
-            if node is None:
-                # No file behind this line at all: no hand would find one.
+            # The spot did not answer for that hand. Rather than deal again and hope, ask
+            # what its files hold and deal one of those back out.
+            keys = self.hands_of(processor, spot)
+            if not keys:
+                # Nothing behind this line at all: no hand would find anything.
                 continue
 
-            # The node is there and did not hold that hand. Rather than deal again and
-            # hope, ask it which hands it has and deal one of those back out.
-            keys = sorted(processor.hands_at(node))
             for key in self.rng.sample(keys, min(len(keys), NODE_SAMPLES)):
                 held = hand_for_key(key, self.rng)
                 if held is None:
@@ -199,15 +197,22 @@ class TrainerPanel(QWidget):
         return None
 
     @staticmethod
-    def node_of(processor: ActionProcessor, spot: Spot) -> ActionSequence | None:
-        """The first line of play of this spot the tree has a file for."""
+    def hands_of(processor: ActionProcessor, spot: Spot) -> list[str]:
+        """Every hand any of this spot's action files holds.
+
+        All of them, not the first that exists: a spot is one file per action, and a
+        truncated export can leave an empty Fold beside a Call full of hands. Stopping at
+        the first would let the empty one hide the other, and the spot would be passed
+        over as though the tree had nothing for it.
+        """
+        keys: set[str] = set()
         for action in processor.valid_actions:
             sequence = processor.find_valid_raise_sizes(
                 processor.get_action_sequence([*spot.line, (spot.hero, action)])
             )
             if processor.test_action_sequence(sequence):
-                return sequence
-        return None
+                keys.update(processor.hands_at(sequence))
+        return sorted(keys)
 
     def render_hand(self, hand: str) -> str:
         """The dealt hand, with each suit in its own colour."""

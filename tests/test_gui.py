@@ -797,3 +797,25 @@ def test_a_sparse_holdem_node_is_asked(main_window, tmp_path, monkeypatch):
     question = main_window.trainer.question
     assert question is not None
     assert convert_hand(question.hand) == "AKs"
+
+
+def test_an_empty_action_file_does_not_hide_a_full_one(main_window, tmp_path, monkeypatch):
+    """A spot is one file per action, and a truncated export can leave one of them empty.
+
+    Looking only at the first that exists let the empty Fold hide the Call beside it, and
+    the spot was passed over as though the tree had nothing for it.
+    """
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "lopsided"
+    folder.mkdir()
+    (folder / "0.rng").write_text("")  # Fold: exists, holds nothing
+    (folder / "1.rng").write_text("AAAA\n1.0;4000.0\n")  # Call: holds a hand
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c3d4h5s")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "AAAA"
