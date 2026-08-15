@@ -366,7 +366,12 @@ class MainWindow(QMainWindow):
                 "DefaultTree": "0",
             },
             "TreeReader": {
-                "Positions": "BB,SB,BU,CO,HJ,MP,UTG",
+                # Six-handed here, seven-handed in its own entry, for the same reason the
+                # packaged configuration splits them: trimming the seven-name list down to
+                # six drops UTG and keeps the hijack, and the ranges would then be read
+                # under the wrong seat names.
+                "Positions": "BB,SB,BU,CO,MP,UTG",
+                "Positions7": "BB,SB,BU,CO,HJ,MP,UTG",
             },
         }
         return default_configs.get(section, {})

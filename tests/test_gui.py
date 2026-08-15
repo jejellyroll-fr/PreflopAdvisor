@@ -452,3 +452,18 @@ def test_six_max_keeps_its_own_seat_names(raw_config, hu_tree):
     reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=6), raw_config["TreeReader"])
 
     assert reader.position_list == SIX_MAX
+
+
+@pytest.mark.parametrize("num_players,expected", [(6, SIX_MAX), (7, SEVEN_MAX)])
+def test_the_fallback_configuration_names_seats_correctly_too(main_window, hu_tree, num_players, expected):
+    """The defaults used when config.ini has no [TreeReader] are a configuration as well.
+
+    They carried the seven-name list on its own, which is the arrangement that renames a
+    six-handed table.
+    """
+    main_window.configs.remove_section("TreeReader")
+    defaults = main_window._get_section_config("TreeReader")
+
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=num_players), defaults)
+
+    assert reader.position_list == expected
