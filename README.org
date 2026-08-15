@@ -187,7 +187,7 @@ python standalone.py
 ** Development
 #+BEGIN_SRC sh
 uv sync --extra dev
-uv run pytest              # 310 tests, coverage gate at 90%
+uv run pytest              # 328 tests, coverage gate at 90%
 uv run pytest -m "not slow"  # skip the subprocess smoke test
 uv run ruff check . && uv run ruff format --check .
 uv run preflop_advisor --verbose   # log every range lookup
@@ -195,16 +195,21 @@ uv run preflop_advisor --verbose   # log every range lookup
 
 ** Interface Description
 
-*** Top Left: Card Selector
-Select the desired hand. Clicking a selected card unselects it. Once the hand is full, clicking another card replaces the oldest one rather than clearing the whole selection.
+The window is split in two, input on the left and the results on the right, by a divider
+you can drag. Where you leave it is remembered, along with the window size, so the layout
+follows the screen it is used on. It opens at 1360x660, which fits a 1366x768 display and
+shows a position view without scrolling.
 
-*** Bottom Left: Tree Selector
+*** Left, top: Card Selector
+A row per suit, a column per rank. Select the desired hand. Clicking a selected card unselects it. Once the hand is full, clicking another card replaces the oldest one rather than clearing the whole selection.
+
+*** Left, bottom: Tree Selector
 Displays the list of available trees as configured in =config.ini=. Tooltips provide additional information if configured. Selecting a different tree updates the output for the currently selected hand.
 
-*** Top Middle: Position Selector
+*** Left, bottom: Position Selector
 The default position is "X" for an overview of all positions. Selecting a specific position shows detailed information about that position's strategies, including 4bet and squeeze spots.
 
-*** Top Right: Output Grid
+*** Right: Output Grid
 Top line shows Hand, Position and general Information about the currently selected Tree
 **** General Overview (Position = X)
 First column shows available positions.

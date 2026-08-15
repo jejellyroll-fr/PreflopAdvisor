@@ -4,15 +4,17 @@ import logging
 import os
 from configparser import ConfigParser
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QProgressDialog,
     QSizePolicy,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -27,6 +29,26 @@ from .randomizer import RandomButton
 from .tree_selector import TreeSelector
 
 logger = logging.getLogger(__name__)
+
+#: Identifies the settings store. QSettings writes nothing anywhere until these are set on
+#: the application, so both entry points declare them.
+SETTINGS_ORGANIZATION = "PreflopAdvisor"
+SETTINGS_APPLICATION = "PreflopAdvisor"
+
+#: Where the window remembers its size and the position of its divider. Read through
+#: QSettings, which writes wherever the platform keeps application settings.
+GEOMETRY_KEY = "window/geometry"
+SPLITTER_KEY = "window/splitter"
+
+#: Opening size, when nothing has been remembered yet. Wide rather than tall: the results
+#: are a table, the card grid is four rows, and the screens this runs on are short. Kept
+#: inside 1366x768, the smallest display still common, with room for the window chrome.
+#: The height is the point at which the seven rows of a position view stop needing a
+#: scrollbar; below it they scroll, above it they simply grow.
+DEFAULT_WINDOW_SIZE = (1360, 660)
+#: Opening split. Thirteen card columns give the input side a floor of its own, so this is
+#: about what is left: the results, which are what gets read.
+DEFAULT_SPLIT = (740, 620)
 
 
 class DatabaseProgress:
@@ -130,49 +152,66 @@ class MainWindow(QMainWindow):
         # Assemble layouts
         self.assemble_layouts()
 
-        # Add frames to the main layout
-        main_layout.addWidget(self.input_frame, 0, 0, 1, 1)
-        main_layout.addWidget(self.output_frame, 0, 1, 1, 1)
+        # Input and output are separated by a handle rather than by fixed proportions:
+        # how much room the results deserve against the card grid depends on the screen,
+        # and on whether the tree is heads-up or six-handed.
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(self.input_frame)
+        self.splitter.addWidget(self.output_frame)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setStretchFactor(0, 5)
+        self.splitter.setStretchFactor(1, 5)
+        main_layout.addWidget(self.splitter, 0, 0)
 
-        # Set resizing proportions
-        main_layout.setColumnStretch(0, 3)  # Stretch for the left column (input)
-        main_layout.setColumnStretch(1, 7)  # Stretch for the right column (output)
+        # Set here rather than by the caller: both entry points get the same window, and
+        # __main__ used to show it at whatever the layout demanded -- which was its
+        # minimum, and portrait. No minimum is imposed on top: the layout's own floor is
+        # the honest one, and it moves with the fonts the platform actually renders.
+        self.resize(*DEFAULT_WINDOW_SIZE)
+        self.restore_layout()
 
         # Every component exists: allow refreshes and render the default selection.
         self._ready = True
         self.update_output_frame()
 
+    @staticmethod
+    def section_label(text, size=14, bold=False):
+        """A caption above one of the input sections."""
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignLeft)
+        weight = "font-weight: bold; " if bold else ""
+        label.setStyleSheet(f"font-size: {size}px; {weight}padding: 5px;")
+        return label
+
+    @staticmethod
+    def section(label, widget):
+        """One captioned control, as a column of its own."""
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.addWidget(label)
+        column.addWidget(widget)
+        return column
+
     def assemble_layouts(self):
-        # Add descriptive labels
-        label_hand = QLabel("Choose your hand:")
-        label_hand.setAlignment(Qt.AlignLeft)
-        label_hand.setStyleSheet("font-size: 16px; font-weight: bold; padding: 5px;")
-
-        label_tree = QLabel("Select a game tree:")
-        label_tree.setAlignment(Qt.AlignLeft)
-        label_tree.setStyleSheet("font-size: 14px; padding: 5px;")
-
-        label_random = QLabel("Randomize your choice:")
-        label_random.setAlignment(Qt.AlignLeft)
-        label_random.setStyleSheet("font-size: 14px; padding: 5px;")
-
-        label_position = QLabel("Choose your position:")
-        label_position.setAlignment(Qt.AlignLeft)
-        label_position.setStyleSheet("font-size: 14px; padding: 5px;")
-
         # Ensure components and frames can be resized
         self.input_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.output_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Add components to the input layout with adjusted proportions
-        self.input_layout.addWidget(label_hand)
-        self.input_layout.addWidget(self.card_selector, stretch=8)  # More vertical space
-        self.input_layout.addWidget(label_tree)
-        self.input_layout.addWidget(self.tree_selector, stretch=1)
-        self.input_layout.addWidget(label_random)
-        self.input_layout.addWidget(self.rand_button, stretch=1)
-        self.input_layout.addWidget(label_position)
-        self.input_layout.addWidget(self.position_selector, stretch=1)
+        self.input_layout.addWidget(self.section_label("Choose your hand:", size=16, bold=True))
+        self.input_layout.addWidget(self.card_selector, stretch=8)
+
+        # Tree, roll and position sit on one row rather than stacked. Stacked, their three
+        # captioned blocks cost 348 pixels of height on their own -- as much as the card
+        # grid -- while the width they each need is a fraction of the column's.
+        controls = QHBoxLayout()
+        controls.setSpacing(10)
+        controls.addLayout(self.section(self.section_label("Select a game tree:"), self.tree_selector), stretch=4)
+        controls.addLayout(self.section(self.section_label("Randomize:"), self.rand_button), stretch=2)
+        controls.addLayout(self.section(self.section_label("Choose your position:"), self.position_selector), stretch=5)
+        self.input_layout.addLayout(controls)
+        # Whatever height is left once the card grid has reached its cap goes here, rather
+        # than into stretching the controls.
+        self.input_layout.addStretch(1)
 
         # Add the output component
         self.output_layout.addWidget(self.output)
@@ -212,6 +251,38 @@ class MainWindow(QMainWindow):
         """Whether a selected hand has the right number of cards for the game."""
         expected = {"NL": 4, "PLO": 8, "PLO8": 8, "PLO5": 10}.get(game)
         return expected is not None and len(hand) == expected
+
+    # ------------------------------------------------------------------
+    # Window layout, remembered between sessions
+    # ------------------------------------------------------------------
+
+    def restore_layout(self):
+        """Put the window and its divider back where they were left.
+
+        Nothing is imposed when there is nothing stored: the window keeps the size the
+        caller gave it, and the splitter its stretch factors.
+        """
+        settings = QSettings()
+        geometry = settings.value(GEOMETRY_KEY)
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        divider = settings.value(SPLITTER_KEY)
+        if divider is not None:
+            self.splitter.restoreState(divider)
+        else:
+            # Left to itself the splitter follows the size each side asks for, and the
+            # card grid asks for a lot.
+            self.splitter.setSizes(list(DEFAULT_SPLIT))
+
+    def save_layout(self):
+        """Record where the window and its divider ended up."""
+        settings = QSettings()
+        settings.setValue(GEOMETRY_KEY, self.saveGeometry())
+        settings.setValue(SPLITTER_KEY, self.splitter.saveState())
+
+    def closeEvent(self, event):
+        self.save_layout()
+        super().closeEvent(event)
 
     def report_error(self, message):
         """Surface a problem to the user instead of failing silently."""
@@ -271,8 +342,8 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication([])
+    app.setOrganizationName(SETTINGS_ORGANIZATION)
+    app.setApplicationName(SETTINGS_APPLICATION)
     window = MainWindow()
-    window.resize(1200, 800)  # Initial window size
-    window.setMinimumSize(800, 600)  # Minimum size
     window.show()
     app.exec()

@@ -292,3 +292,81 @@ def test_the_window_registers_a_progress_dialog_for_database_builds(main_window)
         assert isinstance(progress, DatabaseProgress)
     finally:
         progress.close()
+
+
+# --------------------------------------------------------------------------------------
+# Window shape
+# --------------------------------------------------------------------------------------
+
+
+def test_the_card_grid_is_laid_out_four_rows_of_thirteen(card_selector):
+    """Suits down, ranks across: the deck the wide way round.
+
+    Thirteen rows of four made the selector 366 pixels tall on its own, which is what the
+    window could not shrink past on a screen that is short and wide.
+    """
+    layout = card_selector.layout()
+
+    for suit in range(4):
+        for rank in range(13):
+            row, column, _, _ = layout.getItemPosition(layout.indexOf(card_selector.button_list[suit][rank]))
+            assert (row, column) == (suit, rank)
+
+
+def test_a_card_button_keeps_its_place_in_the_deck(qtbot, card_selector):
+    """Laying the grid out the other way must not renumber the cards."""
+    card_selector.set_num_cards(2)
+    click_card(qtbot, card_selector, *ACE_OF_HEARTS)
+
+    assert card_selector.get_hand().startswith("Ah")
+
+
+def test_the_window_opens_wider_than_it_is_tall(main_window):
+    width, height = main_window.width(), main_window.height()
+
+    assert width > height
+    assert height <= 690, "must fit a 1366x768 screen once the chrome is taken off"
+
+
+def test_the_window_can_be_made_short(main_window):
+    """The floor is the layout's own, and it has to clear a laptop screen."""
+    main_window.resize(200, 200)
+
+    assert main_window.minimumSizeHint().height() <= 500
+
+
+def test_enlarging_the_window_does_not_raise_its_floor(main_window):
+    """Fixing each card button to the size it was given made the floor follow the window.
+
+    Once enlarged, the window could never be brought back down: the buttons had adopted
+    their new size as a minimum, and the grid demanded the total.
+    """
+    floor = main_window.card_selector.minimumSizeHint().height()
+
+    main_window.resize(1900, 1200)
+    main_window.card_selector.resize(1800, 900)
+
+    assert main_window.card_selector.minimumSizeHint().height() == floor
+
+
+def test_the_card_grid_stops_growing_before_its_buttons_become_slabs(main_window):
+    """Four rows in a full-height column left each button twice as tall as it was wide."""
+    main_window.resize(1360, 1000)
+    grid = main_window.card_selector
+    grid.resize(760, 800)
+
+    button = grid.button_list[0][0]
+    assert grid.height() <= grid.maximumHeight()
+    assert button.height() < button.width() * 2
+
+
+def test_the_divider_position_survives_a_restart(qtbot, main_window):
+    """It is what makes the layout fit a screen this code cannot see."""
+    main_window.splitter.setSizes([500, 860])
+    moved = main_window.splitter.sizes()
+    main_window.save_layout()
+
+    reopened = MainWindow()
+    qtbot.addWidget(reopened)
+
+    assert reopened.splitter.sizes() == moved
