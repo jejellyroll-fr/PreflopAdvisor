@@ -171,7 +171,11 @@ def convert_omaha5_hand(hand):
 
     # Build the result string
     unsuited_string = "".join(sorted(unsuited_cards, key=lambda x: RANK_ORDER[x]))
-    suited_cards = sorted(suited_cards, key=lambda x: (RANK_ORDER[x[0]], RANK_ORDER[x[1]]))
+    # Ordered on every rank, not just the first two: a 2-card and a 3-card group sharing
+    # their two lowest ranks tied, and the stable sort then fell back to the order the
+    # suits happened to come in. The same hand dealt in other suits keyed differently --
+    # "(24)(248)" against "(248)(24)" -- and one of the two matched no file.
+    suited_cards = sorted(suited_cards, key=lambda group: [RANK_ORDER[rank] for rank in group])
     suited_string = ""
     for item in suited_cards:
         suited_string += "(" + "".join(item) + ")"
@@ -223,6 +227,15 @@ def sort_omaha5_hand(hand):
     """
     Sorts a 5-card Omaha hand to ensure a consistent representation.
     """
+    if "(" not in hand:
+        # Five cards cannot hold five distinct suits, so no solver exports a rainbow
+        # five-card key. It still has to come back as something rather than raise on an
+        # empty group list: the read-path fallback normalizes every line of a file whose
+        # contents it has not validated.
+        if any(card not in RANK_ORDER for card in hand):
+            logger.warning(f"Unknown hand: {hand}")
+            return hand
+        return "".join(sorted(hand, key=lambda x: RANK_ORDER[x]))
     if hand.count("(") == 1:
         # Hand with one suited combination
         suited = re.search(r"\((.+?)\)", hand).group(1)
@@ -236,14 +249,44 @@ def sort_omaha5_hand(hand):
     else:
         # Hand with two suited combinations
         suited = re.findall(r"\((.+?)\)", hand)
-        unsuited = re.sub(r"\((.+?)\)(.*?)\((.+?)\)", "", hand)
+        # Each group is removed on its own. Matching both in one pattern also swallowed
+        # whatever sat between them, so the fifth rank of "(54)A(32)" -- the ordering
+        # Monker 2 writes -- disappeared and the hand came out as "(23)(45)".
+        unsuited = re.sub(r"\((.+?)\)", "", hand)
         suited_list = []
         for item in suited:
             suited_list.append("".join(sorted(item, key=lambda x: RANK_ORDER[x])))
-        suited_list = sorted(suited_list, key=lambda x: (RANK_ORDER[x[0]], RANK_ORDER[x[1]]))
+        # Same full-rank ordering as convert_omaha5_hand: the two must agree, since this
+        # is what a stored hand is normalized to before being compared to a converted one.
+        suited_list = sorted(suited_list, key=lambda group: [RANK_ORDER[rank] for rank in group])
         suited = "(" + "".join(suited_list[0]) + ")" + "(" + "".join(suited_list[1]) + ")"
         return "".join(sorted(unsuited, key=lambda x: RANK_ORDER[x])) + suited
     logger.error(f"convert error! {hand}")
+
+
+def normalize_monker_hand(hand):
+    """
+    Maps a stored hand string to the ordering ``convert_hand`` produces.
+
+    Monker Solver 1 and Monker Solver 2 export the same hands with rank and suit
+    groups in a different order -- "(2A)AA" against "AA(2A)", "AAA2" against "2AAA" --
+    so a hand converted the canonical way never matches what a Monker 2 file holds.
+    Both sort helpers are idempotent on already-canonical strings, so normalizing a
+    stored hand makes the lookup ordering-independent: every one of the 509394 hands
+    in the Monker 1 tree shipped under ranges/ normalizes to itself.
+
+    Ported from ksoeze/PreflopAdvisor e88cb01, where it feeds the SQLite store.
+
+    :param hand: Hand string as written in a range file.
+    :return: The same hand in canonical ordering.
+    """
+    ranks = [card for card in hand if card in RANKS]
+    if len(ranks) == 4:
+        return sort_monker_2_hand(hand)
+    if len(ranks) == 5:
+        return sort_omaha5_hand(hand)
+    # 2-card NL hands ("AKs"/"AKo"/"AA") share one ordering across both versions.
+    return hand
 
 
 def replace_monker_2_hands(filename):

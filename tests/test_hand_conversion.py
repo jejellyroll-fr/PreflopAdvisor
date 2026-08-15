@@ -9,6 +9,7 @@ file, which is what would catch a drift in the Monker format.
 import itertools
 import json
 import random
+import re
 
 import pytest
 
@@ -21,6 +22,7 @@ from preflop_advisor.hand_convert_helper import (
     convert_omaha_hand,
     move_plo5_file,
     move_plo5_postflop_file,
+    normalize_monker_hand,
     replace_all_monker_2_files,
     replace_monker_2_hands,
     sort_monker_2_hand,
@@ -208,6 +210,50 @@ def test_sort_monker_2_hand_is_idempotent():
         assert sort_monker_2_hand(once) == once
 
 
+# --------------------------------------------------------------------------------------
+# Monker 1 / Monker 2 ordering
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "monker_2,monker_1",
+    [
+        ("(3K)(4A)", "(3K)(4A)"),  # already canonical
+        ("(4A)(3K)", "(3K)(4A)"),  # suited groups the other way round
+        ("(2A)AA", "AA(2A)"),  # suited group written first
+        ("AAA2", "2AAA"),  # rainbow, ranks descending
+        ("AAA(2A)", "AAA(2A)"),  # PLO5, already canonical
+        ("A(2A)AA", "AAA(2A)"),  # PLO5, suited group in the middle
+        ("AKs", "AKs"),  # NL: one ordering across both versions
+        ("AA", "AA"),
+    ],
+)
+def test_both_solver_orderings_normalize_to_the_same_key(monker_2, monker_1):
+    assert normalize_monker_hand(monker_2) == monker_1
+
+
+def test_normalizing_is_idempotent():
+    for hand in ("(4A)(3K)", "(2A)AA", "AAA2", "A(2A)AA", "AKs"):
+        once = normalize_monker_hand(hand)
+        assert normalize_monker_hand(once) == once
+
+
+def test_normalizing_leaves_a_monker_1_range_file_untouched(hu_tree):
+    """The shipped tree is a Monker 1 export, so normalization must be a no-op on it.
+
+    That is what makes it safe to apply on the read path: it can only ever rescue a
+    lookup that already missed.
+    """
+    import os
+
+    range_file = os.path.join(hu_tree["folder"], "0.rng")
+    with open(range_file) as handle:
+        hands = [line.strip() for line in handle if ";" not in line and line.strip()]
+
+    assert len(hands) > 10000, "unexpected range file, oracle would be meaningless"
+    assert [normalize_monker_hand(hand) for hand in hands] == hands
+
+
 def test_suits_and_ranks_constants_describe_a_full_deck():
     assert len(RANKS) == 13
     assert len(SUITS) == 4
@@ -228,10 +274,68 @@ def test_suits_and_ranks_constants_describe_a_full_deck():
         ("(98)(T7)", "(7T)(89)"),
         ("(QA)(3A)", "(3A)(QA)"),
         ("AK(23)", "KA(23)"),
+        ("(54)A(32)", "A(23)(45)"),  # singleton between the two groups
+        ("(248)(24)", "(24)(248)"),  # groups sharing their two lowest ranks
     ],
 )
 def test_sort_omaha5_hand_canonicalizes_suited_groups(hand, expected):
     assert sort_omaha5_hand(hand) == expected
+
+
+def test_a_rank_between_two_suited_groups_survives():
+    """Removing both groups with one pattern also removed what sat between them.
+
+    "(54)A(32)" -- the way Monker 2 may order a double-suited PLO5 hand -- came out as
+    "(23)(45)", a four-card hand. The lookup then matched nothing and the advisor
+    reported the action as unavailable.
+    """
+    assert sort_omaha5_hand("(54)A(32)") == convert_hand("5h4hAs3d2d")
+
+
+def test_plo5_suited_groups_are_ordered_on_every_rank():
+    """Two groups sharing their two lowest ranks must not be left to the suit order.
+
+    The key compared only the first two ranks, so "(24)" against "(248)" tied and the
+    stable sort kept whichever suit came first. The same hand dealt in other suits then
+    produced a different key, and one of the two matched no file.
+    """
+    assert convert_hand("2s4s2d4d8d") == convert_hand("2d4d2s4s8s")
+    assert sort_omaha5_hand("(248)(24)") == convert_hand("2s4s2d4d8d")
+
+
+def test_a_five_rank_key_without_a_suited_group_is_sorted_rather_than_fatal():
+    """No solver writes one -- five cards cannot hold five distinct suits.
+
+    It still must not raise: the read-path fallback normalizes every line of a file it
+    has not validated, and an IndexError there would end a lookup that should merely
+    have missed.
+    """
+    assert sort_omaha5_hand("AKQJ2") == "2JQKA"
+    assert normalize_monker_hand("AKQJ2") == "2JQKA"
+
+
+def test_an_unreadable_five_rank_key_is_returned_unchanged():
+    assert sort_omaha5_hand("AKQJZ") == "AKQJZ"
+
+
+def test_every_monker_2_ordering_of_a_plo5_hand_normalizes_to_its_key():
+    """Whatever order a solver writes the tokens in, they must fold back to one key.
+
+    This is the invariant the read-path fallback rests on, and the one that caught both
+    orderings above.
+    """
+    random.seed(20240710)
+    mismatches = []
+    for _ in range(300):
+        canonical = convert_hand("".join(random.sample(DECK, 5)))
+        tokens = re.findall(r"\([^)]*\)|.", canonical)
+        for _ in range(3):
+            shuffled = random.sample(tokens, len(tokens))
+            variant = "".join(shuffled)
+            if normalize_monker_hand(variant) != canonical:
+                mismatches.append((canonical, variant, normalize_monker_hand(variant)))
+
+    assert not mismatches, f"{len(mismatches)} orderings do not normalize back, e.g. {mismatches[:3]}"
 
 
 def test_four_and_five_card_orderings_are_deliberately_different():
