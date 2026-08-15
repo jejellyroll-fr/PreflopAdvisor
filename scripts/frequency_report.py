@@ -281,6 +281,44 @@ def available_trees(ending=RANGE_ENDING):
     )
 
 
+def declared_player_count(tree_folder, tree_infos_section):
+    """Seat count declared for this folder in ``[TreeInfos]``, or ``None`` if unlisted.
+
+    Entries read ``plrs,bb,game,folder,infos``. Folders are compared once resolved, so
+    the relative path of an entry still matches an absolute argument.
+    """
+    if tree_infos_section is None:
+        return None
+
+    target = os.path.realpath(tree_folder)
+    for entry in tree_infos_section.values():
+        fields = [field.strip() for field in entry.split(",")]
+        if len(fields) < 4:
+            continue
+        declared = resolve_range_folder(fields[3])
+        if declared and os.path.realpath(declared) == target:
+            try:
+                return int(fields[0])
+            except ValueError:
+                print(f"Ignoring non-numeric player count in [TreeInfos]: {fields[0]!r}")
+                return None
+    return None
+
+
+def seated_positions(position_list, num_players=None):
+    """Seat the configured positions the way ``TreeReader.init_position_list`` does.
+
+    ``Positions`` is written shortest-stack first, so it is trimmed to the seats the tree
+    actually has and then reversed into acting order -- that order is what
+    ``ActionProcessor`` fills folds against. Handing all six seats to the two-player tree
+    shipped in the checkout asked it for 6-max filenames it does not contain, and the
+    report came back as zeros. A folder absent from ``[TreeInfos]`` -- an export of the
+    user's own -- keeps the full list, since nothing declares its size.
+    """
+    seats = position_list if num_players is None else position_list[:num_players]
+    return list(reversed(seats))
+
+
 def usage(ending=RANGE_ENDING):
     """Usage text listing the trees that are actually present.
 
@@ -336,8 +374,17 @@ def main():
         print(f"No {ending} file in: {tree_folder}\n\n{usage(ending)}")
         return 2
 
+    # has_section, not a dict get: ConfigParser.get() takes a section *and* an option.
+    tree_declarations = config["TreeInfos"] if config.has_section("TreeInfos") else None
+    num_players = declared_player_count(tree_folder, tree_declarations)
+    seats = seated_positions(position_list, num_players)
+
     print(f"Reading ranges from: {tree_folder}")
-    tree_infos = {"folder": tree_folder, "NumPlayers": len(position_list)}
+    if num_players is None:
+        print(f"Not listed in [TreeInfos]; assuming all {len(seats)} seats: {', '.join(seats)}")
+    else:
+        print(f"{num_players}-handed tree: {', '.join(seats)}")
+    tree_infos = {"folder": tree_folder, "NumPlayers": len(seats)}
 
     # Created only once the arguments hold up, so a usage error does not spin up the GUI
     # toolkit; reused when one already exists, since constructing a second raises.
@@ -352,7 +399,7 @@ def main():
             WEIGHTS = pickle.load(f)
 
     window = QMainWindow()
-    viewer = FrequencyViewer(position_list, tree_infos, configs, parent=window)
+    viewer = FrequencyViewer(seats, tree_infos, configs, parent=window)
     window.setCentralWidget(viewer)
     window.setWindowTitle("Frequency Viewer")
     window.setStyleSheet("background-color: #1e1e1e; color: white;")  # Dark theme for the entire application

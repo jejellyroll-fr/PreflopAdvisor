@@ -238,9 +238,15 @@ class TableEntry(QWidget):
         self.setToolTip(tooltip)
 
         if not results:
-            self.info_text.setText(EMPTY_CELL_TEXT)
-            self.info_text.setStyleSheet(f"color: {theme.TEXT_MUTED};")
-            self.info_text.show()
+            if highlight is None:
+                self.info_text.setText(EMPTY_CELL_TEXT)
+                self.info_text.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+                self.info_text.show()
+            else:
+                # A node that only holds a Fold range keeps no tile once Fold is stripped,
+                # yet the roll did land on something. Reading it as unavailable would hide
+                # the selected action just as surely as a highlight matching no tile.
+                self.mark_rolled_action(highlight)
             self.tiles.hide()
             return
 
@@ -255,12 +261,16 @@ class TableEntry(QWidget):
         # the grid never shows. Name it above the tiles instead.
         rolled_but_not_shown = highlight is not None and all(entry[0] != highlight for entry in results)
         if rolled_but_not_shown:
-            self.info_text.setText(f"▸ {short_action_label(highlight)}")
-            self.info_text.setStyleSheet(f"color: {theme.ACCENT}; font-weight: bold;")
-            self.info_text.show()
+            self.mark_rolled_action(highlight)
         else:
             # Otherwise the header line is hidden so the tiles get the whole cell.
             self.info_text.hide()
+
+    def mark_rolled_action(self, action):
+        """Names the action the roll selected, above the tiles."""
+        self.info_text.setText(f"▸ {short_action_label(action)}")
+        self.info_text.setStyleSheet(f"color: {theme.ACCENT}; font-weight: bold;")
+        self.info_text.show()
 
     def displayed_actions(self):
         """Names of the actions currently shown, in display order."""

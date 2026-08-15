@@ -434,6 +434,36 @@ def test_the_fold_marker_clears_on_the_next_render(qtbot):
     assert entry.info_text.isHidden()
 
 
+def test_a_fold_only_node_still_names_the_rolled_fold(qtbot):
+    """A node whose only entry is Fold displays no tile, but the roll still landed.
+
+    ``preprocess_results`` strips Fold, so such a node arrives here with an empty list
+    while the highlight reads "Fold". Treating that as an unavailable cell would print
+    the empty-cell dash and lose the selected action -- the same silence as a highlight
+    matching no tile.
+    """
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+
+    entry.set_result_label([], highlight="Fold")
+
+    assert not entry.info_text.isHidden()
+    assert "Fold" in entry.info_text.text()
+    assert entry.info_text.text() != EMPTY_CELL_TEXT
+    assert theme.ACCENT in entry.info_text.styleSheet()
+
+
+def test_an_empty_cell_with_no_roll_stays_empty(qtbot):
+    """The dash is still the right answer when nothing was rolled."""
+    entry = TableEntry()
+    qtbot.addWidget(entry)
+    entry.set_result_label([], highlight="Fold")
+
+    entry.set_result_label([], highlight=None)
+
+    assert entry.info_text.text() == EMPTY_CELL_TEXT
+
+
 def test_the_roll_reaches_the_grid_as_a_fold_marker(frame, hu_tree):
     """End to end: a roll lands in Fold and the grid says so.
 
