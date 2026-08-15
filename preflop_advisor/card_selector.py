@@ -44,7 +44,7 @@ MIN_BUTTON_WIDTH = 34
 MIN_BUTTON_HEIGHT = 26
 # Largest it is worth making one. Past this the grid is only taking height from the
 # results table, which is the thing that runs out of room first on a seven-handed tree.
-MAX_BUTTON_WIDTH = 40
+MAX_BUTTON_WIDTH = 36
 # Height a button is allowed to reach, as a multiple of its width. A playing card is about
 # this shape, and it keeps the grid from turning into four rows of tall slabs.
 CARD_ASPECT = 1.4

@@ -7,6 +7,7 @@ exactly where the interesting regressions live. These tests click real buttons w
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
 
 from preflop_advisor.card_selector import CardSelector
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
@@ -353,10 +354,20 @@ def test_a_card_button_keeps_its_place_in_the_deck(qtbot, card_selector):
 
 
 def test_the_window_opens_wider_than_it_is_tall(main_window):
-    width, height = main_window.width(), main_window.height()
+    assert main_window.width() > main_window.height()
 
-    assert width > height
-    assert height <= 690, "must fit a 1366x768 screen once the chrome is taken off"
+
+def test_the_window_opens_inside_the_screen_it_is_on(main_window):
+    """A size that fits a 1080p display does not fit a 1366x768 laptop.
+
+    Opening at a fixed height meant one of the two was always wrong: either the window
+    came up taller than the screen, or a display with room for the whole table opened
+    showing four rows of it.
+    """
+    available = QApplication.primaryScreen().availableGeometry()
+
+    assert main_window.height() <= available.height()
+    assert main_window.width() <= max(available.width(), main_window.minimumSizeHint().width())
 
 
 def test_the_window_can_be_made_short(main_window):
@@ -424,7 +435,9 @@ def test_a_seven_handed_overview_fits_across_the_window(qtbot, main_window):
     why the input sits above the table rather than next to it.
     """
     main_window.show()
-    main_window.resize(*DEFAULT_WINDOW_SIZE)
+    # The preferred width, not the opening one: on a screen narrower than this the table
+    # scrolls and should, so what is being pinned down is that 1360 is enough.
+    main_window.resize(DEFAULT_WINDOW_SIZE[0], main_window.height())
     qtbot.wait(20)
 
     main_window.output.create_result_grid(8, 9)

@@ -43,15 +43,19 @@ GEOMETRY_KEY = "window/geometry"
 SPLITTER_KEY = "window/splitter"
 
 #: Opening size, when nothing has been remembered yet. Wide rather than tall: the results
-#: are a table, the card grid is four rows, and the screens this runs on are short. Kept
-#: inside 1366x768, the smallest display still common, with room for the window chrome.
-#: The width is what a seven-handed overview needs: nine columns of 112, which is the
-#: narrowest a cell can be without cutting the numbers in it.
-DEFAULT_WINDOW_SIZE = (1360, 690)
+#: are a table, the card grid is four rows, and the screens this runs on are short. The
+#: width is what a seven-handed overview needs: nine columns of 112, which is the
+#: narrowest a cell can be without cutting the numbers in it. The height is what its eight
+#: rows need. Both are trimmed to the screen, so a 1366x768 laptop opens to what it has
+#: and a larger display opens to a table that fits whole.
+DEFAULT_WINDOW_SIZE = (1360, 1000)
+#: Taken off the screen's usable height for the window's own title bar, which
+#: availableGeometry does not account for.
+WINDOW_CHROME_ALLOWANCE = 40
 #: Opening split, band over table. The band is sized to hold the card grid and no more;
 #: everything else belongs to the results, which is what runs out of room on a seven-
 #: handed tree.
-DEFAULT_SPLIT = (330, 360)
+DEFAULT_SPLIT = (300, 390)
 
 
 class DatabaseProgress:
@@ -182,7 +186,7 @@ class MainWindow(QMainWindow):
         # __main__ used to show it at whatever the layout demanded -- which was its
         # minimum, and portrait. No minimum is imposed on top: the layout's own floor is
         # the honest one, and it moves with the fonts the platform actually renders.
-        self.resize(*DEFAULT_WINDOW_SIZE)
+        self.resize(*self.opening_size())
         self.restore_layout()
 
         # Every component exists: allow refreshes and render the default selection.
@@ -280,6 +284,26 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Window layout, remembered between sessions
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def opening_size():
+        """The size to open at, trimmed to the screen actually attached.
+
+        A fixed size cannot serve both machines this runs on: at the height a seven-handed
+        overview needs, the window would not fit a 1366x768 laptop, and at the height that
+        fits one, a 1080p display would open showing four rows of a table it has room for
+        twice over.
+
+        :return: ``(width, height)``, never larger than the usable screen.
+        """
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return DEFAULT_WINDOW_SIZE
+        available = screen.availableGeometry()
+        return (
+            min(DEFAULT_WINDOW_SIZE[0], available.width()),
+            min(DEFAULT_WINDOW_SIZE[1], available.height() - WINDOW_CHROME_ALLOWANCE),
+        )
 
     def restore_layout(self):
         """Put the window and its divider back where they were left.
