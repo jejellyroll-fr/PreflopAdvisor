@@ -12,7 +12,7 @@ import pytest
 from preflop_advisor.errors import InvalidRaiseSizing
 from preflop_advisor.tree_reader_helpers import ActionProcessor
 
-from .conftest import REFERENCE_HAND
+from .conftest import REFERENCE_HAND, REFERENCE_HAND_MONKER
 
 HU_POSITIONS = ["SB", "BB"]
 
@@ -240,10 +240,53 @@ def test_a_monker_1_export_never_reaches_the_fallback(synthetic_tree, tree_confi
     """
     processor = ActionProcessor(HU_POSITIONS, synthetic_tree, dict(tree_configs) | {"cachesize": "0"})
     calls = []
-    monkeypatch.setattr(processor, "_find_monker_2_entry", lambda *args: calls.append(args) or None)
+    monkeypatch.setattr(processor, "_normalized_entries", lambda *args: calls.append(args) or {})
 
     assert processor.read_hand("(3K)(4A)", [("SB", "RaisePot")])[0] == "RaisePot"
     assert calls == []
+
+
+def test_the_monker_2_index_is_built_once_per_cached_file(tmp_path, hu_tree, tree_configs):
+    """A Monker 2 tree misses the direct lookup every time, so the index has to be kept.
+
+    Rebuilding it per action and per hand puts the whole file back through the converter
+    on each one -- 18.5ms a piece on a file of the shipped tree, seconds across a grid.
+    """
+    from preflop_advisor.tree_reader_helpers import NORMALIZED_CACHE, clear_cache
+
+    clear_cache()
+    tree = _monker_2_tree(tmp_path, hu_tree)
+    processor = ActionProcessor(HU_POSITIONS, tree, dict(tree_configs))
+    builds = []
+    original = processor._normalized_entries
+    processor._normalized_entries = lambda entries: builds.append(entries) or original(entries)
+
+    for _ in range(3):
+        processor.read_hand_with_cache(REFERENCE_HAND_MONKER, [("SB", "RaisePot")])
+
+    assert len(builds) == 1
+    assert len(NORMALIZED_CACHE) == 1
+    clear_cache()
+
+
+def test_evicting_a_cached_file_drops_its_monker_2_index(tmp_path, hu_tree, tree_configs):
+    from preflop_advisor.tree_reader_helpers import CACHE, NORMALIZED_CACHE, clear_cache
+
+    clear_cache()
+    folder = tmp_path / "monker-2-pair"
+    folder.mkdir()
+    for stem in ("0", "2"):
+        (folder / f"{stem}.rng").write_text("(4A)(3K)\n0.5;10.0\n")
+    processor = ActionProcessor(
+        HU_POSITIONS, dict(hu_tree, folder=str(folder)), dict(tree_configs) | {"cachesize": "1"}
+    )
+
+    for sequence in ([("SB", "Fold")], [("SB", "RaisePot")]):
+        processor.read_hand_with_cache(REFERENCE_HAND_MONKER, sequence)
+
+    assert len(CACHE) == 1
+    assert set(NORMALIZED_CACHE) <= set(CACHE)
+    clear_cache()
 
 
 def test_missing_file_degrades_gracefully(synthetic_tree, tree_configs):
