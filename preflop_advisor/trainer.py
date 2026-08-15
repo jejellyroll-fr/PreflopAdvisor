@@ -14,6 +14,7 @@ best one, in big blinds, and that is what a player can act on.
 
 import logging
 import random
+import re
 from dataclasses import dataclass, field
 
 from .types import ActionSequence, Result
@@ -127,6 +128,35 @@ def spots_for(seats: list[str]) -> list[Spot]:
                 )
             )
     return spots
+
+
+def hand_for_key(key: str, rng: random.Random | None = None) -> str | None:
+    """A concrete hand that the converter turns back into this stored key.
+
+    Range files hold hands in the solver's canonical form -- ``"(3K)(4A)"``, ``"2QKA"`` --
+    which names ranks and which of them share a suit, never the suits themselves. To ask a
+    node about a hand it holds, one of the hands behind the key has to be dealt back out:
+    each parenthesised group takes a suit of its own, and so does each loose rank, since
+    two loose ranks sharing one would have been written as a group.
+
+    The result is checked by converting it back. A key that does not survive the round trip
+    is not one this can deal, and is skipped rather than guessed at.
+
+    :return: A hand such as ``"3hKh4sAs"``, or ``None`` if the key cannot be realised.
+    """
+    from .hand_convert_helper import convert_hand
+
+    source = rng or random
+    groups = re.findall(r"\(([^)]*)\)|(.)", key)
+    ranks_by_group = [suited or loose for suited, loose in groups]
+    if not ranks_by_group or len(ranks_by_group) > len(SUITS):
+        return None
+    if any(rank not in RANKS for group in ranks_by_group for rank in group):
+        return None
+
+    suits = source.sample(SUITS, len(ranks_by_group))
+    hand = "".join(rank + suit for group, suit in zip(ranks_by_group, suits) for rank in group)
+    return hand if convert_hand(hand) == key else None
 
 
 def playable(results: list[Result]) -> list[Result]:

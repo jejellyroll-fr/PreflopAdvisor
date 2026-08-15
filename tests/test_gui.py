@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from preflop_advisor.card_selector import CardSelector
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
+from preflop_advisor.hand_convert_helper import convert_hand
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.tree_reader import TreeReader
@@ -674,10 +675,12 @@ def test_a_tree_with_nothing_to_drill_says_so(main_window, monkeypatch):
     assert "No spot" in main_window.trainer.spot_label.text()
 
 
-def test_a_hand_the_file_does_not_hold_is_not_asked(main_window, tmp_path):
-    """The node exists, the hand is not in it, and the answer comes back empty-named.
+def test_a_question_never_carries_a_nameless_action(main_window, tmp_path):
+    """A node that lacks the hand dealt answers ["", 0.0, 0.0] -- a placeholder.
 
-    Asked, it renders a nameless button and grades whatever is pressed as costing nothing.
+    Asked as it stands, it renders a nameless button and grades whatever is pressed as
+    costing nothing. The sparse tree here holds one hand, so the question that comes back
+    is about that hand, and every action in it is named.
     """
     folder = tmp_path / "sparse"
     folder.mkdir()
@@ -686,8 +689,11 @@ def test_a_hand_the_file_does_not_hold_is_not_asked(main_window, tmp_path):
 
     main_window.trainer.next_hand()
 
-    assert main_window.trainer.question is None
-    assert main_window.trainer.buttons == []
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "AAAA"
+    assert all(question.actions()), "no action of a question may be nameless"
+    assert all(button.text() for button in main_window.trainer.buttons)
 
 
 def test_a_selector_with_no_configured_tree_says_so_rather_than_raising(qtbot, raw_config):
@@ -719,36 +725,27 @@ def test_the_trainer_asks_for_a_tree_when_none_is_configured(main_window, monkey
     assert "tree" in main_window.trainer.spot_label.text().lower()
 
 
-def test_a_node_that_holds_some_hands_is_tried_again(main_window, tmp_path, monkeypatch):
-    """A truncated export holds part of a node, and one deal may miss it.
+def test_a_node_holding_one_hand_is_still_asked(main_window, tmp_path, monkeypatch):
+    """A truncated export may hold a handful of a node's sixteen thousand hands.
 
-    Left at a single hand per spot, such a tree was called empty while it had questions in
-    it -- and a node whose file exists is exactly where another deal can pay.
+    Dealing at random would miss them however many times it tried, so the node is asked
+    which hands it has and one of those is dealt back out.
     """
     from preflop_advisor import trainer_panel
 
     folder = tmp_path / "partial"
     folder.mkdir()
-    # "(3K)(4A)" is what AhKs4h3s converts to; the file holds that hand and no other.
+    # One hand in the whole tree: "(3K)(4A)", which is what AhKs4h3s converts to.
     (folder / "1.rng").write_text("(3K)(4A)\n1.0;4000.0\n")
     main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
-
-    # Misses first, then the hand the file holds -- and it keeps giving it, because the
-    # catalogue is walked in a random order and how many deals come before is not fixed.
-    misses = [2]
-
-    def dealt(cards, rng):
-        if misses[0]:
-            misses[0] -= 1
-            return "2c3d4h5s"
-        return "AhKs4h3s"
-
-    monkeypatch.setattr(trainer_panel, "deal", dealt)
+    # Every random deal misses, as it would in practice.
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c3d4h5s")
 
     main_window.trainer.next_hand()
 
-    assert main_window.trainer.question is not None
-    assert main_window.trainer.question.hand == "AhKs4h3s"
+    question = main_window.trainer.question
+    assert question is not None, "the node holds a hand, so it has a question in it"
+    assert convert_hand(question.hand) == "(3K)(4A)"
 
 
 def test_a_line_with_no_file_is_not_dealt_again(main_window, tmp_path, monkeypatch):

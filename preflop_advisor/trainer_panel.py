@@ -27,17 +27,19 @@ from . import theme
 from .errors import PreflopAdvisorError
 from .outputframe import CHIPS_PER_BB, ActionTile, short_action_label
 from .settings import ConfigSource, get
-from .trainer import Question, Session, deal, grade, playable, spots_for
+from .trainer import Question, Session, Spot, deal, grade, hand_for_key, playable, spots_for
 from .tree_reader import TreeReader
+from .tree_reader_helpers import ActionProcessor
+from .types import ActionSequence
 
 logger = logging.getLogger(__name__)
 
 #: Cards per hand, by the game a tree declares. Matches what the card selector offers.
 CARDS_PER_GAME = {"NL": 2, "PLO": 4, "PLO8": 4, "PLO5": 5}
-#: How many hands to try on a node that exists before moving to the next spot. A whole
-#: export holds every hand of every node it has, so this only matters for a truncated
-#: one -- and it is what stops such a tree being called empty when it is not.
-HANDS_PER_SPOT = 5
+#: How many of a node's own hands to try when a randomly dealt one was not in it. Drawn
+#: from what the node holds, so the first realisable one answers; the rest is headroom for
+#: a key the converter cannot deal back out.
+NODE_SAMPLES = 8
 #: Height of the revealed strategy tiles. They read at a glance; they do not need the
 #: whole panel, and the room below is where the tally sits.
 TILE_HEIGHT = 120
@@ -160,30 +162,51 @@ class TrainerPanel(QWidget):
         be declared empty better than half the time. Every spot is looked at once before
         saying the tree has nothing to drill.
 
-        A spot whose node exists but did not hold the hand dealt is tried again with
-        another, up to ``HANDS_PER_SPOT``, since a truncated export holds some hands of a
-        node and not others. A spot with no node at all is left after one look: another
-        hand cannot conjure a file. That keeps the sweep to one lookup per absent line,
-        and spends the retries only where they can pay.
+        A spot whose node exists but did not hold the hand dealt is asked which hands it
+        does hold, and one of those is dealt back out. Dealing again at random would not
+        do: a node of a truncated export may hold a handful of the sixteen thousand, and
+        five more draws would miss them as surely as the first. A spot with no node at all
+        is left after one look, since no hand can conjure a file.
         """
         reader = TreeReader("", "", tree, self.tree_reader_configs)
         cards = CARDS_PER_GAME.get(str(tree.get("game", "PLO")).upper(), 4)
         spots = spots_for(reader.position_list)
         self.rng.shuffle(spots)
 
+        processor = reader.action_processor
         for spot in spots:
-            for _ in range(HANDS_PER_SPOT):
-                hand = deal(cards, self.rng)
-                answered = reader.action_processor.get_results(hand, spot.line, spot.hero)
-                if not answered:
-                    # No file behind this line at all: another hand would not find one.
-                    break
-                results = playable(answered)
+            hand = deal(cards, self.rng)
+            results = playable(processor.get_results(hand, spot.line, spot.hero))
+            if results:
+                return Question(spot, hand, results)
+
+            node = self.node_of(processor, spot)
+            if node is None:
+                # No file behind this line at all: no hand would find one.
+                continue
+
+            # The node is there and did not hold that hand. Rather than deal again and
+            # hope, ask it which hands it has and deal one of those back out.
+            keys = sorted(processor.hands_at(node))
+            for key in self.rng.sample(keys, min(len(keys), NODE_SAMPLES)):
+                held = hand_for_key(key, self.rng)
+                if held is None:
+                    continue
+                results = playable(processor.get_results(held, spot.line, spot.hero))
                 if results:
-                    return Question(spot, hand, results)
-                # The node is there but does not hold that hand, which a truncated export
-                # does. Only here is another deal worth its cost.
+                    return Question(spot, held, results)
         logger.warning("No spot of %s answered", tree.get("folder"))
+        return None
+
+    @staticmethod
+    def node_of(processor: ActionProcessor, spot: Spot) -> ActionSequence | None:
+        """The first line of play of this spot the tree has a file for."""
+        for action in processor.valid_actions:
+            sequence = processor.find_valid_raise_sizes(
+                processor.get_action_sequence([*spot.line, (spot.hero, action)])
+            )
+            if processor.test_action_sequence(sequence):
+                return sequence
         return None
 
     def render_hand(self, hand: str) -> str:

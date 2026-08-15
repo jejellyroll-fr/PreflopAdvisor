@@ -206,6 +206,15 @@ class ActionProcessor:
             logger.error("Error reading file %s: %s", filename, error)
         return hand_info_hash
 
+    def hands_at(self, action_sequence: ActionSequence) -> list[str]:
+        """The hands a node holds, as its file stores them.
+
+        Asked when a hand has to be one the node actually has, rather than one dealt at
+        random and hoped for -- which a truncated export does not answer.
+        """
+        filename = os.path.join(self.path, self.get_filename(action_sequence))
+        return list(self.read_file_into_hash(filename))
+
     def get_action_sequence(self, action_list: ActionSequence) -> ActionSequence:
         """
         Generates a complete action sequence by filling in with 'Fold'.

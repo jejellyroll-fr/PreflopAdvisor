@@ -10,6 +10,7 @@ import random
 
 import pytest
 
+from preflop_advisor.hand_convert_helper import convert_hand
 from preflop_advisor.trainer import (
     DECK,
     Question,
@@ -17,6 +18,7 @@ from preflop_advisor.trainer import (
     Verdict,
     deal,
     grade,
+    hand_for_key,
     playable,
     spots_for,
 )
@@ -200,3 +202,45 @@ def test_the_real_actions_of_a_half_answered_node_are_kept():
     node = [["", 0.0, 0.0], ["Call", 1.0, 400.0]]
 
     assert playable(node) == [["Call", 1.0, 400.0]]
+
+
+# --------------------------------------------------------------------------------------
+# Dealing a hand back out of a stored key
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", ["AAAA", "2QKA", "AA(2A)", "(3K)(4A)", "KA(23)"])
+def test_a_stored_key_deals_back_out_to_a_hand_that_converts_to_it(key):
+    """Range files name ranks and which share a suit, never the suits themselves."""
+    hand = hand_for_key(key, random.Random(3))
+
+    assert hand is not None
+    assert convert_hand(hand) == key
+
+
+def test_every_key_of_a_real_range_file_can_be_dealt(hu_tree):
+    """The whole of a shipped file, since this is what lets a sparse node be asked."""
+    import os
+
+    rng = random.Random(11)
+    with open(os.path.join(hu_tree["folder"], "0.rng")) as handle:
+        keys = [line.strip() for line in handle if ";" not in line and line.strip()]
+
+    assert len(keys) > 10000
+    assert [key for key in keys if hand_for_key(key, rng) is None] == []
+
+
+def test_a_key_that_is_not_a_hand_is_refused():
+    assert hand_for_key("nonsense", random.Random(1)) is None
+    assert hand_for_key("", random.Random(1)) is None
+
+
+def test_a_key_in_the_wrong_order_is_refused_rather_than_guessed_at():
+    """Loose ranks are stored ascending, so "AK(23)" is not a key any file holds.
+
+    Dealing a hand for it anyway would produce one the node does not have, and the
+    question would come back empty -- which is what the round trip through the converter
+    is there to prevent.
+    """
+    assert hand_for_key("AK(23)", random.Random(1)) is None
+    assert hand_for_key("KA(23)", random.Random(1)) is not None
