@@ -19,6 +19,7 @@ Two deliberate departures from ksoeze/PreflopAdvisor e88cb01, which this is port
   which cannot be reconciled with rebuilding it when they change.
 """
 
+import hashlib
 import logging
 import os
 import sqlite3
@@ -94,22 +95,25 @@ def get_store(folder, ending):
 
 
 def tree_fingerprint(folder, ending):
-    """Identify the state of a folder's range files: how many, and the newest mtime.
+    """Identify the state of a folder's range files: each one's name, size and mtime.
 
-    Enough to notice a re-export, which is the case that matters: a database nobody
-    checks keeps answering with the ranges the solver has since replaced, and nothing on
-    screen says so.
+    Every file, not merely how many there are and which is the newest. Putting one file
+    back from an older export leaves both of those untouched, and the stale database
+    would go on being accepted -- answering with ranges the solver has replaced, which is
+    the one thing nothing here may do.
 
     :return: An opaque string to compare against the one stored in the database.
     """
-    count = 0
-    newest = 0
     with os.scandir(folder) as entries:
-        for entry in entries:
-            if entry.name.endswith(ending) and entry.is_file():
-                count += 1
-                newest = max(newest, entry.stat().st_mtime_ns)
-    return f"{count}:{newest}"
+        files = sorted(
+            (entry.name, entry.stat().st_size, entry.stat().st_mtime_ns)
+            for entry in entries
+            if entry.name.endswith(ending) and entry.is_file()
+        )
+    digest = hashlib.sha256()
+    for name, size, mtime in files:
+        digest.update(f"{name}:{size}:{mtime}\n".encode())
+    return f"{len(files)}:{digest.hexdigest()}"
 
 
 def parse_range_file(path):
@@ -188,9 +192,10 @@ class TreeStore:
     def build(self, fingerprint):
         """Ingest every range file of the folder, publishing the result atomically.
 
-        The database is written aside and renamed over the old one, so an interrupted
-        build leaves the previous database -- or no database -- rather than a half-filled
-        one that would answer with part of the tree.
+        The database is written aside and renamed over the old one, so a build that fails
+        -- a file that cannot be read, an interrupted run -- leaves the previous database,
+        or no database, rather than a half-filled one that would answer with part of the
+        tree and record a fingerprint saying it is current.
         """
         paths = sorted(
             entry.path for entry in os.scandir(self.folder) if entry.name.endswith(self.ending) and entry.is_file()
@@ -225,19 +230,28 @@ class TreeStore:
                 conn.close()
             os.replace(temporary, self.db_path)
         finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
             if progress is not None:
                 progress.close()
 
     def _ingest(self, conn, path):
-        """Load one range file into the open database."""
+        """Load one range file into the open database.
+
+        Rows are streamed rather than collected: the files this is meant for run to
+        hundreds of megabytes, and holding one of them as Python tuples costs several
+        times its size -- the memory the database is there to stop using.
+
+        A file that cannot be read is *not* skipped. Skipping it would publish a database
+        missing a node the folder still shows, so the line stays selectable and comes back
+        empty. Letting the error out aborts the build, and :func:`get_store` degrades to
+        reading the range files, which is where that node still is.
+        """
         basename = os.path.basename(path)
-        try:
-            rows = [(basename, hand, frequency, ev) for hand, frequency, ev in parse_range_file(path)]
-        except OSError as error:
-            logger.error("Failed reading %s: %s", path, error)
-            return
-        if rows:
-            conn.executemany("INSERT OR REPLACE INTO hands(filename, hand, freq, ev) VALUES (?,?,?,?)", rows)
+        conn.executemany(
+            "INSERT OR REPLACE INTO hands(filename, hand, freq, ev) VALUES (?,?,?,?)",
+            ((basename, hand, frequency, ev) for hand, frequency, ev in parse_range_file(path)),
+        )
 
     def close(self):
         """Release the connection."""

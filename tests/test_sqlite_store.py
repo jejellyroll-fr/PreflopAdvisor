@@ -6,6 +6,7 @@ covers what a database adds that a file does not have -- going stale, being unwr
 being half-written.
 """
 
+import inspect
 import os
 import sqlite3
 
@@ -129,6 +130,28 @@ def test_an_added_range_file_rebuilds_the_database(small_tree):
     assert store.has_file("1.rng")
 
 
+def test_restoring_an_older_file_rebuilds_the_database(small_tree):
+    """Neither the file count nor the newest mtime moves, so both have to be looked past.
+
+    Putting one file back from an older export is an ordinary thing to do, and it used to
+    leave the database in place, serving the ranges that file no longer holds.
+    """
+    sqlite_store.get_store(small_tree, ".rng")
+    sqlite_store.clear_stores()
+    newest = max(
+        os.stat(os.path.join(small_tree, name)).st_mtime_ns for name in os.listdir(small_tree) if name.endswith(".rng")
+    )
+
+    path = os.path.join(small_tree, "2.rng")
+    with open(path, "w") as handle:
+        handle.write(f"{REFERENCE_HAND_MONKER}\n0.99;-7.0\n")
+    os.utime(path, ns=(newest - 10**9, newest - 10**9))  # older than the newest file
+
+    store = sqlite_store.get_store(small_tree, ".rng")
+
+    assert store.lookup_hand("2.rng", REFERENCE_HAND_MONKER) == pytest.approx((0.99, -7.0))
+
+
 def test_an_untouched_tree_is_not_rebuilt(small_tree):
     sqlite_store.get_store(small_tree, ".rng")
     sqlite_store.clear_stores()
@@ -176,6 +199,49 @@ def test_an_unwritable_folder_gives_no_store_rather_than_an_error(small_tree, mo
     monkeypatch.setattr(sqlite_store.sqlite3, "connect", refuse)
 
     assert sqlite_store.get_store(small_tree, ".rng") is None
+
+
+def test_a_range_file_that_cannot_be_read_aborts_the_build(small_tree, monkeypatch):
+    """Skipping it would publish a database the folder disagrees with.
+
+    The node stays visible -- it is indexed from the folder, where the file still is --
+    so the line remains selectable and every lookup for it comes back empty, with a
+    fingerprint recorded saying the database is current. Failing instead sends the reader
+    back to the range files, which is where that node can still be read.
+    """
+    real_open = open
+
+    def refuse_one(path, *args, **kwargs):
+        if str(path).endswith("2.rng"):
+            raise OSError("input/output error")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", refuse_one)
+
+    assert sqlite_store.get_store(small_tree, ".rng") is None
+    assert not os.path.exists(database_of(small_tree))
+
+
+def test_rows_are_streamed_into_the_database(small_tree):
+    """A range file is not held in memory to be inserted.
+
+    The exports this exists for run to hundreds of megabytes, and materializing one as
+    Python tuples costs several times that -- the memory the database is there to save.
+    """
+
+    class Recorder:
+        parameters = None
+
+        def executemany(self, statement, parameters):
+            self.parameters = parameters
+
+    recorder = Recorder()
+    store = sqlite_store.TreeStore(small_tree, ".rng")
+
+    store._ingest(recorder, os.path.join(small_tree, "0.rng"))
+
+    assert inspect.isgenerator(recorder.parameters)
+    assert next(recorder.parameters)[0] == "0.rng"
 
 
 def test_an_interrupted_build_leaves_no_database(small_tree, monkeypatch):
