@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 RANKS = list("AKQJT98765432")
 SUITS = list("cdhs")
 DECK = [rank + suit for rank in RANKS for suit in SUITS]
+#: What a hold'em key uses instead of parentheses to say whether the two cards share a suit.
+HOLDEM_SUFFIXES = ("s", "o")
+#: Shared source for callers that do not bring their own, so the type of a deal is one
+#: thing rather than "a Random, or else the random module".
+_RANDOM = random.Random()
 
 #: How much EV a choice may give up and still count as each verdict, in big blinds.
 #: Anything under the first is the solver's own play, near enough to be indistinguishable.
@@ -103,7 +108,7 @@ class Session:
 
 def deal(num_cards: int, rng: random.Random | None = None) -> str:
     """A random hand of that many cards, as ``"AhKs4h3s"``."""
-    source = rng or random
+    source = rng or _RANDOM
     return "".join(source.sample(DECK, num_cards))
 
 
@@ -142,12 +147,24 @@ def hand_for_key(key: str, rng: random.Random | None = None) -> str | None:
     The result is checked by converting it back. A key that does not survive the round trip
     is not one this can deal, and is skipped rather than guessed at.
 
+    The key is normalised first. Monker 2 writes the same hand in another order --
+    ``"AK(23)"`` where Monker 1 writes ``"KA(23)"`` -- and a file holds whichever its
+    solver produced, so a raw key would otherwise be refused and its node skipped.
+
     :return: A hand such as ``"3hKh4sAs"``, or ``None`` if the key cannot be realised.
     """
-    from .hand_convert_helper import convert_hand
+    from .hand_convert_helper import convert_hand, normalize_monker_hand
 
-    source = rng or random
-    groups = re.findall(r"\(([^)]*)\)|(.)", key)
+    source = rng or _RANDOM
+    try:
+        canonical = normalize_monker_hand(key)
+    except (AttributeError, IndexError, KeyError):
+        return None
+
+    if len(canonical) == 3 and canonical[-1] in HOLDEM_SUFFIXES:
+        return holdem_hand_for_key(canonical, source)
+
+    groups = re.findall(r"\(([^)]*)\)|(.)", canonical)
     ranks_by_group = [suited or loose for suited, loose in groups]
     if not ranks_by_group or len(ranks_by_group) > len(SUITS):
         return None
@@ -156,6 +173,28 @@ def hand_for_key(key: str, rng: random.Random | None = None) -> str | None:
 
     suits = source.sample(SUITS, len(ranks_by_group))
     hand = "".join(rank + suit for group, suit in zip(ranks_by_group, suits) for rank in group)
+    return hand if convert_hand(hand) == canonical else None
+
+
+def holdem_hand_for_key(key: str, source: random.Random) -> str | None:
+    """A two-card hand for a hold'em key such as ``"AKs"`` or ``"AKo"``.
+
+    Those carry their suitedness in a letter rather than in parentheses, so the group
+    parser reads the ``s`` or the ``o`` as a rank and refuses the whole key -- which left
+    a hold'em node unaskable unless its key was a pair.
+    """
+    from .hand_convert_helper import convert_hand
+
+    high, low, suffix = key[0], key[1], key[2]
+    if high not in RANKS or low not in RANKS:
+        return None
+
+    if suffix == "s":
+        suit = source.choice(SUITS)
+        hand = f"{high}{suit}{low}{suit}"
+    else:
+        first, second = source.sample(SUITS, 2)
+        hand = f"{high}{first}{low}{second}"
     return hand if convert_hand(hand) == key else None
 
 

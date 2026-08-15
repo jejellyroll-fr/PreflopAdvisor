@@ -235,12 +235,25 @@ def test_a_key_that_is_not_a_hand_is_refused():
     assert hand_for_key("", random.Random(1)) is None
 
 
-def test_a_key_in_the_wrong_order_is_refused_rather_than_guessed_at():
-    """Loose ranks are stored ascending, so "AK(23)" is not a key any file holds.
+def test_a_monker_2_key_is_dealt_through_its_canonical_form():
+    """Monker 2 writes "AK(23)" where Monker 1 writes "KA(23)", and files hold either.
 
-    Dealing a hand for it anyway would produce one the node does not have, and the
-    question would come back empty -- which is what the round trip through the converter
-    is there to prevent.
+    Refusing the raw spelling would skip a node of a Monker 2 export entirely -- the very
+    trees the read path already normalises for.
     """
-    assert hand_for_key("AK(23)", random.Random(1)) is None
-    assert hand_for_key("KA(23)", random.Random(1)) is not None
+    hand = hand_for_key("AK(23)", random.Random(1))
+
+    assert hand is not None
+    assert convert_hand(hand) == "KA(23)"
+
+
+@pytest.mark.parametrize("key", ["AKs", "AKo", "AA", "22", "T9s"])
+def test_a_holdem_key_deals_back_out(key):
+    """Two-card keys carry suitedness in a letter, not in parentheses.
+
+    Read as ranks, the "s" and the "o" made every hold'em key unrealisable but a pair.
+    """
+    hand = hand_for_key(key, random.Random(2))
+
+    assert hand is not None
+    assert convert_hand(hand) == key

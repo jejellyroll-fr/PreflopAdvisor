@@ -763,3 +763,37 @@ def test_a_line_with_no_file_is_not_dealt_again(main_window, tmp_path, monkeypat
     main_window.trainer.next_hand()
 
     assert deals == [1], "one look at a line that has no ranges behind it"
+
+
+def test_a_sparse_monker_2_node_is_asked(main_window, tmp_path, monkeypatch):
+    """The file holds the Monker 2 spelling, which the reader normalises on the way in."""
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "monker2"
+    folder.mkdir()
+    (folder / "1.rng").write_text("AK(23)\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c3d4h5s")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "KA(23)"
+
+
+def test_a_sparse_holdem_node_is_asked(main_window, tmp_path, monkeypatch):
+    """A two-card tree, whose keys carry their suitedness in a letter."""
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "holdem"
+    folder.mkdir()
+    (folder / "1.rng").write_text("AKs\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "NL", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c7d")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "AKs"
