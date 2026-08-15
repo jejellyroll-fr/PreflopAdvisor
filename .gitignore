@@ -60,6 +60,11 @@ coverage.xml
 local_settings.py
 db.sqlite3
 
+# PreflopAdvisor: per-tree-folder SQLite hand-lookup store (generated on first run)
+preflop.db
+preflop.db-wal
+preflop.db-shm
+
 # Flask stuff:
 instance/
 .webassets-cache
