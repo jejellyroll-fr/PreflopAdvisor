@@ -171,7 +171,11 @@ def convert_omaha5_hand(hand):
 
     # Build the result string
     unsuited_string = "".join(sorted(unsuited_cards, key=lambda x: RANK_ORDER[x]))
-    suited_cards = sorted(suited_cards, key=lambda x: (RANK_ORDER[x[0]], RANK_ORDER[x[1]]))
+    # Ordered on every rank, not just the first two: a 2-card and a 3-card group sharing
+    # their two lowest ranks tied, and the stable sort then fell back to the order the
+    # suits happened to come in. The same hand dealt in other suits keyed differently --
+    # "(24)(248)" against "(248)(24)" -- and one of the two matched no file.
+    suited_cards = sorted(suited_cards, key=lambda group: [RANK_ORDER[rank] for rank in group])
     suited_string = ""
     for item in suited_cards:
         suited_string += "(" + "".join(item) + ")"
@@ -236,11 +240,16 @@ def sort_omaha5_hand(hand):
     else:
         # Hand with two suited combinations
         suited = re.findall(r"\((.+?)\)", hand)
-        unsuited = re.sub(r"\((.+?)\)(.*?)\((.+?)\)", "", hand)
+        # Each group is removed on its own. Matching both in one pattern also swallowed
+        # whatever sat between them, so the fifth rank of "(54)A(32)" -- the ordering
+        # Monker 2 writes -- disappeared and the hand came out as "(23)(45)".
+        unsuited = re.sub(r"\((.+?)\)", "", hand)
         suited_list = []
         for item in suited:
             suited_list.append("".join(sorted(item, key=lambda x: RANK_ORDER[x])))
-        suited_list = sorted(suited_list, key=lambda x: (RANK_ORDER[x[0]], RANK_ORDER[x[1]]))
+        # Same full-rank ordering as convert_omaha5_hand: the two must agree, since this
+        # is what a stored hand is normalized to before being compared to a converted one.
+        suited_list = sorted(suited_list, key=lambda group: [RANK_ORDER[rank] for rank in group])
         suited = "(" + "".join(suited_list[0]) + ")" + "(" + "".join(suited_list[1]) + ")"
         return "".join(sorted(unsuited, key=lambda x: RANK_ORDER[x])) + suited
     logger.error(f"convert error! {hand}")

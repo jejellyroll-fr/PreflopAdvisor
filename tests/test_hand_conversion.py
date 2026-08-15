@@ -9,6 +9,7 @@ file, which is what would catch a drift in the Monker format.
 import itertools
 import json
 import random
+import re
 
 import pytest
 
@@ -273,10 +274,53 @@ def test_suits_and_ranks_constants_describe_a_full_deck():
         ("(98)(T7)", "(7T)(89)"),
         ("(QA)(3A)", "(3A)(QA)"),
         ("AK(23)", "KA(23)"),
+        ("(54)A(32)", "A(23)(45)"),  # singleton between the two groups
+        ("(248)(24)", "(24)(248)"),  # groups sharing their two lowest ranks
     ],
 )
 def test_sort_omaha5_hand_canonicalizes_suited_groups(hand, expected):
     assert sort_omaha5_hand(hand) == expected
+
+
+def test_a_rank_between_two_suited_groups_survives():
+    """Removing both groups with one pattern also removed what sat between them.
+
+    "(54)A(32)" -- the way Monker 2 may order a double-suited PLO5 hand -- came out as
+    "(23)(45)", a four-card hand. The lookup then matched nothing and the advisor
+    reported the action as unavailable.
+    """
+    assert sort_omaha5_hand("(54)A(32)") == convert_hand("5h4hAs3d2d")
+
+
+def test_plo5_suited_groups_are_ordered_on_every_rank():
+    """Two groups sharing their two lowest ranks must not be left to the suit order.
+
+    The key compared only the first two ranks, so "(24)" against "(248)" tied and the
+    stable sort kept whichever suit came first. The same hand dealt in other suits then
+    produced a different key, and one of the two matched no file.
+    """
+    assert convert_hand("2s4s2d4d8d") == convert_hand("2d4d2s4s8s")
+    assert sort_omaha5_hand("(248)(24)") == convert_hand("2s4s2d4d8d")
+
+
+def test_every_monker_2_ordering_of_a_plo5_hand_normalizes_to_its_key():
+    """Whatever order a solver writes the tokens in, they must fold back to one key.
+
+    This is the invariant the read-path fallback rests on, and the one that caught both
+    orderings above.
+    """
+    random.seed(20240710)
+    mismatches = []
+    for _ in range(300):
+        canonical = convert_hand("".join(random.sample(DECK, 5)))
+        tokens = re.findall(r"\([^)]*\)|.", canonical)
+        for _ in range(3):
+            shuffled = random.sample(tokens, len(tokens))
+            variant = "".join(shuffled)
+            if normalize_monker_hand(variant) != canonical:
+                mismatches.append((canonical, variant, normalize_monker_hand(variant)))
+
+    assert not mismatches, f"{len(mismatches)} orderings do not normalize back, e.g. {mismatches[:3]}"
 
 
 def test_four_and_five_card_orderings_are_deliberately_different():
