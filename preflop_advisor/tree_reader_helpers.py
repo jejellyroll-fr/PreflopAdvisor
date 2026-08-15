@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sqlite3
 from collections import OrderedDict
 
 from . import sqlite_store
@@ -250,10 +251,8 @@ class ActionProcessor:
             if self.test_action_sequence(full_action_sequence):
                 if self.store is not None:
                     result = self.read_hand_from_store(hand, full_action_sequence)
-                elif self.cache_size == 0:
-                    result = self.read_hand(hand, full_action_sequence)
                 else:
-                    result = self.read_hand_with_cache(hand, full_action_sequence)
+                    result = self.read_hand_from_files(hand, full_action_sequence)
                 results.append(result)
         logger.debug("Results retrieved: %s", results)
         return results
@@ -369,6 +368,12 @@ class ActionProcessor:
             NORMALIZED_CACHE[filename] = index
         return index
 
+    def read_hand_from_files(self, hand, action_sequence):
+        """Reads hand data from the range file itself, through the cache or not."""
+        if self.cache_size == 0:
+            return self.read_hand(hand, action_sequence)
+        return self.read_hand_with_cache(hand, action_sequence)
+
     def read_hand_from_store(self, hand, action_sequence):
         """
         Reads hand data from the SQLite store instead of the range file.
@@ -376,12 +381,22 @@ class ActionProcessor:
         Hands are stored canonically, so the Monker 2 fallback of the file reader has no
         equivalent here -- the ordering was resolved when the database was built.
 
+        A database that becomes unusable mid-session -- deleted, corrupted, a failing
+        disk -- costs this reader its store and nothing else: the range files it was built
+        from are still there, and the request is served from them.
+
         :param hand: Hand to read.
         :param action_sequence: Action sequence.
         :return: Hand information.
         """
         basename = self.get_filename(action_sequence)
-        row = self.store.lookup_hand(basename, hand)
+        try:
+            row = self.store.lookup_hand(basename, hand)
+        except sqlite3.Error as error:
+            logger.error("Lookup failed in %s (%s); reading range files instead", self.db_label(), error)
+            self.store = None
+            sqlite_store.forget(self.path)
+            return self.read_hand_from_files(hand, action_sequence)
         if row is None:
             logger.debug("Hand %s not found in %s of %s", hand, basename, self.db_label())
             return ["", 0.0, 0.0]

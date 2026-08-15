@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS meta (
 #: Open stores, keyed by folder. One database per tree folder, one connection per process.
 _STORES = {}
 
+#: Folders whose build failed, and the fingerprint it failed on. Keeps a failure from
+#: being re-lived on every grid refresh.
+_FAILED = {}
+
 #: Set by the GUI layer to a callable ``(folder, total) -> progress`` where progress has
 #: ``update(done, total)`` and ``close()``. Left unset everywhere else, so this module
 #: never imports a toolkit and stays usable from tests and scripts.
@@ -66,10 +70,11 @@ def set_progress_factory(factory):
 
 
 def clear_stores():
-    """Close and forget every open store."""
+    """Close and forget every open store, and every remembered failure."""
     for store in _STORES.values():
         store.close()
     _STORES.clear()
+    _FAILED.clear()
 
 
 def get_store(folder, ending):
@@ -80,35 +85,46 @@ def get_store(folder, ending):
     :return: A ready :class:`TreeStore`, or ``None`` if one could not be provided -- in
         which case the caller reads the range files as before.
     """
+    try:
+        fingerprint = tree_fingerprint(folder, ending)
+    except OSError as error:
+        logger.warning("Range folder %s unreadable (%s); reading range files instead", folder, error)
+        forget(folder)
+        return None
+
     store = _STORES.get(folder)
     if store is not None:
-        # Checked on every use, not only on the first: a tree re-exported while the
+        # Compared on every use, not only on the first: a tree re-exported while the
         # application is open would otherwise keep being served from the database built
         # before, for as long as the session lasts. The check is a stat per range file --
         # 0.2ms over the 31 of the shipped tree -- against a grid that costs milliseconds.
-        try:
-            if store.fingerprint == tree_fingerprint(folder, ending):
-                return store
-        except OSError as error:
-            logger.warning("Range folder %s unreadable (%s); reading range files instead", folder, error)
-            _drop(folder)
-            return None
+        if store.fingerprint == fingerprint:
+            return store
         logger.info("Range files of %s changed; rebuilding its database", folder)
-        _drop(folder)
+        forget(folder)
+
+    # A build that failed on this exact tree is not attempted again. It is entered from
+    # every grid refresh, and a build that fails late -- an unreadable file at the end of a
+    # multi-minute export -- would be paid for in full on each of them. Only a change to
+    # the range files, which is also how the cause gets fixed, makes it worth another try.
+    if _FAILED.get(folder) == fingerprint:
+        return None
 
     try:
         store = TreeStore(folder, ending)
         store.ensure_ready()
     except (OSError, sqlite3.Error, RangeFilesChanging) as error:
         logger.warning("No SQLite store for %s (%s); reading range files instead", folder, error)
+        _FAILED[folder] = fingerprint
         return None
 
+    _FAILED.pop(folder, None)
     _STORES[folder] = store
     return store
 
 
-def _drop(folder):
-    """Close and forget one folder's store."""
+def forget(folder):
+    """Close and drop one folder's store, so the next use opens it afresh."""
     store = _STORES.pop(folder, None)
     if store is not None:
         store.close()

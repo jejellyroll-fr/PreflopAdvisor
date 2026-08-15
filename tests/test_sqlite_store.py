@@ -286,6 +286,45 @@ def test_rows_are_streamed_into_the_database(small_tree):
     assert next(recorder.parameters)[0] == "0.rng"
 
 
+def test_a_failed_build_is_not_attempted_again_for_the_same_tree(small_tree, monkeypatch):
+    """Every grid refresh builds an ActionProcessor, and so asks for the store again.
+
+    Retrying the build each time would re-live it in full -- minutes, on the exports this
+    is for -- before falling back, once per card clicked.
+    """
+    attempts = []
+
+    def fail(self, *args):
+        attempts.append(self.folder)
+        raise OSError("input/output error")
+
+    monkeypatch.setattr(sqlite_store.TreeStore, "build", fail)
+
+    assert sqlite_store.get_store(small_tree, ".rng") is None
+    assert sqlite_store.get_store(small_tree, ".rng") is None
+    assert sqlite_store.get_store(small_tree, ".rng") is None
+
+    assert len(attempts) == 1
+
+
+def test_a_failed_build_is_attempted_again_once_the_files_change(small_tree, monkeypatch):
+    """Editing the tree is also how the cause of the failure gets fixed."""
+    attempts = []
+
+    def fail(self, *args):
+        attempts.append(self.folder)
+        raise OSError("input/output error")
+
+    monkeypatch.setattr(sqlite_store.TreeStore, "build", fail)
+    sqlite_store.get_store(small_tree, ".rng")
+
+    with open(os.path.join(small_tree, "1.rng"), "w") as handle:
+        handle.write("AAAA\n0.5;1.0\n")
+    sqlite_store.get_store(small_tree, ".rng")
+
+    assert len(attempts) == 2
+
+
 def test_an_interrupted_build_leaves_no_database(small_tree, monkeypatch):
     """It is published by rename, so a half-filled database is never read."""
 
@@ -332,6 +371,30 @@ def test_reading_through_the_store_agrees_with_reading_the_files(tmp_path, hu_tr
         assert from_store.get_results(REFERENCE_HAND, actions, position) == from_files.get_results(
             REFERENCE_HAND, actions, position
         )
+
+
+def test_a_database_failing_mid_session_falls_back_to_the_range_files(tmp_path, hu_tree, tree_configs):
+    """The files it was built from are still there, so a broken database costs nothing.
+
+    Without this the sqlite3.Error escapes the reader entirely: past the range file path,
+    and past the exceptions the window knows how to report.
+    """
+    import shutil
+
+    folder = tmp_path / "hu-copy"
+    shutil.copytree(hu_tree["folder"], folder)
+    files = dict(hu_tree, folder=str(folder))
+
+    processor = ActionProcessor(HU_POSITIONS, dict(files), dict(tree_configs) | {"usedatabase": "yes"})
+    expected = ActionProcessor(HU_POSITIONS, dict(files), dict(tree_configs)).get_results(REFERENCE_HAND, [], "SB")
+
+    def fail(*args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    processor.store.lookup_hand = fail
+
+    assert processor.get_results(REFERENCE_HAND, [], "SB") == expected
+    assert processor.store is None
 
 
 def test_a_progress_report_follows_the_build(small_tree, tree_configs):
