@@ -16,3 +16,7 @@ class RangeFolderNotFound(PreflopAdvisorError):
 
 class InvalidRaiseSizing(PreflopAdvisorError):
     """A ``RaiseSizeList`` entry does not map to any known action code."""
+
+
+class RangeFilesChanging(PreflopAdvisorError):
+    """The range files kept changing while their database was being built."""

@@ -11,11 +11,13 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QMainWindow,
+    QProgressDialog,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
+from . import sqlite_store
 from .card_selector import CardSelector
 from .errors import PreflopAdvisorError
 from .outputframe import OutputFrame
@@ -25,6 +27,38 @@ from .randomizer import RandomButton
 from .tree_selector import TreeSelector
 
 logger = logging.getLogger(__name__)
+
+
+class DatabaseProgress:
+    """Shows how far the build of a tree's lookup database has got.
+
+    The build runs on the calling thread and reports once per range file, so the dialog
+    is pumped by hand: left to the event loop it would only paint once the build it is
+    meant to cover had finished.
+    """
+
+    def __init__(self, folder, total, parent=None):
+        self.heading = f"Building the lookup database for:\n{folder}"
+        self.dialog = QProgressDialog(
+            self.heading,
+            None,  # no cancel button: a half-built database is not published anyway
+            0,
+            max(total, 1),
+            parent,
+        )
+        self.dialog.setWindowTitle("Preflop Advisor")
+        self.dialog.setWindowModality(Qt.ApplicationModal)
+        self.dialog.setMinimumDuration(0)
+        self.update(0, total)
+
+    def update(self, done, total):
+        self.dialog.setMaximum(max(total, 1))
+        self.dialog.setValue(done)
+        self.dialog.setLabelText(f"{self.heading}\n{done} / {total} range files")
+        QApplication.processEvents()
+
+    def close(self):
+        self.dialog.close()
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +73,11 @@ class MainWindow(QMainWindow):
         self.configs.read(config_path)
 
         self.setWindowTitle("Preflop Advisor based on Monker")
+
+        # Building a tree's lookup database can take minutes, and it happens the first
+        # time that tree is read. Registered here rather than in the store so that layer
+        # keeps no dependency on a toolkit, and stays silent under tests and scripts.
+        sqlite_store.set_progress_factory(lambda folder, total: DatabaseProgress(folder, total, self))
 
         # Components emit while they are still being constructed, so the first
         # notifications arrive before every component exists. Refuse to refresh until the

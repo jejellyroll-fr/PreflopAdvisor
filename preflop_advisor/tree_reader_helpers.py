@@ -2,8 +2,10 @@
 
 import logging
 import os
+import sqlite3
 from collections import OrderedDict
 
+from . import sqlite_store
 from .errors import InvalidRaiseSizing
 from .hand_convert_helper import convert_hand, normalize_monker_hand
 from .paths import resolve_range_folder
@@ -40,7 +42,7 @@ DEFAULT_ENDING = ".rng"
 
 # Keys of the [TreeReader] section that drive the reader itself and are therefore not
 # action codes.
-_META_KEYS = frozenset({"positions", "raisesizelist", "validactions", "cachesize", "ending", "gametype"})
+_META_KEYS = frozenset({"positions", "raisesizelist", "validactions", "cachesize", "ending", "gametype", "usedatabase"})
 
 
 class ActionProcessor:
@@ -76,6 +78,10 @@ class ActionProcessor:
         self.action_codes = self._build_action_codes()
         self.raise_size_keys = self._build_raise_size_keys()
         self._nodes = self._index_tree_nodes()
+        # Which line of play exists is still answered from the folder index: the range
+        # files stay, and that lookup is already O(1). Only reading a hand out of one of
+        # them is worth handing to a database.
+        self.store = sqlite_store.get_store(self.path, self.ending) if self._use_database() else None
 
         logger.debug(
             "ActionProcessor ready: %s, sizings=%s, %d indexed nodes",
@@ -91,6 +97,10 @@ class ActionProcessor:
     def _setting(self, name, default=None):
         """Read a setting regardless of key casing."""
         return self._settings.get(name.lower(), default)
+
+    def _use_database(self):
+        """Whether this tree should be read through its SQLite store."""
+        return str(self._setting("UseDatabase", "no")).strip().lower() in ("yes", "true", "1")
 
     def _build_action_codes(self):
         """Map every action name to the numeric code used in range file names."""
@@ -239,10 +249,10 @@ class ActionProcessor:
             full_action_sequence = self.get_action_sequence(action_sequence)
             full_action_sequence = self.find_valid_raise_sizes(full_action_sequence)
             if self.test_action_sequence(full_action_sequence):
-                if self.cache_size == 0:
-                    result = self.read_hand(hand, full_action_sequence)
+                if self.store is not None:
+                    result = self.read_hand_from_store(hand, full_action_sequence)
                 else:
-                    result = self.read_hand_with_cache(hand, full_action_sequence)
+                    result = self.read_hand_from_files(hand, full_action_sequence)
                 results.append(result)
         logger.debug("Results retrieved: %s", results)
         return results
@@ -357,6 +367,45 @@ class ActionProcessor:
             index = self._normalized_entries(CACHE.get(filename, {}))
             NORMALIZED_CACHE[filename] = index
         return index
+
+    def read_hand_from_files(self, hand, action_sequence):
+        """Reads hand data from the range file itself, through the cache or not."""
+        if self.cache_size == 0:
+            return self.read_hand(hand, action_sequence)
+        return self.read_hand_with_cache(hand, action_sequence)
+
+    def read_hand_from_store(self, hand, action_sequence):
+        """
+        Reads hand data from the SQLite store instead of the range file.
+
+        Hands are stored canonically, so the Monker 2 fallback of the file reader has no
+        equivalent here -- the ordering was resolved when the database was built.
+
+        A database that becomes unusable mid-session -- deleted, corrupted, a failing
+        disk -- costs this reader its store and nothing else: the range files it was built
+        from are still there, and the request is served from them.
+
+        :param hand: Hand to read.
+        :param action_sequence: Action sequence.
+        :return: Hand information.
+        """
+        basename = self.get_filename(action_sequence)
+        try:
+            row = self.store.lookup_hand(basename, hand)
+        except sqlite3.Error as error:
+            logger.error("Lookup failed in %s (%s); reading range files instead", self.db_label(), error)
+            self.store = None
+            sqlite_store.forget(self.path)
+            return self.read_hand_from_files(hand, action_sequence)
+        if row is None:
+            logger.debug("Hand %s not found in %s of %s", hand, basename, self.db_label())
+            return ["", 0.0, 0.0]
+        frequency, ev = row
+        return [action_sequence[-1][1], frequency, ev]
+
+    def db_label(self):
+        """The store's database, for log lines."""
+        return os.path.join(self.path, sqlite_store.DB_NAME)
 
     def _parse_entry(self, info_line, action_sequence, filename):
         """Turn a ``frequency;ev`` line into a ``[action, frequency, ev]`` result."""

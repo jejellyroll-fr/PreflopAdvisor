@@ -143,6 +143,38 @@ tool says so rather than guessing.
 To add a sizing, find its code by looking at the file names in your range folder, add a
 =Name=code= line, and list =Name= in =RaiseSizeList=.
 
+** Reading through a database instead of the range files
+
+Off by default. =[TreeReader] UseDatabase=yes= makes the tool read hands from a
+=preflop.db= built next to the ranges rather than scanning the =.rng= files:
+
+#+BEGIN_SRC ini
+UseDatabase=yes
+#+END_SRC
+
+The database is built the first time a tree is read, behind a progress dialog, and rebuilt
+whenever the range files change. Each file's name, size and modification time are recorded
+in it and checked every time the tree is read, so re-exporting a tree from the solver is
+picked up without restarting the advisor -- the check is one stat per range file, 0.2 ms
+over the tree above. The range files are never deleted: they are what a rebuild reads.
+
+What it buys, measured on the heads-up tree shipped in =ranges/= (31 files, 15.4 MB):
+
+| | range files | database |
+|-+-+-|
+| first grid | 23.2 ms | 0.1 ms |
+| further grids | 0.04 ms | 0.07 ms |
+| memory used | 25.4 MB | 8.6 MB |
+| disk used | 15.4 MB | 15.4 + 24.8 MB |
+
+Once a file is in the cache the in-memory path is marginally faster, so on a tree this size
+=CacheSize= is the better answer. The database earns its place on a large PLO5 export, where
+files run to hundreds of megabytes and holding them in RAM is what =CacheSize= warns about.
+Building one takes about a second for the tree above.
+
+If the database cannot be built or read -- an unwritable folder, a corrupt file -- the tool
+logs it and reads the range files instead.
+
 * Usage
 
 #+begin_src sh
@@ -155,7 +187,7 @@ python standalone.py
 ** Development
 #+BEGIN_SRC sh
 uv sync --extra dev
-uv run pytest              # 228 tests, coverage gate at 90%
+uv run pytest              # 310 tests, coverage gate at 90%
 uv run pytest -m "not slow"  # skip the subprocess smoke test
 uv run ruff check . && uv run ruff format --check .
 uv run preflop_advisor --verbose   # log every range lookup
