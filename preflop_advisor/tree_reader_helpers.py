@@ -4,26 +4,28 @@ import logging
 import os
 import sqlite3
 from collections import OrderedDict
+from typing import Any
 
 from . import sqlite_store
 from .errors import InvalidRaiseSizing
 from .hand_convert_helper import convert_hand, normalize_monker_hand
 from .paths import resolve_range_folder
-from .settings import normalize
+from .settings import ConfigSource, normalize
+from .types import ActionSequence, Result
 
 logger = logging.getLogger(__name__)
 
 #: Shared across processors that read the same tree, so switching position or hand does
 #: not re-read files. Keyed by absolute file path; entries are evicted least-recently
 #: inserted first. Call :func:`clear_cache` when the range files change on disk.
-CACHE = OrderedDict()
+CACHE: OrderedDict[str, dict[str, str]] = OrderedDict()
 
 #: Monker 2 view of the cached files, keyed the same way. Built per file only once a
 #: direct lookup has missed, and dropped with the file it indexes.
-NORMALIZED_CACHE = {}
+NORMALIZED_CACHE: dict[str, dict[str, str]] = {}
 
 
-def clear_cache():
+def clear_cache() -> None:
     """Drop every cached range file."""
     CACHE.clear()
     NORMALIZED_CACHE.clear()
@@ -50,7 +52,7 @@ class ActionProcessor:
     Class to process actions and interact with poker range files.
     """
 
-    def __init__(self, position_list, tree_infos, configs):
+    def __init__(self, position_list: list[str], tree_infos: dict[str, Any], configs: ConfigSource) -> None:
         """
         Initializes the ActionProcessor with positions, tree information, and configurations.
 
@@ -63,13 +65,13 @@ class ActionProcessor:
         self.configs = configs
         # A missing folder is not fatal here: the node index simply comes back empty and
         # every cell reads as unavailable. TreeReader is the layer that refuses to build.
-        self.path = resolve_range_folder(tree_infos["folder"]) or tree_infos["folder"]
+        self.path: str = resolve_range_folder(tree_infos["folder"]) or tree_infos["folder"]
         self.tree_infos["folder"] = self.path
 
         self._settings = normalize(configs)
 
-        self.cache_size = int(self._setting("CacheSize", 100))
-        self.ending = self._setting("Ending", DEFAULT_ENDING)
+        self.cache_size: int = int(self._setting("CacheSize", 100))
+        self.ending: str = str(self._setting("Ending", DEFAULT_ENDING))
         self.valid_actions = [
             action.strip()
             for action in self._setting("ValidActions", DEFAULT_VALID_ACTIONS).split(",")
@@ -94,15 +96,15 @@ class ActionProcessor:
     # Configuration
     # ------------------------------------------------------------------
 
-    def _setting(self, name, default=None):
+    def _setting(self, name: str, default: Any = None) -> Any:
         """Read a setting regardless of key casing."""
         return self._settings.get(name.lower(), default)
 
-    def _use_database(self):
+    def _use_database(self) -> bool:
         """Whether this tree should be read through its SQLite store."""
         return str(self._setting("UseDatabase", "no")).strip().lower() in ("yes", "true", "1")
 
-    def _build_action_codes(self):
+    def _build_action_codes(self) -> dict[str, str]:
         """Map every action name to the numeric code used in range file names.
 
         ``Positions`` and its per-table-size variants name seats, not actions, so the
@@ -114,7 +116,7 @@ class ActionProcessor:
                 codes[key] = value
         return codes
 
-    def _build_raise_size_keys(self):
+    def _build_raise_size_keys(self) -> list[str]:
         """Order the candidate raise sizings declared in ``RaiseSizeList``.
 
         Each entry of the list *is* the name of a configuration key: ``Raise75`` must
@@ -148,14 +150,14 @@ class ActionProcessor:
     # Tree index
     # ------------------------------------------------------------------
 
-    def _index_tree_nodes(self):
+    def _index_tree_nodes(self) -> set[str]:
         """Index every reachable node of the tree.
 
         An intermediate node does not always own a file, but it always prefixes the
         files of its descendants, so every prefix is recorded. This makes testing a line
         of play an O(1) lookup instead of one disk access per displayed cell.
         """
-        nodes = set()
+        nodes: set[str] = set()
         try:
             entries = os.listdir(self.path)
         except OSError as error:
@@ -170,18 +172,18 @@ class ActionProcessor:
                 nodes.add(".".join(parts[:depth]))
         return nodes
 
-    def _stem(self, action_sequence):
+    def _stem(self, action_sequence: ActionSequence) -> str:
         """File name of a sequence, without the extension."""
         return ".".join(self.action_codes[action.lower()] for _, action in action_sequence)
 
-    def has_node(self, action_sequence):
+    def has_node(self, action_sequence: ActionSequence) -> bool:
         """Whether an action sequence maps to a line that exists in the tree."""
         try:
             return self._stem(action_sequence) in self._nodes
         except KeyError:
             return False
 
-    def read_file_into_hash(self, filename):
+    def read_file_into_hash(self, filename: str) -> dict[str, str]:
         """
         Reads a range file and returns its content as a dictionary.
 
@@ -204,7 +206,7 @@ class ActionProcessor:
             logger.error("Error reading file %s: %s", filename, error)
         return hand_info_hash
 
-    def get_action_sequence(self, action_list):
+    def get_action_sequence(self, action_list: ActionSequence) -> ActionSequence:
         """
         Generates a complete action sequence by filling in with 'Fold'.
 
@@ -231,7 +233,7 @@ class ActionProcessor:
         logger.debug("Complete action sequence generated: %s", full_action_list)
         return full_action_list
 
-    def get_results(self, hand, action_before_list, position):
+    def get_results(self, hand: str, action_before_list: ActionSequence, position: str) -> list[Result]:
         """
         Retrieves results for a given hand and action sequence.
 
@@ -261,7 +263,7 @@ class ActionProcessor:
         logger.debug("Results retrieved: %s", results)
         return results
 
-    def find_valid_raise_sizes(self, full_action_sequence):
+    def find_valid_raise_sizes(self, full_action_sequence: ActionSequence) -> ActionSequence:
         """
         Substitutes every generic 'Raise' by a sizing that exists in this tree.
 
@@ -292,7 +294,7 @@ class ActionProcessor:
         logger.debug("Sequence after sizing resolution: %s", resolved)
         return resolved
 
-    def test_action_sequence(self, action_sequence):
+    def test_action_sequence(self, action_sequence: ActionSequence) -> bool:
         """
         Checks if a file for a given action sequence exists.
 
@@ -304,7 +306,7 @@ class ActionProcessor:
         logger.debug("Testing existence of file %s: %s", filename, exists)
         return exists
 
-    def read_hand(self, hand, action_sequence):
+    def read_hand(self, hand: str, action_sequence: ActionSequence) -> Result:
         """
         Reads hand data directly from a file.
 
@@ -333,12 +335,12 @@ class ActionProcessor:
             logger.error("Error reading file %s: %s", filename, error)
             return ["", 0.0, 0.0]
 
-        info_line = self._normalized_entries(self.read_file_into_hash(filename)).get(hand)
-        if info_line is None:
+        normalized = self._normalized_entries(self.read_file_into_hash(filename)).get(hand)
+        if normalized is None:
             return ["", 0.0, 0.0]
-        return self._parse_entry(info_line, action_sequence, filename)
+        return self._parse_entry(normalized, action_sequence, filename)
 
-    def _normalized_entries(self, entries):
+    def _normalized_entries(self, entries: dict[str, str]) -> dict[str, str]:
         """Indexes one file's entries by their canonical hand, for a Monker 2 tree.
 
         Built only once a direct lookup has missed. Normalizing every stored hand up
@@ -349,7 +351,7 @@ class ActionProcessor:
         :param entries: ``{stored hand: info line}`` for one range file.
         :return: ``{canonical hand: info line}``.
         """
-        index = {}
+        index: dict[str, str] = {}
         for stored, info in entries.items():
             # This walks a file that nothing has validated, so a line the converter
             # cannot make sense of is skipped rather than allowed to end the lookup.
@@ -359,7 +361,7 @@ class ActionProcessor:
                 logger.debug("Skipping unreadable entry %r while indexing a range file", stored)
         return index
 
-    def _cached_normalized_entries(self, filename):
+    def _cached_normalized_entries(self, filename: str) -> dict[str, str]:
         """The Monker 2 index of a cached file, built on its first miss and kept.
 
         A Monker 2 tree misses the direct lookup every single time, so rebuilding the
@@ -372,13 +374,13 @@ class ActionProcessor:
             NORMALIZED_CACHE[filename] = index
         return index
 
-    def read_hand_from_files(self, hand, action_sequence):
+    def read_hand_from_files(self, hand: str, action_sequence: ActionSequence) -> Result:
         """Reads hand data from the range file itself, through the cache or not."""
         if self.cache_size == 0:
             return self.read_hand(hand, action_sequence)
         return self.read_hand_with_cache(hand, action_sequence)
 
-    def read_hand_from_store(self, hand, action_sequence):
+    def read_hand_from_store(self, hand: str, action_sequence: ActionSequence) -> Result:
         """
         Reads hand data from the SQLite store instead of the range file.
 
@@ -394,8 +396,11 @@ class ActionProcessor:
         :return: Hand information.
         """
         basename = self.get_filename(action_sequence)
+        store = self.store
+        if store is None:  # pragma: no cover - get_results only calls this with a store
+            return self.read_hand_from_files(hand, action_sequence)
         try:
-            row = self.store.lookup_hand(basename, hand)
+            row = store.lookup_hand(basename, hand)
         except sqlite3.Error as error:
             logger.error("Lookup failed in %s (%s); reading range files instead", self.db_label(), error)
             self.store = None
@@ -407,11 +412,11 @@ class ActionProcessor:
         frequency, ev = row
         return [action_sequence[-1][1], frequency, ev]
 
-    def db_label(self):
+    def db_label(self) -> str:
         """The store's database, for log lines."""
         return os.path.join(self.path, sqlite_store.DB_NAME)
 
-    def _parse_entry(self, info_line, action_sequence, filename):
+    def _parse_entry(self, info_line: str, action_sequence: ActionSequence, filename: str) -> Result:
         """Turn a ``frequency;ev`` line into a ``[action, frequency, ev]`` result."""
         infos = info_line.strip().split(";")
         last_action = action_sequence[-1][1]
@@ -421,7 +426,7 @@ class ActionProcessor:
             logger.error("Malformed entry %r in %s", info_line.strip(), filename)
             return ["", 0.0, 0.0]
 
-    def read_hand_with_cache(self, hand, action_sequence):
+    def read_hand_with_cache(self, hand: str, action_sequence: ActionSequence) -> Result:
         """
         Reads hand data using a cache.
 
@@ -447,7 +452,7 @@ class ActionProcessor:
 
         return self._parse_entry(hand_info, action_sequence, filename)
 
-    def get_filename(self, action_sequence):
+    def get_filename(self, action_sequence: ActionSequence) -> str:
         """
         Generates a filename based on the action sequence.
 

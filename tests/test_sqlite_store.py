@@ -419,3 +419,31 @@ def test_a_progress_report_follows_the_build(small_tree, tree_configs):
     assert reported[0] == ("start", small_tree, 2)
     assert ("update", 2, 2) in reported
     assert reported[-1] == ("close",)
+
+
+def test_a_lookup_on_a_closed_store_reads_as_a_database_error(small_tree):
+    """A processor keeps its store, and another one rebuilding the folder drops it.
+
+    Left as an attribute error on a None connection, it went past the reader's fallback,
+    which only knows about sqlite3 errors, and out to the window.
+    """
+    store = sqlite_store.get_store(small_tree, ".rng")
+    sqlite_store.forget(small_tree)
+
+    with pytest.raises(sqlite3.Error):
+        store.lookup_hand("2.rng", REFERENCE_HAND_MONKER)
+
+
+def test_a_reader_survives_its_store_being_dropped(tmp_path, hu_tree, tree_configs):
+    """It falls back to the range files the store was built from."""
+    import shutil
+
+    folder = tmp_path / "hu-copy"
+    shutil.copytree(hu_tree["folder"], folder)
+    files = dict(hu_tree, folder=str(folder))
+    processor = ActionProcessor(HU_POSITIONS, dict(files), dict(tree_configs) | {"usedatabase": "yes"})
+    expected = ActionProcessor(HU_POSITIONS, dict(files), dict(tree_configs)).get_results(REFERENCE_HAND, [], "SB")
+
+    sqlite_store.forget(processor.path)
+
+    assert processor.get_results(REFERENCE_HAND, [], "SB") == expected

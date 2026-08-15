@@ -10,7 +10,8 @@ import itertools
 import os
 import pickle
 import sys
-from configparser import ConfigParser
+from configparser import ConfigParser, SectionProxy
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -42,13 +43,19 @@ RANKS = list("AKQJT98765432")
 SUITS = list("cdhs")
 CARDS = [rank + suit for rank in RANKS for suit in SUITS]
 
-WEIGHTS = {}
+WEIGHTS: dict[str, int] = {}
 
 
 class FrequencyViewer(QWidget):
     """Main widget to display generated frequencies and data."""
 
-    def __init__(self, position_list, tree_infos, configs, parent=None):
+    def __init__(
+        self,
+        position_list: list[str],
+        tree_infos: dict[str, Any],
+        configs: SectionProxy,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
 
         self.position_list = position_list
@@ -60,13 +67,13 @@ class FrequencyViewer(QWidget):
 
         # Title
         self.title_label = QLabel("Position Frequencies")
-        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: white;")
         self.main_layout.addWidget(self.title_label)
 
         # Frequency table
         self.table = QTableWidget(0, len(position_list) + 1)  # +1 for the row header
-        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setHorizontalHeaderLabels(["Position"] + position_list)
         self.table.setStyleSheet("""
             QTableWidget {
@@ -129,31 +136,31 @@ class FrequencyViewer(QWidget):
 
         self.main_layout.addLayout(self.button_layout)
 
-    def calculate_frequencies(self):
+    def calculate_frequencies(self) -> None:
         """Calculate and display frequencies for each position."""
         results = get_default_frequencies(self.position_list, self.tree_infos, self.configs)
         self.populate_table(results)
 
-    def populate_table(self, results):
+    def populate_table(self, results: list[list[Any]]) -> None:
         """Populate the table with results."""
         self.table.setRowCount(len(results))
         for row_idx, row in enumerate(results):
             for col_idx, cell in enumerate(row):
                 item_text = format_cell(cell)
                 item = QTableWidgetItem(item_text)
-                item.setTextAlignment(Qt.AlignCenter)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row_idx, col_idx, item)
 
-    def save_data(self):
+    def save_data(self) -> None:
         """Save weights data to a file."""
         with open("frequencies.pkl", "wb") as f:
             pickle.dump(WEIGHTS, f)
         print("Data saved to frequencies.pkl")
 
 
-def get_total_weight(filename):
+def get_total_weight(filename: str) -> float:
     """Calculate the total weight from a file."""
-    total_weight = 0
+    total_weight = 0.0
     try:
         with open(filename, "r") as f:
             for line in f:
@@ -174,19 +181,25 @@ def get_total_weight(filename):
         return total_weight
 
 
-def calculate_hand_weights(hand):
+def calculate_hand_weights(hand: str) -> int:
     """Calculate weights for a given hand."""
     ranks = hand.replace("(", "").replace(")", "")
     all_suits = itertools.product(SUITS, repeat=len(ranks))
     all_combos = [sorted([ranks[i] + suit for i, suit in enumerate(combo)]) for combo in all_suits]
     all_combos.sort()
     all_combos = [combo for combo, _ in itertools.groupby(all_combos)]
-    all_combos = ["".join(combo) for combo in all_combos if len(set(combo)) == len(ranks)]
-    weight_adjust = len(all_combos)
+    distinct = ["".join(combo) for combo in all_combos if len(set(combo)) == len(ranks)]
+    weight_adjust = len(distinct)
     return weight_adjust
 
 
-def get_frequencies(action_before_list, position, position_list, tree_infos, configs):
+def get_frequencies(
+    action_before_list: list[tuple[str, str]],
+    position: str,
+    position_list: list[str],
+    tree_infos: dict[str, Any],
+    configs: SectionProxy,
+) -> list[float]:
     """Calculate frequencies of possible actions for a specific position."""
     action_processor = ActionProcessor(position_list, tree_infos, configs)
     valid_actions = configs["ValidActions"].replace(" ", "").split(",")
@@ -216,11 +229,13 @@ def get_frequencies(action_before_list, position, position_list, tree_infos, con
     return frequencies
 
 
-def get_default_frequencies(position_list, tree_infos, configs):
+def get_default_frequencies(
+    position_list: list[str], tree_infos: dict[str, Any], configs: SectionProxy
+) -> list[list[Any]]:
     """Get default frequencies for all positions."""
     results = [["X", "FI"] + [f"vs {pos}" for pos in position_list]]
     for row_pos in position_list:
-        row = [row_pos]
+        row: list[Any] = [row_pos]
         if row_pos != "BB":
             row.append(get_frequencies([], row_pos, position_list, tree_infos, configs))
         else:
@@ -246,7 +261,7 @@ def get_default_frequencies(position_list, tree_infos, configs):
     return results
 
 
-def format_cell(cell):
+def format_cell(cell: Any) -> str:
     """Format a cell for display in the table."""
     if isinstance(cell, str):
         return cell
@@ -257,7 +272,7 @@ def format_cell(cell):
         return ""
 
 
-def holds_range_files(folder, ending=RANGE_ENDING):
+def holds_range_files(folder: str, ending: str = RANGE_ENDING) -> bool:
     """Whether the folder itself holds range files.
 
     Only the directory given is looked at, the way ``ActionProcessor`` indexes it: a
@@ -271,7 +286,7 @@ def holds_range_files(folder, ending=RANGE_ENDING):
         return False
 
 
-def available_trees(ending=RANGE_ENDING):
+def available_trees(ending: str = RANGE_ENDING) -> list[str]:
     """Tree folders under ranges/, i.e. the directories that hold range files."""
     container = os.path.join(PROJECT_ROOT, RANGES_DIRNAME)
     if not os.path.isdir(container):
@@ -283,7 +298,7 @@ def available_trees(ending=RANGE_ENDING):
     )
 
 
-def declared_player_count(tree_folder, tree_infos_section):
+def declared_player_count(tree_folder: str, tree_infos_section: SectionProxy | None) -> int | None:
     """Seat count declared for this folder in ``[TreeInfos]``, or ``None`` if unlisted.
 
     Entries read ``plrs,bb,game,folder,infos``. Folders are compared once resolved, so
@@ -307,7 +322,11 @@ def declared_player_count(tree_folder, tree_infos_section):
     return None
 
 
-def seated_positions(position_list, num_players=None, configs=None):
+def seated_positions(
+    position_list: list[str],
+    num_players: int | None = None,
+    configs: SectionProxy | None = None,
+) -> list[str]:
     """Seat the configured positions the way ``TreeReader`` seats them.
 
     Through the reader's own ``seats_for``, so a table size that names its seats
@@ -327,7 +346,7 @@ def seated_positions(position_list, num_players=None, configs=None):
     return list(reversed(seats))
 
 
-def usage(ending=RANGE_ENDING):
+def usage(ending: str = RANGE_ENDING) -> str:
     """Usage text listing the trees that are actually present.
 
     The tree folder has to be named explicitly. Defaulting to ranges/ pointed at the
@@ -344,7 +363,7 @@ def usage(ending=RANGE_ENDING):
     return "\n".join(lines)
 
 
-def main():
+def main() -> int:
     config_path = os.path.join(PROJECT_ROOT, "preflop_advisor", "config.ini")
 
     # Load the configuration file
@@ -353,7 +372,7 @@ def main():
 
     if "TreeReader" not in config:
         print("Error: 'TreeReader' section is missing in config.ini")
-        return
+        return 2
 
     configs = config["TreeReader"]
 
@@ -362,7 +381,7 @@ def main():
     for key in required_keys:
         if key not in configs:
             print(f"Error: '{key}' is missing in the 'TreeReader' section of config.ini")
-            return
+            return 2
 
     position_list = [position.strip() for position in configs["Positions"].split(",")]
 
@@ -419,7 +438,8 @@ def main():
     # Save weights to a pickle file for future use
     with open(weight_filename, "wb") as f:
         pickle.dump(WEIGHTS, f)
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    sys.exit(main())

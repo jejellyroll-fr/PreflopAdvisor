@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
+from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFontMetrics
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from .settings import ConfigSource
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ class PositionSelector(QWidget):
 
     positionChanged = Signal(str)
 
-    def __init__(self, parent, position_config):
+    def __init__(self, parent: QWidget | None, position_config: ConfigSource) -> None:
         super().__init__(parent)
         logger.debug("Initializing PositionSelector")
 
@@ -36,16 +38,16 @@ class PositionSelector(QWidget):
         self.button_width = int(position_config["ButtonWidth"])
         self.button_pad = int(position_config["ButtonPad"])
         self.fontsize = int(position_config["FontSize"])
-        self.font = position_config["Font"]
+        self.font_family = position_config["Font"]
         self.background = position_config["Background"]
         self.background_pressed = position_config["BackgroundPressed"]
 
         self.default_position = int(position_config["DefaultPosition"])
         self.current_position = self.default_position
 
-        self.layout = QHBoxLayout(self)
-        self.layout.setSpacing(self.button_pad)
-        self.layout.setContentsMargins(10, 10, 10, 10)
+        self.main_layout = QHBoxLayout(self)
+        self.main_layout.setSpacing(self.button_pad)
+        self.main_layout.setContentsMargins(10, 10, 10, 10)
 
         # Create buttons
         self.button_list = [self.create_button(row) for row in range(len(self.position_list))]
@@ -60,7 +62,7 @@ class PositionSelector(QWidget):
 
         logger.debug("PositionSelector initialized with %d positions", len(self.position_list))
 
-    def create_button(self, row):
+    def create_button(self, row: int) -> QPushButton:
         """
         Creates a button for a position.
         """
@@ -69,29 +71,29 @@ class PositionSelector(QWidget):
         # name was cut rather than shown: "UTG1" rendered as "JTG1", the clipped upright
         # of the U reading as a J. A wrong label, and a quiet one.
         button.setMinimumSize(max(self.button_width, self.label_width(button)), self.button_height)
-        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         button.setStyleSheet(theme.position_button_qss(font_size=self.fontsize))
         button.clicked.connect(self.on_button_clicked(row))
-        self.layout.addWidget(button)
+        self.main_layout.addWidget(button)
         logger.debug("Button created for %s", self.position_list[row])
         return button
 
     @staticmethod
-    def label_width(button):
+    def label_width(button: QPushButton) -> int:
         """Width the button's own text needs, with room for its border and padding."""
         return QFontMetrics(button.font()).horizontalAdvance(button.text()) + LABEL_PADDING
 
-    def on_button_clicked(self, row):
+    def on_button_clicked(self, row: int) -> Callable[[], None]:
         """
         Returns an event handler function to handle button clicks.
         """
 
-        def event_handler():
+        def event_handler() -> None:
             self.process_button_clicked(row)
 
         return event_handler
 
-    def process_button_clicked(self, row):
+    def process_button_clicked(self, row: int) -> None:
         """
         Handles button clicks and updates the selected position.
         """
@@ -106,35 +108,35 @@ class PositionSelector(QWidget):
         self.select_button(row)
         self.position_changed()
 
-    def deselect_button(self, row):
+    def deselect_button(self, row: int) -> None:
         """
         Deselects a button.
         """
         logger.debug("Deselecting button: %s", self.position_list[row])
         self.button_list[row].setStyleSheet(theme.position_button_qss(selected=False, font_size=self.fontsize))
 
-    def select_button(self, row):
+    def select_button(self, row: int) -> None:
         """
         Selects a button.
         """
         logger.debug("Selecting button: %s", self.position_list[row])
         self.button_list[row].setStyleSheet(theme.position_button_qss(selected=True, font_size=self.fontsize))
 
-    def position_changed(self):
+    def position_changed(self) -> None:
         """
         Notifies the position change and emits positionChanged signal.
         """
         pos = self.get_position()
         self.positionChanged.emit(pos)
 
-    def get_position(self):
+    def get_position(self) -> str:
         """
         Returns the selected position.
         """
         logger.debug("Current position: %s", self.position_list[self.current_position])
-        return self.position_list[self.current_position]
+        return str(self.position_list[self.current_position])
 
-    def get_active_positions(self, seats):
+    def get_active_positions(self, seats: Sequence[str]) -> list[str]:
         """
         Returns the positions that can be selected, given the seats a tree has.
 
@@ -149,7 +151,7 @@ class PositionSelector(QWidget):
         overview = list(reversed(self.position_list))[-1]
         return [overview] + list(seats)
 
-    def update_active_positions(self, seats):
+    def update_active_positions(self, seats: Sequence[str]) -> None:
         """
         Activates or deactivates positions based on the seats of the current table.
         """
@@ -171,20 +173,20 @@ class PositionSelector(QWidget):
             self.select_button(self.current_position)
             self.position_changed()
 
-    def convert_position_name_to_index(self, name):
+    def convert_position_name_to_index(self, name: str) -> int:
         """
         Converts a position name to its index.
         """
         return self.position_list.index(name)
 
-    def deactivate_button(self, index):
+    def deactivate_button(self, index: int) -> None:
         """
         Disables a button.
         """
         logger.debug("Disabling button: %s", self.position_list[index])
         self.button_list[index].setEnabled(False)
 
-    def activate_button(self, index):
+    def activate_button(self, index: int) -> None:
         """
         Enables a button.
         """

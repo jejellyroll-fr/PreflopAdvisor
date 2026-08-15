@@ -55,7 +55,7 @@ SUIT_SYMBOLS = {"h": "♥", "c": "♣", "s": "♠", "d": "♦"}
 FONT_FAMILY = "Helvetica"
 
 
-def action_color(action):
+def action_color(action: str) -> str:
     """Colour associated with an action name such as ``Raise100`` or ``All_In``."""
     key = (action or "").strip().lower()
     if key.startswith("raise"):
@@ -63,7 +63,7 @@ def action_color(action):
     return ACTION_COLORS.get(key, ACTION_COLORS["fold"])
 
 
-def blend(color, background, alpha):
+def blend(color: str, background: str, alpha: float) -> str:
     """Mix ``color`` over ``background`` at ``alpha`` in 0..1, returning ``#rrggbb``.
 
     Used to tint a cell by action frequency: a 5% action stays nearly invisible while a
@@ -79,7 +79,7 @@ def blend(color, background, alpha):
     ).name()
 
 
-def ev_color(ev):
+def ev_color(ev: str | float) -> str:
     """Colour for an EV figure, neutral when it is zero or unreadable."""
     try:
         value = float(ev)
@@ -157,7 +157,7 @@ QStatusBar {{
 """
 
 
-def card_button_qss(suit, selected=False):
+def card_button_qss(suit: str, selected: bool = False) -> str:
     """Stylesheet for one card button of the selector."""
     background = SURFACE_PRESSED if selected else SURFACE
     border = BORDER_STRONG if selected else BORDER
@@ -174,7 +174,7 @@ def card_button_qss(suit, selected=False):
     """
 
 
-def position_button_qss(selected=False, font_size=14):
+def position_button_qss(selected: bool = False, font_size: int = 14) -> str:
     """Stylesheet for one seat button of the position selector.
 
     Three states have to be distinguishable at a glance: selected, available, and

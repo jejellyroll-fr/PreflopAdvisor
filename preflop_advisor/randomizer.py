@@ -4,6 +4,7 @@ import logging
 from random import randint
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from .settings import ConfigSource
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +29,14 @@ class RandomButton(QWidget):
 
     rollChanged = Signal(int)
 
-    def __init__(self, root, config):
+    def __init__(self, root: QWidget | None, config: ConfigSource) -> None:
         super().__init__(root)
 
         self.fontsize = int(config.get("FontSize", 12))
-        self.value = None
+        self.value: int | None = None
 
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(4, 4, 4, 4)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(4, 4, 4, 4)
 
         self.button = QPushButton("Roll")
         self.button.setStyleSheet(f"""
@@ -56,9 +58,9 @@ class RandomButton(QWidget):
         self.button.setToolTip("Draw a number to pick one action from a mixed strategy")
         self.button.clicked.connect(self.roll)
 
-        self.layout.addWidget(self.button, alignment=Qt.AlignCenter)
+        self.main_layout.addWidget(self.button, alignment=Qt.AlignmentFlag.AlignCenter)
 
-    def roll(self):
+    def roll(self) -> int:
         """Draws a new number and announces it."""
         self.value = randint(0, 99)
         self.button.setText(str(self.value))
@@ -69,7 +71,7 @@ class RandomButton(QWidget):
     # Kept for the previous name used by the click handler.
     on_button_clicked = roll
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent) -> None:
         """Handles resizing of the button to adapt to the parent widget's size."""
         button_width = self.size().width() * 0.8
         button_height = self.size().height() * 0.4

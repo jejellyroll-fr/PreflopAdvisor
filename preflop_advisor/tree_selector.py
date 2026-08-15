@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import logging
+from typing import Any
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QHideEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
@@ -11,7 +13,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .settings import Settings
+from .errors import RangeFolderNotFound
+from .settings import ConfigSource, Settings
 from .tooltip import CreateToolTip
 
 logger = logging.getLogger(__name__)
@@ -24,17 +27,23 @@ class TreeSelector(QWidget):
 
     treeChanged = Signal(dict)
 
-    def __init__(self, root, tree_selector_settings, tree_configs, tree_tooltips):
+    def __init__(
+        self,
+        root: QWidget | None,
+        tree_selector_settings: ConfigSource,
+        tree_configs: ConfigSource,
+        tree_tooltips: ConfigSource,
+    ) -> None:
         super().__init__(root)
         self.root = root  # Store the parent to access other components
         settings = Settings(tree_selector_settings)
         self.tree_tooltips = Settings(tree_tooltips) if tree_tooltips else None
         self.enable_tooltips = str(settings.get("ToolTips", "NO")).upper() == "YES"
-        self.current_tooltip = None
+        self.current_tooltip: CreateToolTip | None = None
         self.num_trees = int(settings.get("NumTrees", 5))
         self.fontsize = int(settings.get("FontSize", 12))
-        self.font = settings.get("Font", "Arial")
-        self.trees = []
+        self.font_family = settings.get("Font", "Arial")
+        self.trees: list[dict[str, Any]] = []
 
         logger.debug("Initializing TreeSelector with %d trees.", self.num_trees)
 
@@ -42,18 +51,18 @@ class TreeSelector(QWidget):
         self.process_tree_infos(tree_configs)
 
         # Main layout
-        self.layout = QVBoxLayout(self)
+        self.main_layout = QVBoxLayout(self)
 
         # Label to display the current selection
         self.label = QLabel("Select a Tree")
-        self.label.setAlignment(Qt.AlignCenter)
-        self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        self.layout.addWidget(self.label)
+        self.main_layout.addWidget(self.label)
 
         # Create a dropdown list (QComboBox)
         self.dropdown = QComboBox()
-        self.dropdown.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.dropdown.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         # Add options to the QComboBox
         for tree in self.trees:
@@ -68,17 +77,17 @@ class TreeSelector(QWidget):
         self.dropdown.installEventFilter(self)
 
         # Add the QComboBox to the layout
-        self.layout.addWidget(self.dropdown)
+        self.main_layout.addWidget(self.dropdown)
 
         # Select the default tree
         default_tree = int(settings.get("DefaultTree", 0))
         self.dropdown.setCurrentIndex(default_tree)
-        self.current_tree = self.trees[default_tree] if self.trees else None
+        self.current_tree: dict[str, Any] | None = self.trees[default_tree] if self.trees else None
 
         # Trigger the action associated with the change
         self.on_tree_selected(default_tree)
 
-    def process_tree_infos(self, tree_infos):
+    def process_tree_infos(self, tree_infos: ConfigSource) -> None:
         """
         Processes tree information from the configurations.
 
@@ -99,7 +108,7 @@ class TreeSelector(QWidget):
             self.trees.append(table_dic)
         logger.debug("Processed tree information: %s", self.trees)
 
-    def on_tree_selected(self, index):
+    def on_tree_selected(self, index: int) -> None:
         """
         Handles selection changes in the QComboBox.
 
@@ -115,13 +124,13 @@ class TreeSelector(QWidget):
         self.update_tooltip()
         self.tree_changed()
 
-    def tooltip_for_current_tree(self):
+    def tooltip_for_current_tree(self) -> str:
         """Tooltip text or image path configured for the selected tree, if any."""
         if not (self.enable_tooltips and self.tree_tooltips and self.current_tree):
             return ""
-        return self.tree_tooltips.get(self.current_tree.get("table_key", ""), "")
+        return str(self.tree_tooltips.get(self.current_tree.get("table_key", ""), ""))
 
-    def update_tooltip(self):
+    def update_tooltip(self) -> None:
         """Points the single tooltip instance at the selected tree.
 
         A fresh CreateToolTip used to be built on every selection change, each one a
@@ -137,15 +146,15 @@ class TreeSelector(QWidget):
         else:
             self.current_tooltip.set_content(content)
 
-    def show_tooltip(self):
+    def show_tooltip(self) -> None:
         if self.current_tooltip is not None:
             self.current_tooltip.show_tooltip(self.dropdown)
 
-    def hide_tooltip(self):
+    def hide_tooltip(self) -> None:
         if self.current_tooltip is not None:
             self.current_tooltip.hide_tooltip()
 
-    def eventFilter(self, watched, event):
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Shows the tooltip while the pointer is over the dropdown.
 
         An event filter replaces reassigning the dropdown's enterEvent/leaveEvent
@@ -154,28 +163,35 @@ class TreeSelector(QWidget):
         the results grid.
         """
         if watched is self.dropdown:
-            if event.type() == QEvent.Enter:
+            if event.type() == QEvent.Type.Enter:
                 self.show_tooltip()
-            elif event.type() in (QEvent.Leave, QEvent.Hide, QEvent.MouseButtonPress, QEvent.FocusOut):
+            elif event.type() in (
+                QEvent.Type.Leave,
+                QEvent.Type.Hide,
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.FocusOut,
+            ):
                 self.hide_tooltip()
         return super().eventFilter(watched, event)
 
-    def hideEvent(self, event):
+    def hideEvent(self, event: QHideEvent) -> None:
         """A hidden selector must not leave its tooltip floating."""
         self.hide_tooltip()
         super().hideEvent(event)
 
-    def tree_changed(self):
+    def tree_changed(self) -> None:
         """
         Callback called when the selected tree changes and emits treeChanged signal.
         """
         if self.current_tree:
             self.treeChanged.emit(self.current_tree)
 
-    def get_tree_infos(self):
+    def get_tree_infos(self) -> dict[str, Any]:
         """
         Retrieves information of the selected tree.
 
         :return: Dictionary containing current tree information.
         """
+        if self.current_tree is None:  # pragma: no cover - a tree is selected on startup
+            raise RangeFolderNotFound("No tree is selected")
         return self.current_tree

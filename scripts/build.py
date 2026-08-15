@@ -15,7 +15,7 @@ DIST_DIR = os.path.join(PROJECT_ROOT, "dist")
 BUILD_DIR = os.path.join(PROJECT_ROOT, "build")
 
 
-def clean():
+def clean() -> None:
     """Remove previous build artifacts."""
     print("🧹 Cleaning previous build directories...")
     for directory in [BUILD_DIR, DIST_DIR]:
@@ -24,7 +24,7 @@ def clean():
             print(f"   Removed: {directory}")
 
 
-def build(clean_first=True):
+def build(clean_first: bool = True) -> None:
     """Execute PyInstaller build."""
     if clean_first:
         clean()

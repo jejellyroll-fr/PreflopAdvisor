@@ -3,8 +3,10 @@
 import logging
 import os
 from configparser import ConfigParser
+from typing import Any
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QByteArray, QRect, QSettings, Qt
+from PySide6.QtGui import QCloseEvent, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -26,7 +28,7 @@ from .outputframe import OutputFrame
 from .paths import package_file
 from .position_selector import PositionSelector
 from .randomizer import RandomButton
-from .settings import normalize
+from .settings import ConfigSource, normalize
 from .tree_reader import TreeReader
 from .tree_selector import TreeSelector
 
@@ -66,37 +68,34 @@ class DatabaseProgress:
     meant to cover had finished.
     """
 
-    def __init__(self, folder, total, parent=None):
+    def __init__(self, folder: str, total: int, parent: QWidget | None = None) -> None:
         self.heading = f"Building the lookup database for:\n{folder}"
-        self.dialog = QProgressDialog(
-            self.heading,
-            None,  # no cancel button: a half-built database is not published anyway
-            0,
-            max(total, 1),
-            parent,
-        )
+        self.dialog = QProgressDialog(self.heading, "", 0, max(total, 1), parent)
+        # No cancel button: a half-built database is not published anyway. Qt takes a
+        # null button to mean exactly that; its stub only admits a real one.
+        self.dialog.setCancelButton(None)  # type: ignore[arg-type]
         self.dialog.setWindowTitle("Preflop Advisor")
-        self.dialog.setWindowModality(Qt.ApplicationModal)
+        self.dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.dialog.setMinimumDuration(0)
         self.update(0, total)
 
-    def update(self, done, total):
+    def update(self, done: int, total: int) -> None:
         self.dialog.setMaximum(max(total, 1))
         self.dialog.setValue(done)
         self.dialog.setLabelText(f"{self.heading}\n{done} / {total} range files")
         QApplication.processEvents()
 
-    def close(self):
+    def close(self) -> None:
         self.dialog.close()
 
 
-def build_progress(folder, total):
+def build_progress(folder: str, total: int) -> DatabaseProgress:
     """Progress dialog for a database build, parented to whatever window is up."""
     return DatabaseProgress(folder, total, QApplication.activeWindow())
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.configs = ConfigParser()
 
@@ -171,7 +170,7 @@ class MainWindow(QMainWindow):
         # Input and output are separated by a handle rather than by fixed proportions:
         # how much room the results deserve against the card grid depends on the screen,
         # and on whether the tree is heads-up or six-handed.
-        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.addWidget(self.input_frame)
         self.splitter.addWidget(self.output_frame)
         self.splitter.setChildrenCollapsible(False)
@@ -194,16 +193,16 @@ class MainWindow(QMainWindow):
         self.update_output_frame()
 
     @staticmethod
-    def section_label(text, size=14, bold=False):
+    def section_label(text: str, size: int = 14, bold: bool = False) -> QLabel:
         """A caption above one of the input sections."""
         label = QLabel(text)
-        label.setAlignment(Qt.AlignLeft)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         weight = "font-weight: bold; " if bold else ""
         label.setStyleSheet(f"font-size: {size}px; {weight}padding: 5px;")
         return label
 
     @staticmethod
-    def section(label, widget):
+    def section(label: QLabel, widget: QWidget) -> QVBoxLayout:
         """One captioned control, as a column of its own."""
         column = QVBoxLayout()
         column.setContentsMargins(0, 0, 0, 0)
@@ -211,7 +210,7 @@ class MainWindow(QMainWindow):
         column.addWidget(widget)
         return column
 
-    def assemble_layouts(self):
+    def assemble_layouts(self) -> None:
         """Input as a band across the top, results underneath.
 
         The results are the wide thing: a seven-handed overview is nine columns, and a
@@ -219,8 +218,8 @@ class MainWindow(QMainWindow):
         card grid that needs 740 of its own, nine columns do not fit on any ordinary
         screen; across the whole window they fit on a laptop.
         """
-        self.input_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.output_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.input_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.output_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         cards = QVBoxLayout()
         cards.setContentsMargins(0, 0, 0, 0)
@@ -245,11 +244,11 @@ class MainWindow(QMainWindow):
         # Add the output component
         self.output_layout.addWidget(self.output)
 
-    def on_selection_changed(self, _=None):
+    def on_selection_changed(self, _: object = None) -> None:
         """Slot for the component signals, which each carry a payload we do not need."""
         self.update_output_frame()
 
-    def update_output_frame(self):
+    def update_output_frame(self) -> None:
         """Update the interface based on selections."""
         if not self._ready:
             return
@@ -276,7 +275,7 @@ class MainWindow(QMainWindow):
             self.report_error(f"Could not read the range files: {error}")
 
     @staticmethod
-    def hand_matches_game(hand, game):
+    def hand_matches_game(hand: str, game: str) -> bool:
         """Whether a selected hand has the right number of cards for the game."""
         expected = {"NL": 4, "PLO": 8, "PLO8": 8, "PLO5": 10}.get(game)
         return expected is not None and len(hand) == expected
@@ -285,7 +284,7 @@ class MainWindow(QMainWindow):
     # Window layout, remembered between sessions
     # ------------------------------------------------------------------
 
-    def usable_screen(self):
+    def usable_screen(self) -> QRect | None:
         """The area of the display this window is on, or the primary one before it has one.
 
         ``QWidget.screen()`` rather than the primary screen: on a machine with a laptop
@@ -295,7 +294,7 @@ class MainWindow(QMainWindow):
         screen = self.screen() or QApplication.primaryScreen()
         return None if screen is None else screen.availableGeometry()
 
-    def opening_size(self):
+    def opening_size(self) -> tuple[int, int]:
         """The size to open at, trimmed to the screen showing the window.
 
         A fixed size cannot serve both machines this runs on: at the height a seven-handed
@@ -313,7 +312,7 @@ class MainWindow(QMainWindow):
             min(DEFAULT_WINDOW_SIZE[1], available.height() - WINDOW_CHROME_ALLOWANCE),
         )
 
-    def fit_to_screen(self):
+    def fit_to_screen(self) -> None:
         """Shrink the window if it is larger than the display it ended up on.
 
         Covers what sizing at construction cannot: a window that opens on a second, smaller
@@ -329,44 +328,46 @@ class MainWindow(QMainWindow):
             logger.debug("Trimming the window to its screen: %dx%d", width, height)
             self.resize(width, height)
 
-    def showEvent(self, event):
+    def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self.fit_to_screen()
 
-    def restore_layout(self):
+    def restore_layout(self) -> None:
         """Put the window and its divider back where they were left.
 
         Nothing is imposed when there is nothing stored: the window keeps the size the
         caller gave it, and the splitter its stretch factors.
         """
         settings = QSettings()
+        # Checked rather than trusted: these come back as whatever the settings file
+        # holds, which is a file a user can edit.
         geometry = settings.value(GEOMETRY_KEY)
-        if geometry is not None:
+        if isinstance(geometry, QByteArray):
             self.restoreGeometry(geometry)
         divider = settings.value(SPLITTER_KEY)
-        if divider is not None:
+        if isinstance(divider, QByteArray):
             self.splitter.restoreState(divider)
         else:
             # Left to itself the splitter follows the size each side asks for, and the
             # card grid asks for a lot.
             self.splitter.setSizes(list(DEFAULT_SPLIT))
 
-    def save_layout(self):
+    def save_layout(self) -> None:
         """Record where the window and its divider ended up."""
         settings = QSettings()
         settings.setValue(GEOMETRY_KEY, self.saveGeometry())
         settings.setValue(SPLITTER_KEY, self.splitter.saveState())
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.save_layout()
         super().closeEvent(event)
 
-    def report_error(self, message):
+    def report_error(self, message: str) -> None:
         """Surface a problem to the user instead of failing silently."""
         logger.error(message)
         self.statusBar().showMessage(message, 10000)
 
-    def update_card_and_position_selector(self, tree_infos):
+    def update_card_and_position_selector(self, tree_infos: dict[str, Any]) -> None:
         """Adapt card count and active positions based on the selected tree."""
         num_players = tree_infos["plrs"]
         game = tree_infos["game"]
@@ -386,7 +387,7 @@ class MainWindow(QMainWindow):
         )
         self.position_selector.update_active_positions(seats[:num_players])
 
-    def _get_section_config(self, section):
+    def _get_section_config(self, section: str) -> ConfigSource:
         """Helper to retrieve a configuration section.
         Returns the real config section if it exists, otherwise a dict of defaults."""
         if section in self.configs:

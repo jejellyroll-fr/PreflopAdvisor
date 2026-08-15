@@ -35,7 +35,7 @@ SUIT_GROUPING_ORDER = ("s", "d", "h", "c")
 # Added support for 2-card NL hands
 
 
-def convert_hand(hand):
+def convert_hand(hand: str) -> str:
     """
     Determines the type of hand based on its length and calls the appropriate conversion function.
     """
@@ -53,7 +53,7 @@ def convert_hand(hand):
     return hand
 
 
-def convert_holdem_hand(hand):
+def convert_holdem_hand(hand: str) -> str:
     """
     Converts a Hold'em hand to a compact format (e.g., "AKs" or "QQ").
     """
@@ -74,7 +74,7 @@ def convert_holdem_hand(hand):
         return f"{ranks[0]}{ranks[1]}o"
 
 
-def convert_omaha_hand(hand):
+def convert_omaha_hand(hand: str) -> str:
     """
     Converts a 4-card Omaha hand to Monker format.
     """
@@ -124,11 +124,11 @@ def convert_omaha_hand(hand):
         for item in cards_single_suit:
             return_hand += item[0]
     if cards_two_suited:
-        for item in cards_two_suited:
-            item.sort(key=lambda x: RANK_ORDER[x[0]])
+        for pair in cards_two_suited:
+            pair.sort(key=lambda x: RANK_ORDER[x[0]])
         cards_two_suited.sort(key=lambda x: (RANK_ORDER[x[1][0]], RANK_ORDER[x[0][0]]))
-        for item in cards_two_suited:
-            return_hand += f"({item[0][0]}{item[1][0]})"
+        for pair in cards_two_suited:
+            return_hand += f"({pair[0][0]}{pair[1][0]})"
     if cards_three_suited:
         cards_three_suited.sort(key=lambda x: RANK_ORDER[x[0]])
         return_hand += f"({cards_three_suited[0][0]}{cards_three_suited[1][0]}{cards_three_suited[2][0]})"
@@ -139,7 +139,7 @@ def convert_omaha_hand(hand):
     return return_hand
 
 
-def convert_omaha5_hand(hand):
+def convert_omaha5_hand(hand: str) -> str:
     """
     Converts a 5-card Omaha hand to an adapted format.
     """
@@ -184,7 +184,7 @@ def convert_omaha5_hand(hand):
     return result
 
 
-def sort_monker_2_hand(hand):
+def sort_monker_2_hand(hand: str) -> str:
     """
     Sorts a hand in Monker format to ensure a consistent representation.
     """
@@ -194,7 +194,11 @@ def sort_monker_2_hand(hand):
         return "".join(sorted(hand, key=lambda x: RANK_ORDER[x]))
     if hand.count("(") == 1:
         # Hand with one suited combination
-        suited = re.search(r"\((.+?)\)", hand).group(1)
+        group = re.search(r"\((.+?)\)", hand)
+        if group is None:
+            logger.warning(f"Unbalanced parentheses in hand: {hand}")
+            return hand
+        suited = group.group(1)
         unsuited = re.sub(r"\((.+?)\)", "", hand)
         return (
             "".join(sorted(unsuited, key=lambda x: RANK_ORDER[x]))
@@ -223,7 +227,7 @@ def sort_monker_2_hand(hand):
     return hand
 
 
-def sort_omaha5_hand(hand):
+def sort_omaha5_hand(hand: str) -> str:
     """
     Sorts a 5-card Omaha hand to ensure a consistent representation.
     """
@@ -238,7 +242,11 @@ def sort_omaha5_hand(hand):
         return "".join(sorted(hand, key=lambda x: RANK_ORDER[x]))
     if hand.count("(") == 1:
         # Hand with one suited combination
-        suited = re.search(r"\((.+?)\)", hand).group(1)
+        group = re.search(r"\((.+?)\)", hand)
+        if group is None:
+            logger.warning(f"Unbalanced parentheses in hand: {hand}")
+            return hand
+        suited = group.group(1)
         unsuited = re.sub(r"\((.+?)\)", "", hand)
         return (
             "".join(sorted(unsuited, key=lambda x: RANK_ORDER[x]))
@@ -264,7 +272,7 @@ def sort_omaha5_hand(hand):
     logger.error(f"convert error! {hand}")
 
 
-def normalize_monker_hand(hand):
+def normalize_monker_hand(hand: str) -> str:
     """
     Maps a stored hand string to the ordering ``convert_hand`` produces.
 
@@ -289,7 +297,7 @@ def normalize_monker_hand(hand):
     return hand
 
 
-def replace_monker_2_hands(filename):
+def replace_monker_2_hands(filename: str) -> None:
     """
     Reads a file, sorts the hands it contains, and rewrites the file with the sorted hands.
     """
@@ -307,7 +315,7 @@ def replace_monker_2_hands(filename):
     logger.debug(f"File updated: {filename}")
 
 
-def replace_all_monker_2_files(path):
+def replace_all_monker_2_files(path: str) -> None:
     """
     Applies the replacement function to all .rng files in a given directory.
     """
@@ -317,7 +325,7 @@ def replace_all_monker_2_files(path):
     logger.debug(f"All .rng files in {path} have been processed.")
 
 
-def move_plo5_file(work_path, inputfilename, outputfilename):
+def move_plo5_file(work_path: str, inputfilename: str, outputfilename: str) -> None:
     """
     Converts a JSON file containing PLO5 hands to an adapted format and writes it to a new file.
     """
@@ -335,7 +343,7 @@ def move_plo5_file(work_path, inputfilename, outputfilename):
     logger.debug(f"Converted file written: {output_file}")
 
 
-def move_plo5_postflop_file(work_path, inputfilename, outputfilename):
+def move_plo5_postflop_file(work_path: str, inputfilename: str, outputfilename: str) -> None:
     """
     Converts a JSON file containing PLO5 post-flop hands to a CSV file.
     """
