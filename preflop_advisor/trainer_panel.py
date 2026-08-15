@@ -27,15 +27,13 @@ from . import theme
 from .errors import PreflopAdvisorError
 from .outputframe import CHIPS_PER_BB, ActionTile, short_action_label
 from .settings import ConfigSource, get
-from .trainer import Question, Session, Spot, deal, grade, spots_for
+from .trainer import Question, Session, deal, grade, spots_for
 from .tree_reader import TreeReader
 
 logger = logging.getLogger(__name__)
 
 #: Cards per hand, by the game a tree declares. Matches what the card selector offers.
 CARDS_PER_GAME = {"NL": 2, "PLO": 4, "PLO8": 4, "PLO5": 5}
-#: How many spots to try before giving up on a tree that answers nothing.
-DEAL_ATTEMPTS = 40
 #: Height of the revealed strategy tiles. They read at a glance; they do not need the
 #: whole panel, and the room below is where the tally sits.
 TILE_HEIGHT = 120
@@ -142,21 +140,27 @@ class TrainerPanel(QWidget):
 
         A tree holds the lines its solver was run for and no others, so a spot is only a
         question once the ranges behind it exist. Rather than filter the catalogue up
-        front -- which would mean reading the whole tree to build a menu -- a spot that
-        answers nothing is simply passed over.
+        front -- which would mean reading the whole tree to build a menu -- the shuffled
+        catalogue is walked and a spot that answers nothing is passed over.
+
+        Walked, not sampled. Drawing at random with replacement can miss a spot that is
+        there: a nine-handed catalogue is 81 of them, so a tree exporting one line would
+        be declared empty better than half the time. Every spot is looked at once before
+        saying the tree has nothing to drill, which costs 81 lookups at worst -- a few
+        milliseconds, against an answer that would have been wrong.
         """
         tree = self.tree_source()
         reader = TreeReader("", "", tree, self.tree_reader_configs)
         cards = CARDS_PER_GAME.get(str(tree.get("game", "PLO")).upper(), 4)
         spots = spots_for(reader.position_list)
+        self.rng.shuffle(spots)
 
-        for _ in range(DEAL_ATTEMPTS):
-            spot: Spot = self.rng.choice(spots)
+        for spot in spots:
             hand = deal(cards, self.rng)
             results = reader.action_processor.get_results(hand, spot.line, spot.hero)
             if results:
                 return Question(spot, hand, results)
-        logger.warning("No spot of %s answered in %d attempts", tree.get("folder"), DEAL_ATTEMPTS)
+        logger.warning("No spot of %s answered", tree.get("folder"))
         return None
 
     def render_hand(self, hand: str) -> str:

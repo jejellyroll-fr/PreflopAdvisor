@@ -640,3 +640,35 @@ def test_a_window_that_was_never_shown_saves_no_layout(qtbot):
     window.save_layout()
 
     assert QSettings().value(SPLITTER_KEY) is None
+
+
+def test_every_spot_is_looked_at_before_calling_a_tree_empty(main_window, monkeypatch):
+    """Sampling with replacement can miss a spot that is there.
+
+    A nine-handed catalogue is 81 spots; a tree exporting one line would have been
+    declared empty better than half the time.
+    """
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    # "UTG" is not seated at the heads-up tree, so these answer nothing.
+    barren = [Spot(f"nowhere {index}", "UTG", []) for index in range(60)]
+    real = Spot("SB first in", "SB", [])
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [*barren, real])
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is not None
+    assert main_window.trainer.question.spot.label == "SB first in"
+
+
+def test_a_tree_with_nothing_to_drill_says_so(main_window, monkeypatch):
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "UTG", [])])
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is None
+    assert "No spot" in main_window.trainer.spot_label.text()
