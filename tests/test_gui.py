@@ -379,8 +379,9 @@ def test_the_window_can_be_made_short(main_window):
     """The floor is the layout's own, and it has to clear a laptop screen."""
     main_window.resize(200, 200)
 
-    # The tab bar over the two modes costs about thirty pixels of it.
-    assert main_window.minimumSizeHint().height() <= 560
+    # The tab bar over the Advisor / Trainer / Configuration tabs costs a little
+    # height; the floor must still clear a laptop screen (well under 768px).
+    assert main_window.minimumSizeHint().height() <= 600
 
 
 def test_enlarging_the_window_does_not_raise_its_floor(main_window):
@@ -506,14 +507,15 @@ def test_every_table_size_names_its_seats(raw_config, hu_tree, num_players, expe
 
 
 @pytest.mark.parametrize("num_players,expected", [(6, SIX_MAX), (7, SEVEN_MAX)])
-def test_the_fallback_configuration_names_seats_correctly_too(main_window, hu_tree, num_players, expected):
+def test_the_fallback_configuration_names_seats_correctly_too(hu_tree, num_players, expected):
     """The defaults used when config.ini has no [TreeReader] are a configuration as well.
 
     They carried the seven-name list on its own, which is the arrangement that renames a
     six-handed table.
     """
-    main_window.configs.remove_section("TreeReader")
-    defaults = main_window._get_section_config("TreeReader")
+    from preflop_advisor.gui import MainWindow
+
+    defaults = MainWindow.fallback_section("TreeReader")
 
     reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=num_players), defaults)
 
@@ -566,7 +568,7 @@ def test_showing_the_window_trims_it(qtbot, main_window):
 def test_the_window_offers_both_the_advisor_and_the_trainer(main_window):
     tabs = [main_window.tabs.tabText(index) for index in range(main_window.tabs.count())]
 
-    assert tabs == ["Advisor", "Trainer"]
+    assert tabs == ["Advisor", "Trainer", "Configuration"]
 
 
 def test_dealing_asks_a_spot_the_selected_tree_can_answer(main_window):

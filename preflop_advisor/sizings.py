@@ -35,6 +35,7 @@ read with the sentence still attached to it and thrown out as unreadable.
 
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ def sizing_for_code(code: str) -> Sizing:
     return UNKNOWN
 
 
-def sizings_for(action_codes: dict[str, str], settings: dict[str, str] | None = None) -> dict[str, Sizing]:
+def sizings_for(action_codes: dict[str, str], settings: Mapping[str, str] | None = None) -> dict[str, Sizing]:
     """Map every action name to what it costs.
 
     :param action_codes: Action name to Monker code, as the reader assembles it.
