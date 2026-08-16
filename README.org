@@ -41,8 +41,8 @@ faces after each.
 *** Trainer: a question
 The situation is drawn as a table: who is seated, what they did, what it left them, and
 what is in the middle. The pot and the stacks are computed from the sizings the tree
-declares, and a tree whose sizings cannot be read is drawn without them rather than with
-invented ones.
+declares, and a hand whose line of play went through a sizing that cannot be read is drawn
+without them rather than with invented ones.
 
 #+CAPTION: Trainer, a hand to answer
 [[file:pics/trainer-question.png]]
@@ -198,9 +198,12 @@ against names saying 60, 70, 75 and 100 -- not a published fact. Monker publishe
 of codes.
 
 Everything else is unknown and says so. Monker has fixed sizings in small blinds as well
-(=12sb=), so a code such as =15= may be one, or an index, or a house convention. A tree
-whose sizings cannot be read is drawn without its pot and without its stacks rather than
-with invented ones. You can declare what yours mean:
+(=12sb=), so a code such as =15= may be one, or an index, or a house convention.
+
+An unreadable sizing costs you the hands that go through it, not the tree. It is the line
+of play that is priced, so a question whose line never used that sizing is drawn with its
+pot and stacks as usual, and only the ones that did are drawn without them. You can
+declare what yours mean, and get those back:
 
 #+BEGIN_SRC ini
 # 3xOpen raises to three big blinds
@@ -359,9 +362,10 @@ Deal a hand, answer, see what it cost.
 - *The table.* Seats in acting order with you brought to the near side, what each one did
   and has left, the dealer button, your cards, and the pot. Every figure is computed from
   the sizings the tree declares, under the pot-limit rule: call first, then raise by no
-  more than the pot that call makes. A tree using a sizing whose code has no published
-  meaning is drawn without a pot and without stacks, rather than with numbers that might
-  be wrong. Two things have to be readable for the table to carry numbers, and both can be
+  more than the pot that call makes. A hand whose line went through a sizing with no
+  published meaning is drawn without a pot and without stacks, rather than with numbers
+  that might be wrong; the hands that avoid that sizing keep theirs. Two things have to be
+  readable for the table to carry numbers, and both can be
   declared when they are not: what each sizing costs (see /RaiseSizeList/ above) and how
   big the ante is (=Table12.ante=0.125=, beside the tree in =[TreeInfos]=). An ante left
   out would understate the pot, every percentage raise, every stack and the tally's ratio,

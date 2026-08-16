@@ -16,9 +16,10 @@ Two families can be read, and only two:
 Everything else is **unknown**, and says so. Monker also has fixed sizings in small blinds
 (``12sb``), and a code such as ``15`` may well be one, or an index, or a convention of
 whoever wrote that configuration: the documentation does not say, and guessing would put a
-wrong number on the table with nothing to mark it as a guess. A tree whose sizings this
-cannot read is drawn without its pot rather than with an invented one, and the owner can
-declare them if they know. Comments go on their own line, as they do everywhere else in
+wrong number on the table with nothing to mark it as a guess. A line of play that went
+through a sizing this cannot read is drawn without its pot rather than with an invented
+one -- the line is what is priced, so the questions that avoid that sizing keep their
+numbers -- and the owner can declare them if they know. Comments go on their own line, as they do everywhere else in
 the configuration: nothing strips a comment written after a value, so the number would be
 read with the sentence still attached to it and thrown out as unreadable.
 
