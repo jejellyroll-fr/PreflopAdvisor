@@ -165,7 +165,6 @@ def _tree_seats_match_files(parts: list[str], config: ConfigSource | None) -> bo
     except Exception:  # noqa: BLE001 - same: a broken tree is not a valid save
         return False
 
-
     filled_columns: set[int] = set()
     for row in grid:
         if not isinstance(row, list):
@@ -248,9 +247,9 @@ def inspect_range_folder(folder: str | None, config: ConfigSource | None = None)
         players = 9
     elif config is not None:
         # Cross-test against TreeReader: try from 9 down to 2
-        for p in range(9, 1, -1):
-            if _tree_seats_match_files([str(p), "100", game, folder_display, ""], config):
-                players = p
+        for num_players in range(9, 1, -1):
+            if _tree_seats_match_files([str(num_players), "100", game, folder_display, ""], config):
+                players = num_players
                 break
 
     # 3. Detect Stack Size (BB)
@@ -286,8 +285,8 @@ def inspect_range_folder(folder: str | None, config: ConfigSource | None = None)
     from .sizings import sizing_for_code
 
     action_codes: set[str] = set()
-    for p in rng_files:
-        for part in p.stem.split("."):
+    for rng_path in rng_files:
+        for part in rng_path.stem.split("."):
             if part.isdigit():
                 action_codes.add(part)
 

@@ -389,4 +389,3 @@ def test_saving_sizings_action_codes(tmp_path, qtbot):
     tab.save()
 
     assert config.get("TreeReader", "raise100") == "40150"
-
