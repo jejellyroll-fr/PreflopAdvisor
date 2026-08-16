@@ -8,6 +8,8 @@ differences. The rest exercises each panel's staging and the sim/sizing editors.
 
 from pathlib import Path
 
+from PySide6.QtWidgets import QLabel, QPushButton
+
 from preflop_advisor.config_store import LayeredConfig
 from preflop_advisor.config_tab import ConfigTab
 from preflop_advisor.paths import package_file
@@ -185,3 +187,19 @@ def test_save_shows_a_message_box_and_emits_nothing_for_an_invalid_sim(tmp_path,
     # The save was refused, so no change signal fired and nothing was written to disk.
     assert not emitted
     assert not config.user_path.exists()
+
+
+def test_config_tab_documents_the_validation_rules(tmp_path, qtbot):
+    """The tab tells the user what Save checks, so a refusal is never a surprise."""
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+
+    # The Save button explains the pre-save checks.
+    save_buttons = [w for w in tab.findChildren(QPushButton) if w.text() == "Save"]
+    assert save_buttons, "a Save button exists"
+    assert "range files" in save_buttons[0].toolTip()
+
+    # The Sims panel carries a standing note restating the same rules.
+    sims = tab.panels["Sims"]
+    notes = [w.text() for w in sims.findChildren(QLabel) if "range files" in w.text()]
+    assert notes, "the Sims panel documents the validation rules"

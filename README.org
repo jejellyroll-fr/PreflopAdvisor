@@ -302,7 +302,7 @@ python standalone.py
 ** Development
 #+BEGIN_SRC sh
 uv sync --extra dev
-uv run pytest              # 504 tests, coverage gate at 90%
+uv run pytest              # 536 tests, coverage gate at 90%
 uv run pytest -m "not slow"  # skip the subprocess smoke test
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                # strict; the package and scripts are fully annotated

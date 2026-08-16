@@ -153,8 +153,15 @@ class ConfigTab(QWidget):
 
         footer = QHBoxLayout()
         save = QPushButton("Save")
+        save.setToolTip(
+            "Write your overrides to the user config file. Each sim is checked first: its "
+            "folder must resolve and hold .rng range files, any ante named must be declared, "
+            "and the player count must match the seats the files imply. A sim that fails is "
+            "reported and nothing is written."
+        )
         save.clicked.connect(self.save)
         revert = QPushButton("Revert")
+        revert.setToolTip("Discard unsaved edits and reload the panels from the current config.")
         revert.clicked.connect(self.reload)
         footer.addStretch(1)
         footer.addWidget(revert)
@@ -407,6 +414,18 @@ class SimsPanel(_Panel):
         self.feedback = QLabel("")
         self.feedback.setWordWrap(True)
         self.body.addWidget(self.feedback)
+
+        # A standing note so the refusal on Save is never a surprise: these are exactly
+        # the checks the plan's section 5.2 describes, and the message box names the one
+        # that failed.
+        rules = QLabel(
+            "A sim is saved only if: its folder resolves, it holds .rng range files, and "
+            "any ante named in the description is declared. A player count that matches no "
+            "seat in the files is also refused. Save reports the first sim that fails."
+        )
+        rules.setWordWrap(True)
+        rules.setStyleSheet("color: #b0b0b0; font-size: 11px;")
+        self.body.addWidget(rules)
 
         # Ante and tooltip live per-tree as TableN.ante / in [TreeToolTips].
         meta = QGroupBox("Selected sim: ante & tooltip")
