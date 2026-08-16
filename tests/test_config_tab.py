@@ -248,3 +248,24 @@ def test_sim_edit_dialog_loads_initial_data(tmp_path, qtbot):
     assert res["bb"] == "50"
     assert res["ante"] == "0.25"
     assert res["tooltip"] == "tip.png"
+
+
+def test_saving_multiple_times_does_not_crash_on_deleted_objects(tmp_path, qtbot):
+    """Saving triggers reload() which rebuilds panels; subsequent saves must not crash."""
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+
+    # First save
+    tab.save()
+
+    # Second save immediately after (after panels have refreshed)
+    tab.save()
+
+    # Third save after modifying a value
+    display = tab.panels["Display"]
+    field = next(f for f in display._fields if f.key == "ChipsPerBB")
+    assert isinstance(field._edit, object)
+    field._edit.setText("2500")
+    tab.save()
+
+    assert config.user.get("Output", "ChipsPerBB", fallback=None) == "2500"

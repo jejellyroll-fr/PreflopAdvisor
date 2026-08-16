@@ -145,20 +145,25 @@ class _Field:
             self._reset.setEnabled(False)
 
     def value(self) -> str:
-        if isinstance(self._edit, QComboBox):
-            return self._edit.currentText()
-        assert isinstance(self._edit, QLineEdit)
-        return self._edit.text().strip()
+        try:
+            if isinstance(self._edit, QComboBox):
+                return self._edit.currentText()
+            if isinstance(self._edit, QLineEdit):
+                return self._edit.text().strip()
+        except RuntimeError:
+            return ""
+        return ""
 
     def wants_reset(self) -> bool:
-        return (
-            self._reset is not None
-            and not self._reset.isEnabled()
-            and (
-                (isinstance(self._edit, QLineEdit) and not self._edit.text().strip())
-                or (isinstance(self._edit, QComboBox) and self._edit.currentIndex() == 0)
-            )
-        )
+        try:
+            if self._reset is not None and not self._reset.isEnabled():
+                if isinstance(self._edit, QLineEdit) and not self._edit.text().strip():
+                    return True
+                if isinstance(self._edit, QComboBox) and self._edit.currentIndex() == 0:
+                    return True
+        except RuntimeError:
+            return False
+        return False
 
 
 class SimEditDialog(QDialog):
@@ -540,11 +545,11 @@ class SizingsPanel(_Panel):
     """Action name -> Monker code, the order they are tried, and .pot/.blinds."""
 
     def __init__(self, config: LayeredConfig) -> None:
-        self._size_fields: list[_Field] = []
         self._discovery: QTableWidget | None = None
         super().__init__(config, "Sizings")
 
     def build(self) -> None:
+        self._fields = []
         code_keys = [
             key
             for key in self.config.keys("TreeReader")
@@ -567,7 +572,7 @@ class SizingsPanel(_Panel):
         grid_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         for key in code_keys:
             field = _Field("TreeReader", key, key)
-            self._size_fields.append(field)
+            self._fields.append(field)
             current = str(self.config.get("TreeReader", key, ""))
             field._edit = QLineEdit(current)
             field._edit.setFixedWidth(120)
@@ -593,8 +598,7 @@ class SizingsPanel(_Panel):
             "long_text",
             "Order in which raise sizings are probed when reading trees.",
         )
-        self._size_fields.append(order)
-        order_layout.addWidget(order.build(self.config))
+        self.add_field_to_layout(order, order_layout)
         self.body.addWidget(order_card)
 
         scan_card = QGroupBox("Scan a Simulation Folder for Custom Sizings")
@@ -614,19 +618,16 @@ class SizingsPanel(_Panel):
         self.body.addStretch(1)
 
     def _reset_field(self, field: _Field) -> None:
-        assert isinstance(field._edit, QLineEdit)
-        field._edit.clear()
-        if field._reset is not None:
-            field._reset.setEnabled(False)
-
-    def collect(self, config: LayeredConfig) -> None:
-        for field in self._size_fields:
-            if field.wants_reset():
-                config.reset(field.section, field.key)
-            else:
-                config.set(field.section, field.key, field.value())
+        try:
+            if isinstance(field._edit, QLineEdit):
+                field._edit.clear()
+            if field._reset is not None:
+                field._reset.setEnabled(False)
+        except RuntimeError:
+            pass
 
     def scan(self) -> None:
+
         folder = QFileDialog.getExistingDirectory(self, "Choose a range folder")
         if not folder:
             return
