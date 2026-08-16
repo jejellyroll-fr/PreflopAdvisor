@@ -6,10 +6,19 @@ relative paths work from the repository, an installed package, or a frozen bundl
 """
 
 import os
+from configparser import ConfigParser
 
 import pytest
 
 from preflop_advisor import paths
+from preflop_advisor.paths import package_file
+
+
+def _tree_reader_config() -> dict[str, str]:
+    """The real [TreeReader] section, with the action codes a reader needs."""
+    config = ConfigParser()
+    config.read(package_file("config.ini"))
+    return dict(config["TreeReader"])
 
 
 def test_an_existing_path_is_returned_as_is(tmp_path):
@@ -119,5 +128,30 @@ def test_validate_tree_allows_a_declared_ante():
 
 def test_validate_tree_ignores_an_ante_explicitly_denied():
     ok, _ = paths.validate_tree("6,100,PLO,ranges/HU-100bb-with-limp,no ante here", ante_declared=False)
+
+    assert ok
+
+
+def test_validate_tree_accepts_a_matching_player_count():
+    config = _tree_reader_config()
+
+    ok, _reason = paths.validate_tree("9,100,PLO,ranges/fake-9max-100bb,fcitif", ante_declared=False, config=config)
+
+    assert ok
+
+
+def test_validate_tree_rejects_a_player_count_too_large():
+    config = _tree_reader_config()
+
+    ok, reason = paths.validate_tree("9,100,PLO,ranges/HU-100bb-with-limp,no Rake", ante_declared=False, config=config)
+
+    assert not ok
+    assert "player count" in reason
+
+
+def test_validate_tree_skips_the_seat_check_without_config():
+    # No [TreeReader] section supplied: the seat check cannot run, so only the
+    # folder/ante checks apply.
+    ok, _ = paths.validate_tree("9,100,PLO,ranges/HU-100bb-with-limp,no Rake", ante_declared=False)
 
     assert ok

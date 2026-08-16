@@ -498,10 +498,12 @@ class SimsPanel(_Panel):
             description = self.table.item(row, 5).text().strip()
             value = f"{players},{bb},{game},{folder},{description}"
             # Refuse a sim that would answer nothing, before it reaches the ranges:
-            # the folder must resolve and actually hold range files, and an ante
-            # mentioned in the description must be declared (plan section 5.2).
+            # the folder must resolve and hold range files, an ante mentioned in the
+            # description must be declared, and the player count must match the seats
+            # the files actually name (plan section 5.2).
             ante_declared = bool(config.tree_metadata("TreeInfos", key).get("ante"))
-            ok, reason = validate_tree(value, ante_declared)
+            # The seat check needs the [TreeReader] section to derive seat names.
+            ok, reason = validate_tree(value, ante_declared, config.section("TreeReader"))
             if not ok:
                 raise ValueError(f"{key}: {reason}")
             config.set("TreeInfos", key, value)
