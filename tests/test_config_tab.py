@@ -159,3 +159,29 @@ def test_sims_panel_refuses_a_sim_without_range_files(tmp_path, qtbot):
     # The invalid sim was staged by the test itself but refused by collect: it is
     # present in the (unsaved) user layer yet nothing downstream ran.
     assert config.user.has_option("TreeInfos", "table98")
+
+
+def test_save_shows_a_message_box_and_emits_nothing_for_an_invalid_sim(tmp_path, qtbot):
+    """Saving a sim without range files surfaces a QMessageBox and writes nothing."""
+    from unittest.mock import patch
+
+    from PySide6.QtWidgets import QMessageBox
+
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+
+    # Stage a sim whose folder holds no range files.
+    config.set("TreeInfos", "Table97", f"2,100,PLO,{tmp_path},bad sim")
+    tab.panels["Sims"].populate()
+
+    emitted = []
+    tab.configChanged.connect(lambda: emitted.append(True))
+
+    with patch.object(QMessageBox, "critical", return_value=QMessageBox.StandardButton.Ok) as spy:
+        tab.save()
+
+    assert spy.called
+    assert "no .rng" in spy.call_args.args[2]
+    # The save was refused, so no change signal fired and nothing was written to disk.
+    assert not emitted
+    assert not config.user_path.exists()
