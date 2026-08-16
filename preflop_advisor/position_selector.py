@@ -39,8 +39,6 @@ class PositionSelector(QWidget):
         self.button_pad = int(position_config["ButtonPad"])
         self.fontsize = int(position_config["FontSize"])
         self.font_family = position_config["Font"]
-        self.background = position_config["Background"]
-        self.background_pressed = position_config["BackgroundPressed"]
 
         self.default_position = int(position_config["DefaultPosition"])
         self.current_position = self.default_position
