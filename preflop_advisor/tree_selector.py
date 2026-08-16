@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
+import re
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
@@ -13,10 +14,44 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .settings import ConfigSource, Settings
+from .settings import ConfigSource, Settings, get
 from .tooltip import CreateToolTip
 
 logger = logging.getLogger(__name__)
+
+#: What separates a tree's name from a fact about it: Table5 declares a tree, Table5.ante
+#: describes one.
+METADATA_MARKER = "."
+#: A description saying the tree has an ante -- a whole word, so that a description merely
+#: containing the letters does not count.
+MENTIONS_ANTE = re.compile(r"\bantes?\b", re.IGNORECASE)
+#: And one saying it has none, which the descriptions in the shipped configuration are
+#: full of ("no Rake"). Read as a mention of an ante, it hid every number of a tree whose
+#: description was telling us there was nothing to hide.
+DENIES_ANTE = re.compile(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", re.IGNORECASE)
+
+
+def ante_of(table: str, description: str, tree_infos: ConfigSource) -> float | None:
+    """What each seat posts before the blinds, in big blinds.
+
+    Declared beside the tree it belongs to, as ``Table5.ante=0.125``. A tree whose
+    description says it has one without saying how much comes back as ``None``: the size
+    is not in the export, and every number built on the pot would be short without it.
+    """
+    # Read case-insensitively on both sides: configparser hands its keys over in lower
+    # case, a plain mapping -- which the type accepts and the tests pass -- keeps whatever
+    # spelling it was written in, and a declaration missed here is silently read as no ante
+    # at all.
+    declared = get(tree_infos, f"{table}.ante")
+    if declared is not None:
+        try:
+            return float(declared)
+        except ValueError:
+            logger.warning("Ignoring %s.ante=%r: not a number", table, declared)
+            return None
+    if DENIES_ANTE.search(description):
+        return 0.0
+    return None if MENTIONS_ANTE.search(description) else 0.0
 
 
 class TreeSelector(QWidget):
@@ -93,7 +128,11 @@ class TreeSelector(QWidget):
         :param tree_infos: Section containing tree configurations.
         """
         logger.debug("Processing tree information...")
-        for index, table in enumerate(tree_infos):
+        # A key with a dot in it describes a tree rather than declaring one -- Table5.ante
+        # says how much its ante is. Enumerated as a tree of its own, its single field
+        # reached the player count and the application would not start.
+        tables = [key for key in tree_infos if METADATA_MARKER not in key]
+        for index, table in enumerate(tables):
             infos = tree_infos[table].split(",")
             table_dic = {
                 "index": index,
@@ -103,6 +142,7 @@ class TreeSelector(QWidget):
                 "game": infos[2],
                 "folder": infos[3],
                 "infos": infos[4].strip(),
+                "ante": ante_of(table, infos[4], tree_infos),
             }
             self.trees.append(table_dic)
         logger.debug("Processed tree information: %s", self.trees)

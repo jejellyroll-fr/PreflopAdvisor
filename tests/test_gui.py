@@ -14,8 +14,11 @@ from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindo
 from preflop_advisor.hand_convert_helper import convert_hand
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
+from preflop_advisor.sizings import sizings_for
+from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
-from preflop_advisor.tree_selector import TreeSelector
+from preflop_advisor.tree_reader_helpers import ActionProcessor
+from preflop_advisor.tree_selector import TreeSelector, ante_of
 
 from .conftest import REFERENCE_HAND
 
@@ -672,7 +675,7 @@ def test_a_tree_with_nothing_to_drill_says_so(main_window, monkeypatch):
     main_window.trainer.next_hand()
 
     assert main_window.trainer.question is None
-    assert "No spot" in main_window.trainer.spot_label.text()
+    assert "No situation" in main_window.trainer.spot_label.text()
 
 
 def test_a_question_never_carries_a_nameless_action(main_window, tmp_path):
@@ -819,3 +822,161 @@ def test_an_empty_action_file_does_not_hide_a_full_one(main_window, tmp_path, mo
     question = main_window.trainer.question
     assert question is not None
     assert convert_hand(question.hand) == "AAAA"
+
+
+# --------------------------------------------------------------------------------------
+# Choosing a situation, and the table it is asked at
+# --------------------------------------------------------------------------------------
+
+
+def test_the_chooser_offers_the_situations_of_the_selected_tree(main_window):
+    """A heads-up tree has heads-up situations; a seven-handed one would have its own."""
+    trainer = main_window.trainer
+    trainer.next_hand()
+
+    offered = [trainer.spot_choice.itemText(index) for index in range(trainer.spot_choice.count())]
+
+    assert offered[0] == "Any situation"
+    assert "BB vs SB open" in offered
+    assert "SB first in" in offered
+
+
+def test_choosing_a_situation_is_what_gets_dealt(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.spot_choice.setCurrentText("BB vs SB open")
+
+    for _ in range(3):
+        trainer.next_hand()
+        assert trainer.question.spot.label == "BB vs SB open"
+
+
+def test_the_choice_survives_the_next_hand(main_window):
+    """Rebuilding the list on every deal would reset it, which is the point of choosing."""
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.spot_choice.setCurrentText("SB first in")
+
+    trainer.next_hand()
+
+    assert trainer.spot_choice.currentText() == "SB first in"
+
+
+def test_a_situation_with_no_ranges_says_which_one(main_window, tmp_path):
+    folder = tmp_path / "empty"
+    folder.mkdir()
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    main_window.trainer.next_hand()
+    main_window.trainer.spot_choice.setCurrentText("BB vs SB open")
+
+    main_window.trainer.next_hand()
+
+    assert "BB vs SB open" in main_window.trainer.spot_label.text()
+
+
+def test_the_question_carries_the_table_it_was_asked_at(main_window):
+    """The blinds are posted whatever happens, so even a first-in spot has a pot."""
+    trainer = main_window.trainer
+    trainer.refresh_spots()  # what opening the tab does, and what fills the chooser
+    trainer.spot_choice.setCurrentText("BB vs SB open")
+    trainer.next_hand()
+
+    state = trainer.question.table
+    assert state is not None
+    assert state.seat("SB").action == "Raise100"
+    assert state.pot == pytest.approx(4.0)  # 3 from the small blind, 1 from the big
+    assert state.seat("BB").hero
+
+
+def test_the_pot_of_the_hand_feeds_the_tally(main_window):
+    """It used to be guessed from how many actions preceded."""
+    trainer = main_window.trainer
+    trainer.refresh_spots()
+    trainer.spot_choice.setCurrentText("BB vs SB open")
+    trainer.next_hand()
+    pot = trainer.question.table.pot
+
+    trainer.answer(trainer.question.actions()[0])
+
+    assert trainer.session.costed_hands == 1
+    assert trainer.session.average_pot_loss == pytest.approx(trainer.session.ev_loss / pot)
+
+
+def test_the_situations_are_offered_before_the_first_deal(qtbot, main_window):
+    """Filled only on dealing, the list held nothing to choose from until a hand had been
+    played -- so picking what to drill was only possible after drilling something else.
+    """
+    main_window.show()
+    main_window.tabs.setCurrentIndex(1)
+    qtbot.wait(20)
+
+    offered = [main_window.trainer.spot_choice.itemText(i) for i in range(main_window.trainer.spot_choice.count())]
+
+    assert "BB vs SB open" in offered
+    assert main_window.trainer.question is None, "offering situations must not deal one"
+
+
+@pytest.mark.parametrize(
+    "description,declared,expected",
+    [
+        ("no Rake", None, 0.0),
+        ("ANTE", None, None),
+        ("ante structure", "0.125", 0.125),
+        ("no Rake", "0.2", 0.2),
+        ("ANTE", "much", None),
+        # A description saying there is none is not a description saying there is one.
+        ("no ante", None, 0.0),
+        ("No Ante", None, 0.0),
+        ("sans ante", None, 0.0),
+        ("100bb, antes", None, None),
+    ],
+)
+def test_a_tree_says_whether_it_has_an_ante(raw_config, description, declared, expected):
+    """Declared beside its tree, or unknown when the description says there is one."""
+    section = dict(raw_config["TreeInfos"])
+    if declared is not None:
+        section["table99.ante"] = declared
+
+    assert ante_of("Table99", description, section) == expected
+
+
+def test_an_ante_declaration_is_not_read_as_a_tree(qtbot, raw_config):
+    """Table5.ante describes a tree; enumerated as one, its single field broke startup."""
+    raw_config["TreeInfos"]["Table12.ante"] = "0.125"
+
+    selector = TreeSelector(None, raw_config["TreeSelector"], raw_config["TreeInfos"], raw_config["TreeToolTips"])
+    qtbot.addWidget(selector)
+
+    # configparser keeps its keys in lower case; what matters is that one tree was found.
+    assert [tree["table_key"] for tree in selector.trees] == ["table12"]
+    assert selector.get_tree_infos()["ante"] == 0.125
+
+
+def test_the_table_shows_the_folds_that_had_to_happen(main_window, raw_config):
+    """The reader fills those in only when told who acts next.
+
+    Left out, a cutoff opening first in was drawn with everyone before it still to act.
+    """
+    seats = ["UTG", "MP", "CO", "BU", "SB", "BB"]
+    processor = ActionProcessor(seats, main_window.tree_selector.get_tree_infos(), raw_config["TreeReader"])
+
+    trainer = main_window.trainer
+    trainer.seats = seats
+    trainer.sizings = sizings_for(processor.action_codes, dict(raw_config["TreeReader"]))
+    question = trainer.question_for(processor, Spot("CO first in", "CO", []), "AhKs4h3s", [])
+
+    assert question.table.seat("UTG").folded
+    assert question.table.seat("MP").folded
+    assert question.table.seat("CO").action == "", "the hero has not acted yet"
+    assert question.table.seat("BU").action == "", "and neither have the seats after them"
+
+
+def test_an_ante_declaration_is_read_whatever_its_casing():
+    """configparser lower-cases its keys; a plain mapping keeps what was written.
+
+    Both are valid here, and a declaration missed reads as no ante at all -- which
+    understates the pot, every percentage raise and every stack.
+    """
+    section = {"Table5": "PLO,6,100,folder", "Table5.ante": "0.125"}
+
+    assert ante_of("Table5", "6-max ante PLO", section) == 0.125

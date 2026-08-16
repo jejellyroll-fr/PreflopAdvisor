@@ -257,3 +257,46 @@ def test_a_holdem_key_deals_back_out(key):
 
     assert hand is not None
     assert convert_hand(hand) == key
+
+
+# --------------------------------------------------------------------------------------
+# The tally, when the pot cannot be read
+# --------------------------------------------------------------------------------------
+
+
+def test_an_unreadable_pot_still_counts_the_answer():
+    """The verdict is known even when what it was played for is not."""
+    session = Session()
+
+    session.record(Verdict("Blunder", 1.5, "Fold", "Call"), pot=None)
+
+    assert session.hands == 1
+    assert session.ev_loss == pytest.approx(1.5)
+    assert session.counts["Blunder"] == 1
+
+
+def test_the_pot_ratio_averages_only_over_the_hands_it_knows():
+    """Counting an unknown pot as a nought would drag the ratio down with a non-answer."""
+    session = Session()
+
+    session.record(Verdict("Mistake", 0.5, "Fold", "Call"), pot=2.0)
+    session.record(Verdict("Mistake", 0.5, "Fold", "Call"), pot=None)
+
+    assert session.costed_hands == 1
+    assert session.average_pot_loss == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("seats", [["SB", "BB"], ["UTG", "MP", "CO", "BU", "SB", "BB"]])
+def test_the_big_blind_is_never_first_in(seats):
+    """Everyone folding to the big blind ends the hand; no node answers that.
+
+    Offered as a situation, it could only ever report that the tree holds no ranges for
+    it, while hiding the decision the big blind really has when nobody raises. The
+    advisor's own grid has always read that column as facing the small blind's limp.
+    """
+    labels = {spot.label: spot for spot in spots_for(seats)}
+
+    assert "BB first in" not in labels
+    assert labels["BB vs SB limp"].line == [("SB", "Call")]
+    assert labels["BB vs SB limp"].hero == "BB"
+    assert "SB first in" in labels, "every other seat still has one"
