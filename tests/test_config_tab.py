@@ -203,3 +203,48 @@ def test_config_tab_documents_the_validation_rules(tmp_path, qtbot):
     sims = tab.panels["Sims"]
     notes = [w.text() for w in sims.findChildren(QLabel) if "range files" in w.text()]
     assert notes, "the Sims panel documents the validation rules"
+
+
+def test_sim_edit_dialog_autofills_from_folder(tmp_path, qtbot):
+    """Picking a folder auto-populates Game, Players, BB, and Description."""
+    from preflop_advisor.config_tab import SimEditDialog
+
+    config = _temp_config(tmp_path)
+    dialog = SimEditDialog(config)
+
+    # Set folder path to the bundled HU tree
+    dialog.folder_edit.setText("ranges/HU-100bb-with-limp")
+
+    res = dialog.get_result()
+    assert res["game"] == "PLO"
+    assert res["players"] == "2"
+    assert res["bb"] == "100"
+    assert "HU" in res["description"]
+    assert "Detected" in dialog.scan_status.text()
+
+
+def test_sim_edit_dialog_loads_initial_data(tmp_path, qtbot):
+    """Editing an existing simulation loads all its fields correctly."""
+    from preflop_advisor.config_tab import SimEditDialog
+
+    config = _temp_config(tmp_path)
+    initial = {
+        "key": "Table12",
+        "description": "Custom Sim",
+        "game": "PLO5",
+        "players": "6",
+        "bb": "50",
+        "folder": "ranges/custom",
+        "ante": "0.25",
+        "tooltip": "tip.png",
+    }
+    dialog = SimEditDialog(config, table_key="Table12", initial_data=initial)
+
+    res = dialog.get_result()
+    assert res["key"] == "Table12"
+    assert res["description"] == "Custom Sim"
+    assert res["game"] == "PLO5"
+    assert res["players"] == "6"
+    assert res["bb"] == "50"
+    assert res["ante"] == "0.25"
+    assert res["tooltip"] == "tip.png"

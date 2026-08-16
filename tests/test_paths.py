@@ -155,3 +155,34 @@ def test_validate_tree_skips_the_seat_check_without_config():
     ok, _ = paths.validate_tree("9,100,PLO,ranges/HU-100bb-with-limp,no Rake", ante_declared=False)
 
     assert ok
+
+
+def test_inspect_range_folder_detects_hu_plo():
+    info = paths.inspect_range_folder("ranges/HU-100bb-with-limp")
+    assert info["valid"] is True
+    assert info["game"] == "PLO"
+    assert info["players"] == 2
+    assert info["bb"] == 100
+    assert "0" in info["action_codes"]
+    assert "40100" in info["action_codes"]
+
+
+def test_inspect_range_folder_detects_6max_and_9max():
+    info6 = paths.inspect_range_folder("ranges/fake-6max-100bb")
+    assert info6["valid"] is True
+    assert info6["players"] == 6
+    assert info6["game"] == "PLO"
+
+    info9 = paths.inspect_range_folder("ranges/fake-9max-100bb")
+    assert info9["valid"] is True
+    assert info9["players"] == 9
+
+
+def test_inspect_range_folder_rejects_empty_or_missing(tmp_path):
+    empty = paths.inspect_range_folder(str(tmp_path))
+    assert empty["valid"] is False
+    assert "no .rng" in empty["error"]
+
+    missing = paths.inspect_range_folder("definitely-not-a-folder")
+    assert missing["valid"] is False
+    assert "not found" in missing["error"]

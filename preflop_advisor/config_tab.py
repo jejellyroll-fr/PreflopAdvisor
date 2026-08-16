@@ -15,9 +15,11 @@ file, which is why the preset keeps its comments and its sample trees.
 """
 
 import logging
+import re
 from pathlib import Path
+from typing import Any
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -33,6 +35,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -41,58 +45,98 @@ from PySide6.QtWidgets import (
 )
 
 from .config_store import LayeredConfig
-from .paths import resolve_range_folder, validate_tree
+from .paths import inspect_range_folder, resolve_range_folder, validate_tree
 from .sizings import sizing_for_code
+from .theme import ACCENT, EV_NEGATIVE, EV_POSITIVE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_table_key(config: LayeredConfig) -> str:
+    """Generate the next unique Table<N> key for a new simulation."""
+    existing_keys = {k.lower() for k in config.tree_keys("TreeInfos")}
+    max_num = 0
+    for k in existing_keys:
+        match = re.search(r"table(\d+)", k)
+        if match:
+            max_num = max(max_num, int(match.group(1)))
+    new_num = max_num + 1 if max_num > 0 else 1
+    while f"table{new_num}" in existing_keys:
+        new_num += 1
+    return f"Table{new_num}"
 
 
 class _Field:
     """A labelled value a panel reads from and writes to the layered config."""
 
-    def __init__(self, section: str, key: str, label: str, kind: str = "text") -> None:
+    def __init__(self, section: str, key: str, label: str, kind: str = "text", help_text: str = "") -> None:
         self.section = section
         self.key = key
         self.label = label
-        self.kind = kind  # "text" | "int" | "bool" | "enum"
+        self.kind = kind  # "text" | "long_text" | "int" | "bool" | "enum"
+        self.help_text = help_text
         self.choices: list[str] = []
         self._edit: QLineEdit | QComboBox | None = None
         self._reset: QPushButton | None = None
 
-    def build(self, config: LayeredConfig) -> QHBoxLayout:
+    def build(self, config: LayeredConfig) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(2)
+
         row = QHBoxLayout()
-        label = QLabel(self.label)
-        label.setMinimumWidth(120)
-        row.addWidget(label)
+        row.setSpacing(8)
+
+        lbl = QLabel(self.label)
+        lbl.setMinimumWidth(150)
+        lbl.setStyleSheet(f"font-weight: 500; color: {TEXT_PRIMARY}; font-size: 12px;")
+        row.addWidget(lbl)
 
         current = config.get(self.section, self.key, "")
         if self.kind == "bool":
             self._edit = QComboBox()
             self._edit.addItems(["yes", "no"])
             self._edit.setCurrentText(str(current or "no").lower())
+            self._edit.setFixedWidth(100)
+            row.addWidget(self._edit)
         elif self.kind == "enum":
             self._edit = QComboBox()
             self._edit.addItems(self.choices)
             if current in self.choices:
                 self._edit.setCurrentText(current)
+            self._edit.setMinimumWidth(140)
+            row.addWidget(self._edit)
         else:
             self._edit = QLineEdit(str(current or ""))
             if self.kind == "int":
-                self._edit.setFixedWidth(80)
-
-        row.addWidget(self._edit)
+                self._edit.setFixedWidth(90)
+            elif self.kind == "long_text":
+                self._edit.setMinimumWidth(360)
+                self._edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            else:
+                self._edit.setMinimumWidth(260)
+                self._edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            row.addWidget(self._edit)
 
         self._reset = QPushButton("Reset")
-        self._reset.setFixedWidth(70)
+        self._reset.setFixedWidth(65)
         self._reset.setEnabled(config.is_overridden(self.section, self.key))
-        self._reset.clicked.connect(lambda: self._do_reset())
+        self._reset.clicked.connect(self._do_reset)
         row.addWidget(self._reset)
         row.addStretch(1)
-        return row
+
+        layout.addLayout(row)
+
+        if self.help_text:
+            help_lbl = QLabel(self.help_text)
+            help_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; margin-left: 158px;")
+            help_lbl.setWordWrap(True)
+            layout.addWidget(help_lbl)
+
+        return container
 
     def _do_reset(self) -> None:
-        # The live reset is handled by the panel committing a sentinel; this button
-        # just flags the field empty so the panel's save drops the key.
         if isinstance(self._edit, QLineEdit):
             self._edit.clear()
         elif isinstance(self._edit, QComboBox):
@@ -117,74 +161,171 @@ class _Field:
         )
 
 
-class ConfigTab(QWidget):
-    """The whole tab: a section list on the left, the chosen panel on the right."""
+class SimEditDialog(QDialog):
+    """Wizard/dialog to add or edit a simulation with automatic folder inspection."""
 
-    #: Emitted after a successful save, so the window can redraw with the new values.
-    configChanged = Signal()
-
-    def __init__(self, config: LayeredConfig, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        config: LayeredConfig,
+        table_key: str = "",
+        initial_data: dict[str, Any] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.config = config
-        self.panels: dict[str, _Panel] = {}
+        self.table_key = table_key or _generate_table_key(config)
+        self.is_new = not bool(table_key)
+        self.setWindowTitle("Add Preflop Simulation" if self.is_new else f"Edit Simulation ({self.table_key})")
+        self.setMinimumWidth(580)
 
-        layout = QHBoxLayout(self)
-        self.nav = QListWidget()
-        self.nav.setFixedWidth(140)
-        self.stack = QStackedWidget()
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        layout.setContentsMargins(18, 18, 18, 18)
 
-        for title, panel in (
-            ("Sims", SimsPanel(config)),
-            ("Sizings", SizingsPanel(config)),
-            ("Seats", SeatsPanel(config)),
-            ("Reading", ReadingPanel(config)),
-            ("Display", DisplayPanel(config)),
-        ):
-            item = QListWidgetItem(title)
-            self.nav.addItem(item)
-            self.stack.addWidget(panel)
-            self.panels[title] = panel
+        # 1. Folder picker card
+        folder_group = QGroupBox("Range Folder")
+        folder_layout = QVBoxLayout(folder_group)
+        folder_layout.setSpacing(8)
 
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.nav.setCurrentRow(0)
+        folder_row = QHBoxLayout()
+        self.folder_edit = QLineEdit()
+        self.folder_edit.setPlaceholderText("Path to folder with .rng files...")
+        self.folder_edit.textChanged.connect(self._on_folder_edited)
+        self.browse_btn = QPushButton("Browse Folder...")
+        self.browse_btn.clicked.connect(self._browse_folder)
+        folder_row.addWidget(self.folder_edit, stretch=1)
+        folder_row.addWidget(self.browse_btn)
+        folder_layout.addLayout(folder_row)
 
-        layout.addWidget(self.nav)
-        layout.addWidget(self.stack, stretch=1)
+        self.scan_status = QLabel("Choose a folder to automatically detect game type, players, and stack size.")
+        self.scan_status.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        self.scan_status.setWordWrap(True)
+        folder_layout.addWidget(self.scan_status)
+        layout.addWidget(folder_group)
 
-        footer = QHBoxLayout()
-        save = QPushButton("Save")
-        save.setToolTip(
-            "Write your overrides to the user config file. Each sim is checked first: its "
-            "folder must resolve and hold .rng range files, any ante named must be declared, "
-            "and the player count must match the seats the files imply. A sim that fails is "
-            "reported and nothing is written."
-        )
-        save.clicked.connect(self.save)
-        revert = QPushButton("Revert")
-        revert.setToolTip("Discard unsaved edits and reload the panels from the current config.")
-        revert.clicked.connect(self.reload)
-        footer.addStretch(1)
-        footer.addWidget(revert)
-        footer.addWidget(save)
-        layout.addLayout(footer)
+        # 2. Simulation parameters
+        params_group = QGroupBox("Simulation Details")
+        form = QFormLayout(params_group)
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-    def save(self) -> None:
-        try:
-            for panel in self.panels.values():
-                panel.collect(self.config)
-        except ValueError as error:
-            # A panel refused to stage its edits (e.g. a sim whose folder holds no
-            # range files, or an ante mentioned but not declared). Nothing is written:
-            # the user fixes the row and saves again.
-            QMessageBox.critical(self, "Cannot save", str(error))
+        self.desc_edit = QLineEdit()
+        self.desc_edit.setPlaceholderText("e.g. 6-Max 100bb (no rake)")
+        form.addRow("Description / Name:", self.desc_edit)
+
+        self.game_combo = QComboBox()
+        self.game_combo.addItems(["PLO", "PLO5", "NL"])
+        form.addRow("Game Type:", self.game_combo)
+
+        self.players_combo = QComboBox()
+        for p in range(2, 10):
+            label = f"{p} (Heads-Up)" if p == 2 else f"{p}-Max" if p in (6, 9) else f"{p} Players"
+            self.players_combo.addItem(label, p)
+        form.addRow("Players:", self.players_combo)
+
+        self.bb_edit = QLineEdit("100")
+        self.bb_edit.setFixedWidth(100)
+        form.addRow("Stack Size (BB):", self.bb_edit)
+
+        self.ante_edit = QLineEdit()
+        self.ante_edit.setPlaceholderText("Leave empty if no ante (e.g. 0.125)")
+        self.ante_edit.setFixedWidth(180)
+        form.addRow("Ante (BB):", self.ante_edit)
+
+        self.tooltip_edit = QLineEdit()
+        self.tooltip_edit.setPlaceholderText("Optional popup image name or text note")
+        form.addRow("Tooltip / Notes:", self.tooltip_edit)
+
+        layout.addWidget(params_group)
+
+        # 3. Action buttons
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch(1)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        self.save_btn = QPushButton("Add Simulation" if self.is_new else "Apply Changes")
+        self.save_btn.setStyleSheet(f"background-color: {ACCENT}; color: white; font-weight: bold; padding: 6px 16px;")
+        self.save_btn.clicked.connect(self._validate_and_accept)
+        buttons_layout.addWidget(self.cancel_btn)
+        buttons_layout.addWidget(self.save_btn)
+        layout.addLayout(buttons_layout)
+
+        if initial_data:
+            self._load_initial_data(initial_data)
+
+    def _browse_folder(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Select Range Folder")
+        if chosen:
+            self.folder_edit.setText(chosen)
+            self._inspect_and_autofill(chosen)
+
+    def _on_folder_edited(self, text: str) -> None:
+        folder = text.strip()
+        if folder:
+            self._inspect_and_autofill(folder, is_manual=True)
+
+    def _inspect_and_autofill(self, folder: str, is_manual: bool = False) -> None:
+        info = inspect_range_folder(folder, self.config.section("TreeReader"))
+        if not info["valid"]:
+            self.scan_status.setText(f"⚠ {info['error']}")
+            self.scan_status.setStyleSheet(f"color: {EV_NEGATIVE}; font-size: 11px;")
             return
-        self.config.save()
-        self.configChanged.emit()
-        self.reload()
 
-    def reload(self) -> None:
-        for panel in self.panels.values():
-            panel.refresh()
+        codes_str = ", ".join(info["action_codes"])
+        msg = f"✓ Detected {info['game']}, {info['players']} players, {info['bb']} BB ({len(info['action_codes'])} codes: {codes_str})"
+        if info["unknown_codes"]:
+            msg += f" — ⚠ Unknown codes: {', '.join(info['unknown_codes'])}"
+        self.scan_status.setText(msg)
+        self.scan_status.setStyleSheet(f"color: {EV_POSITIVE}; font-size: 11px;")
+
+        if self.is_new or not self.desc_edit.text():
+            self.desc_edit.setText(info["description"])
+
+        idx = self.game_combo.findText(info["game"])
+        if idx >= 0:
+            self.game_combo.setCurrentIndex(idx)
+
+        idx = self.players_combo.findData(info["players"])
+        if idx >= 0:
+            self.players_combo.setCurrentIndex(idx)
+
+        self.bb_edit.setText(str(info["bb"]))
+        if info["ante"]:
+            self.ante_edit.setText(info["ante"])
+
+    def _load_initial_data(self, data: dict[str, Any]) -> None:
+        self.folder_edit.setText(data.get("folder", ""))
+        self.desc_edit.setText(data.get("description", ""))
+        idx = self.game_combo.findText(data.get("game", "PLO"))
+        if idx >= 0:
+            self.game_combo.setCurrentIndex(idx)
+        idx = self.players_combo.findData(int(data.get("players", 2)))
+        if idx >= 0:
+            self.players_combo.setCurrentIndex(idx)
+        self.bb_edit.setText(str(data.get("bb", 100)))
+        self.ante_edit.setText(data.get("ante", ""))
+        self.tooltip_edit.setText(data.get("tooltip", ""))
+
+    def get_result(self) -> dict[str, Any]:
+        return {
+            "key": self.table_key,
+            "players": str(self.players_combo.currentData()),
+            "bb": self.bb_edit.text().strip() or "100",
+            "game": self.game_combo.currentText(),
+            "folder": self.folder_edit.text().strip(),
+            "description": self.desc_edit.text().strip(),
+            "ante": self.ante_edit.text().strip(),
+            "tooltip": self.tooltip_edit.text().strip(),
+        }
+
+    def _validate_and_accept(self) -> None:
+        res = self.get_result()
+        raw_val = f"{res['players']},{res['bb']},{res['game']},{res['folder']},{res['description']}"
+        ok, reason = validate_tree(raw_val, bool(res["ante"]), self.config.section("TreeReader"))
+        if not ok:
+            QMessageBox.warning(self, "Invalid Simulation", f"Cannot save this simulation:\n{reason}")
+            return
+        self.accept()
 
 
 class _Panel(QWidget):
@@ -196,11 +337,17 @@ class _Panel(QWidget):
         self._title = title
         self._fields: list[_Field] = []
         self.body = QVBoxLayout(self)
+        self.body.setContentsMargins(12, 12, 12, 12)
+        self.body.setSpacing(12)
         self.build()
 
     def add_field(self, field: _Field) -> None:
         self._fields.append(field)
-        self.body.addLayout(field.build(self.config))
+        self.body.addWidget(field.build(self.config))
+
+    def add_field_to_layout(self, field: _Field, layout: QVBoxLayout) -> None:
+        self._fields.append(field)
+        layout.addWidget(field.build(self.config))
 
     def collect(self, config: LayeredConfig) -> None:
         for field in self._fields:
@@ -210,20 +357,15 @@ class _Panel(QWidget):
                 config.set(field.section, field.key, field.value())
 
     def refresh(self) -> None:
-        # Rebuild from scratch so reset state and field values match the file again.
         for _ in range(self.body.count()):
             item = self.body.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-            elif item.layout() is not None:
-                # Nested layouts are torn down by their owning widgets; fields live
-                # directly in self.body, so only stray widgets remain here.
-                pass
         self._fields = []
         self.build()
 
-    def build(self) -> None:  # pragma: no cover - overridden by subclasses
+    def build(self) -> None:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -234,11 +376,51 @@ class DisplayPanel(_Panel):
         super().__init__(config, "Display")
 
     def build(self) -> None:
-        self.add_field(_Field("Output", "ChipsPerBB", "Chips per BB", "int"))
-        self.add_field(_Field("Output", "AdjustFoldEV", "EV vs fold", "bool"))
-        self.add_field(_Field("TreeSelector", "ToolTips", "Tooltips", "bool"))
-        self.add_field(_Field("Output", "FontSize", "Font size", "int"))
-        self.add_field(_Field("TreeSelector", "FontSize", "Selector font", "int"))
+        calc_card = QGroupBox("Calculations & EV Display")
+        calc_layout = QVBoxLayout(calc_card)
+        self.add_field_to_layout(
+            _Field(
+                "Output",
+                "ChipsPerBB",
+                "Chips per BB",
+                "int",
+                "Conversion factor for Monker chip EVs into BB (default: 2000).",
+            ),
+            calc_layout,
+        )
+        self.add_field_to_layout(
+            _Field(
+                "Output",
+                "AdjustFoldEV",
+                "EV vs fold reference",
+                "bool",
+                "Show EVs relative to folding rather than absolute chip totals.",
+            ),
+            calc_layout,
+        )
+        self.body.addWidget(calc_card)
+
+        ui_card = QGroupBox("Interface & Fonts")
+        ui_layout = QVBoxLayout(ui_card)
+        self.add_field_to_layout(
+            _Field("TreeSelector", "ToolTips", "Show Tooltips", "bool", "Enable strategy overview popup tooltips."),
+            ui_layout,
+        )
+        self.add_field_to_layout(
+            _Field("Output", "FontSize", "Results Font Size", "int", "Base font size for the results table."),
+            ui_layout,
+        )
+        self.add_field_to_layout(
+            _Field(
+                "TreeSelector",
+                "FontSize",
+                "Dropdown Font Size",
+                "int",
+                "Font size for the simulation selector dropdown.",
+            ),
+            ui_layout,
+        )
+        self.body.addWidget(ui_card)
         self.body.addStretch(1)
 
 
@@ -249,22 +431,51 @@ class ReadingPanel(_Panel):
         super().__init__(config, "Reading")
 
     def build(self) -> None:
-        self.add_field(_Field("TreeReader", "CacheSize", "Cache size", "int"))
-        self.add_field(_Field("TreeReader", "UseDatabase", "Use database", "bool"))
-        # Ending is modifiable in theory, but a folder read with the wrong extension
-        # answers nothing; offer it read-only rather than let it silently break.
+        perf_card = QGroupBox("Memory & Caching")
+        perf_layout = QVBoxLayout(perf_card)
+        self.add_field_to_layout(
+            _Field(
+                "TreeReader",
+                "CacheSize",
+                "Cache size (files)",
+                "int",
+                "Number of range files kept loaded in memory for fast switching.",
+            ),
+            perf_layout,
+        )
+        self.add_field_to_layout(
+            _Field(
+                "TreeReader",
+                "UseDatabase",
+                "Use SQLite Database",
+                "bool",
+                "Build and read an index database (preflop.db) instead of scanning .rng files directly.",
+            ),
+            perf_layout,
+        )
+        self.body.addWidget(perf_card)
+
+        file_card = QGroupBox("Range File Format")
+        file_layout = QVBoxLayout(file_card)
         ending = QLineEdit(str(self.config.get("TreeReader", "Ending", ".rng")))
         ending.setReadOnly(True)
+        ending.setFixedWidth(100)
+
         row = QHBoxLayout()
-        lbl = QLabel("File ending")
-        lbl.setMinimumWidth(120)
+        lbl = QLabel("File extension:")
+        lbl.setMinimumWidth(150)
+        lbl.setStyleSheet(f"font-weight: 500; color: {TEXT_PRIMARY}; font-size: 12px;")
         row.addWidget(lbl)
         row.addWidget(ending)
         row.addStretch(1)
-        self.body.addLayout(row)
-        note = QLabel("Ending is shown read-only: renaming it would leave every range file unread.")
+        file_layout.addLayout(row)
+
+        note = QLabel("Extension is shown read-only: Monker range exports always use .rng files.")
+        note.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; margin-left: 158px;")
         note.setWordWrap(True)
-        self.body.addWidget(note)
+        file_layout.addWidget(note)
+        self.body.addWidget(file_card)
+
         self.body.addStretch(1)
 
 
@@ -275,21 +486,58 @@ class SeatsPanel(_Panel):
         super().__init__(config, "Seats")
 
     def build(self) -> None:
-        for key in ("Positions", "Positions7", "Positions8", "Positions9"):
-            self.add_field(_Field("TreeReader", key, f"{key} (seats)"))
-        self.add_field(_Field("PositionSelector", "PositionList", "Selector list"))
-        self.add_field(_Field("PositionSelector", "PositionInactive", "Inactive"))
-        self.add_field(_Field("PositionSelector", "DefaultPosition", "Default idx", "int"))
+        seats_card = QGroupBox("Table Seat Orders (shortest stack to button/blinds)")
+        seats_layout = QVBoxLayout(seats_card)
+        for key, name, desc in (
+            ("Positions", "6-Max seats", "Standard 6-max table seating order"),
+            ("Positions7", "7-Max seats", "7-handed table seating order"),
+            ("Positions8", "8-Max seats", "8-handed table seating order"),
+            ("Positions9", "9-Max seats", "9-handed full ring table seating order"),
+        ):
+            self.add_field_to_layout(
+                _Field("TreeReader", key, name, "long_text", desc),
+                seats_layout,
+            )
+        self.body.addWidget(seats_card)
+
+        sel_card = QGroupBox("Position Selector Options")
+        sel_layout = QVBoxLayout(sel_card)
+        self.add_field_to_layout(
+            _Field(
+                "PositionSelector",
+                "PositionList",
+                "Selector Buttons",
+                "long_text",
+                "List of all seat buttons shown in the top selector band.",
+            ),
+            sel_layout,
+        )
+        self.add_field_to_layout(
+            _Field(
+                "PositionSelector",
+                "PositionInactive",
+                "Inactive Seats",
+                "text",
+                "Comma-separated seats to disable by default.",
+            ),
+            sel_layout,
+        )
+        self.add_field_to_layout(
+            _Field(
+                "PositionSelector",
+                "DefaultPosition",
+                "Default Index",
+                "int",
+                "Index of the position selected on startup (0 = overview X).",
+            ),
+            sel_layout,
+        )
+        self.body.addWidget(sel_card)
         self.body.addStretch(1)
 
 
 class SizingsPanel(_Panel):
-    """Action name -> Monker code, the order they are tried, and .pot/.blinds.
-
-    The lower table is the part the README used to push onto the user: pick a sim
-    and the panel lists the action codes its range files actually contain, marking
-    the ones the configuration cannot yet decode so a sizing can be declared.
-    """
+    """Action name -> Monker code, the order they are tried, and .pot/.blinds."""
 
     def __init__(self, config: LayeredConfig) -> None:
         self._size_fields: list[_Field] = []
@@ -297,7 +545,6 @@ class SizingsPanel(_Panel):
         super().__init__(config, "Sizings")
 
     def build(self) -> None:
-        # Known action-code keys declared in [TreeReader].
         code_keys = [
             key
             for key in self.config.keys("TreeReader")
@@ -314,37 +561,56 @@ class SizingsPanel(_Panel):
                 "ending",
             )
         ]
-        grid = QGroupBox("Action codes (name -> Monker code)")
+
+        grid = QGroupBox("Standard Action Codes (Name → Monker Code)")
         grid_layout = QFormLayout(grid)
+        grid_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         for key in code_keys:
             field = _Field("TreeReader", key, key)
             self._size_fields.append(field)
             current = str(self.config.get("TreeReader", key, ""))
             field._edit = QLineEdit(current)
-            grid_layout.addRow(QLabel(key), field._edit)
+            field._edit.setFixedWidth(120)
+
+            row = QHBoxLayout()
+            row.addWidget(field._edit)
             field._reset = QPushButton("Reset")
-            field._reset.setFixedWidth(70)
+            field._reset.setFixedWidth(65)
             field._reset.setEnabled(self.config.is_overridden("TreeReader", key))
             field._reset.clicked.connect(lambda f=field: self._reset_field(f))
+            row.addWidget(field._reset)
+            row.addStretch(1)
+
+            grid_layout.addRow(QLabel(f"{key}:"), row)
         self.body.addWidget(grid)
 
-        order = _Field("TreeReader", "RaiseSizeList", "Raise order")
+        order_card = QGroupBox("Raise Order Resolution")
+        order_layout = QVBoxLayout(order_card)
+        order = _Field(
+            "TreeReader",
+            "RaiseSizeList",
+            "Raise order",
+            "long_text",
+            "Order in which raise sizings are probed when reading trees.",
+        )
         self._size_fields.append(order)
-        order_layout = QHBoxLayout()
-        order_lbl = QLabel("Raise order")
-        order_lbl.setMinimumWidth(120)
-        order._edit = QLineEdit(str(self.config.get("TreeReader", "RaiseSizeList", "")))
-        order_layout.addWidget(order_lbl)
-        order_layout.addWidget(order._edit)
-        self.body.addLayout(order_layout)
+        order_layout.addWidget(order.build(self.config))
+        self.body.addWidget(order_card)
 
-        discover = QPushButton("Scan a sim for unknown sizings...")
-        discover.clicked.connect(self.scan)
-        self.body.addWidget(discover)
+        scan_card = QGroupBox("Scan a Simulation Folder for Custom Sizings")
+        scan_layout = QVBoxLayout(scan_card)
+
+        scan_btn = QPushButton("Scan Range Folder...")
+        scan_btn.clicked.connect(self.scan)
+        scan_layout.addWidget(scan_btn)
+
         self._discovery = QTableWidget(0, 3)
-        self._discovery.setHorizontalHeaderLabels(["Code", "Decoded?", "Declaration"])
+        self._discovery.setHorizontalHeaderLabels(["Action Code", "Recognized?", "Declaration Recommendation"])
         self._discovery.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.body.addWidget(self._discovery)
+        self._discovery.setMinimumHeight(140)
+        scan_layout.addWidget(self._discovery)
+        self.body.addWidget(scan_card)
+
         self.body.addStretch(1)
 
     def _reset_field(self, field: _Field) -> None:
@@ -384,63 +650,74 @@ class SizingsPanel(_Panel):
 
 
 class SimsPanel(_Panel):
-    """Every sim in [TreeInfos], editable, addable and removable.
-
-    A sim is refused until its folder resolves and actually holds range files, and
-    until its declared player count matches the seat names its filenames imply.
-    """
+    """Every sim in [TreeInfos], editable, addable and removable."""
 
     def __init__(self, config: LayeredConfig) -> None:
         super().__init__(config, "Sims")
 
     def build(self) -> None:
+        # Table of simulations
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Key", "Players", "BB", "Game", "Folder", "Description"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setHorizontalHeaderLabels(["Key", "Description / Name", "Game", "Players", "BB", "Folder Path"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.doubleClicked.connect(self.edit_selected)
         self.populate()
         self.body.addWidget(self.table)
 
+        # Toolbar
         controls = QHBoxLayout()
-        add = QPushButton("Add sim")
+        add = QPushButton("➕ Add Sim...")
+        add.setToolTip("Open wizard to select a range folder and auto-configure all simulation settings.")
+        add.setStyleSheet(f"background-color: {ACCENT}; color: white; font-weight: bold;")
         add.clicked.connect(self.add_sim)
-        remove = QPushButton("Remove selected")
+
+        edit = QPushButton("✏️ Edit Selected...")
+        edit.setToolTip("Edit the properties of the selected simulation.")
+        edit.clicked.connect(self.edit_selected)
+
+        remove = QPushButton("🗑️ Remove Selected")
+        remove.setToolTip("Remove this simulation from your configuration.")
         remove.clicked.connect(self.remove_selected)
+
         controls.addWidget(add)
+        controls.addWidget(edit)
         controls.addWidget(remove)
         controls.addStretch(1)
         self.body.addLayout(controls)
 
         self.feedback = QLabel("")
+        self.feedback.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
         self.feedback.setWordWrap(True)
         self.body.addWidget(self.feedback)
 
-        # A standing note so the refusal on Save is never a surprise: these are exactly
-        # the checks the plan's section 5.2 describes, and the message box names the one
-        # that failed.
+        # Selected sim quick meta
+        meta = QGroupBox("Selected Simulation: Ante & Tooltip")
+        meta_layout = QVBoxLayout(meta)
+        self.ante_edit = QLineEdit()
+        self.tooltip_edit = QLineEdit()
+        meta_layout.addLayout(self._labelled("Ante (BB):", self.ante_edit))
+        meta_layout.addLayout(self._labelled("Tooltip / Image:", self.tooltip_edit))
+        self.table.itemSelectionChanged.connect(self.load_selected_meta)
+        self.body.addWidget(meta)
+
+        # Rules explanation note
         rules = QLabel(
             "A sim is saved only if: its folder resolves, it holds .rng range files, and "
             "any ante named in the description is declared. A player count that matches no "
             "seat in the files is also refused. Save reports the first sim that fails."
         )
         rules.setWordWrap(True)
-        rules.setStyleSheet("color: #b0b0b0; font-size: 11px;")
+        rules.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
         self.body.addWidget(rules)
-
-        # Ante and tooltip live per-tree as TableN.ante / in [TreeToolTips].
-        meta = QGroupBox("Selected sim: ante & tooltip")
-        meta_layout = QVBoxLayout(meta)
-        self.ante_edit = QLineEdit()
-        self.tooltip_edit = QLineEdit()
-        meta_layout.addLayout(self._labelled("Ante (BB)", self.ante_edit))
-        meta_layout.addLayout(self._labelled("Tooltip (image or text)", self.tooltip_edit))
-        self.table.itemSelectionChanged.connect(self.load_selected_meta)
-        self.body.addWidget(meta)
 
     def _labelled(self, label: str, widget: QWidget) -> QHBoxLayout:
         row = QHBoxLayout()
         lbl = QLabel(label)
-        lbl.setMinimumWidth(140)
+        lbl.setMinimumWidth(120)
+        lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px;")
         row.addWidget(lbl)
         row.addWidget(widget)
         return row
@@ -456,35 +733,78 @@ class SimsPanel(_Panel):
             parts = [p.strip() for p in value.split(",")]
             while len(parts) < 5:
                 parts.append("")
-            # The description is the 5th comma-separated field but may itself contain
-            # commas, so reconstruct it from everything past the folder.
             description = ",".join(parts[4:]).strip() if len(parts) > 4 else ""
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(key))
-            self.table.setItem(row, 1, QTableWidgetItem(parts[0]))
-            self.table.setItem(row, 2, QTableWidgetItem(parts[1]))
-            self.table.setItem(row, 3, QTableWidgetItem(parts[2]))
-            self.table.setItem(row, 4, QTableWidgetItem(parts[3]))
-            self.table.setItem(row, 5, QTableWidgetItem(description))
+            self.table.setItem(row, 1, QTableWidgetItem(description))
+            self.table.setItem(row, 2, QTableWidgetItem(parts[2]))
+            self.table.setItem(row, 3, QTableWidgetItem(parts[0]))
+            self.table.setItem(row, 4, QTableWidgetItem(parts[1]))
+            self.table.setItem(row, 5, QTableWidgetItem(parts[3]))
 
     def add_sim(self) -> None:
-        key, ok = _prompt(self, "New sim", "Table key (e.g. Table60):")
-        if not ok or not key:
+        dialog = SimEditDialog(self.config, parent=self)
+        dialog._browse_folder()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_result()
+            key = data["key"]
+            value = f"{data['players']},{data['bb']},{data['game']},{data['folder']},{data['description']}"
+            self.config.set("TreeInfos", key, value)
+            if data["ante"]:
+                self.config.set("TreeInfos", f"{key}.ante", data["ante"])
+            else:
+                self.config.reset("TreeInfos", f"{key}.ante")
+            if data["tooltip"]:
+                self.config.set("TreeToolTips", key, data["tooltip"])
+            else:
+                self.config.reset("TreeToolTips", key)
+            self.populate()
+            self.feedback.setText(f"Added {key} ({data['description']}). Click 'Save' to persist.")
+
+    def edit_selected(self) -> None:
+        row = self.table.currentRow() if self.table is not None else -1
+        if row < 0 or self.table is None:
             return
-        key = key.strip()
-        if key in self._tree_rows():
-            self.feedback.setText(f"{key} already exists.")
-            return
-        self.config.set("TreeInfos", key, "2,100,PLO,ranges/,new sim")
-        self.populate()
-        self.feedback.setText(f"Added {key}. Set its folder and save.")
+        key = self.table.item(row, 0).text()
+        desc = self.table.item(row, 1).text()
+        game = self.table.item(row, 2).text()
+        players = self.table.item(row, 3).text()
+        bb = self.table.item(row, 4).text()
+        folder = self.table.item(row, 5).text()
+        ante = self.config.tree_metadata("TreeInfos", key).get("ante", "")
+        tooltip = self.config.get("TreeToolTips", key, "") or ""
+
+        initial = {
+            "key": key,
+            "description": desc,
+            "game": game,
+            "players": players,
+            "bb": bb,
+            "folder": folder,
+            "ante": ante,
+            "tooltip": tooltip,
+        }
+        dialog = SimEditDialog(self.config, table_key=key, initial_data=initial, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_result()
+            value = f"{data['players']},{data['bb']},{data['game']},{data['folder']},{data['description']}"
+            self.config.set("TreeInfos", key, value)
+            if data["ante"]:
+                self.config.set("TreeInfos", f"{key}.ante", data["ante"])
+            else:
+                self.config.reset("TreeInfos", f"{key}.ante")
+            if data["tooltip"]:
+                self.config.set("TreeToolTips", key, data["tooltip"])
+            else:
+                self.config.reset("TreeToolTips", key)
+            self.populate()
+            self.feedback.setText(f"Updated {key} ({data['description']}).")
 
     def remove_selected(self) -> None:
         row = self.table.currentRow() if self.table is not None else -1
-        if row < 0:
+        if row < 0 or self.table is None:
             return
-        assert self.table is not None
         key = self.table.item(row, 0).text()
         self.config.reset("TreeInfos", key)
         for meta_key in self.config.tree_metadata("TreeInfos", key):
@@ -510,26 +830,23 @@ class SimsPanel(_Panel):
             if not key:
                 continue
             seen.add(key)
-            players = self.table.item(row, 1).text().strip()
-            bb = self.table.item(row, 2).text().strip()
-            game = self.table.item(row, 3).text().strip()
-            folder = self.table.item(row, 4).text().strip()
-            description = self.table.item(row, 5).text().strip()
-            value = f"{players},{bb},{game},{folder},{description}"
-            # Refuse a sim that would answer nothing, before it reaches the ranges:
-            # the folder must resolve and hold range files, an ante mentioned in the
-            # description must be declared, and the player count must match the seats
-            # the files actually name (plan section 5.2).
+            desc = self.table.item(row, 1).text().strip()
+            game = self.table.item(row, 2).text().strip()
+            players = self.table.item(row, 3).text().strip()
+            bb = self.table.item(row, 4).text().strip()
+            folder = self.table.item(row, 5).text().strip()
+            value = f"{players},{bb},{game},{folder},{desc}"
+
             ante_declared = bool(config.tree_metadata("TreeInfos", key).get("ante"))
-            # The seat check needs the [TreeReader] section to derive seat names.
             ok, reason = validate_tree(value, ante_declared, config.section("TreeReader"))
             if not ok:
                 raise ValueError(f"{key}: {reason}")
             config.set("TreeInfos", key, value)
-        # Drop rows the user deleted via reset elsewhere (already handled on removal).
+
         for key in self._tree_rows():
             if key not in seen:
                 config.reset("TreeInfos", key)
+
         ante = self.ante_edit.text().strip()
         tooltip = self.tooltip_edit.text().strip()
         row = self.table.currentRow()
@@ -545,21 +862,92 @@ class SimsPanel(_Panel):
                 config.reset("TreeToolTips", key)
 
 
-def _prompt(parent: QWidget, title: str, label: str) -> tuple[str, bool]:
-    dialog = QDialog(parent)
-    dialog.setWindowTitle(title)
-    layout = QVBoxLayout(dialog)
-    layout.addWidget(QLabel(label))
-    edit = QLineEdit()
-    layout.addWidget(edit)
-    buttons = QHBoxLayout()
-    ok = QPushButton("OK")
-    cancel = QPushButton("Cancel")
-    ok.clicked.connect(dialog.accept)
-    cancel.clicked.connect(dialog.reject)
-    buttons.addStretch(1)
-    buttons.addWidget(cancel)
-    buttons.addWidget(ok)
-    layout.addLayout(buttons)
-    accepted = dialog.exec() == QDialog.DialogCode.Accepted
-    return edit.text(), accepted
+class ConfigTab(QWidget):
+    """The whole tab: a section list on the left, the chosen panel on the right."""
+
+    #: Emitted after a successful save, so the window can redraw with the new values.
+    configChanged = Signal()
+
+    def __init__(self, config: LayeredConfig, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.config = config
+        self.panels: dict[str, _Panel] = {}
+
+        # Root layout: MUST be Vertical
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout.setSpacing(14)
+
+        # Body: Nav on left, Stack on right
+        body_layout = QHBoxLayout()
+        body_layout.setSpacing(16)
+
+        self.nav = QListWidget()
+        self.nav.setFixedWidth(150)
+        self.stack = QStackedWidget()
+
+        for title, panel in (
+            ("Sims", SimsPanel(config)),
+            ("Sizings", SizingsPanel(config)),
+            ("Seats", SeatsPanel(config)),
+            ("Reading", ReadingPanel(config)),
+            ("Display", DisplayPanel(config)),
+        ):
+            item = QListWidgetItem(title)
+            self.nav.addItem(item)
+
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(panel)
+            self.stack.addWidget(scroll)
+
+            self.panels[title] = panel
+
+        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.nav.setCurrentRow(0)
+
+        body_layout.addWidget(self.nav)
+        body_layout.addWidget(self.stack, stretch=1)
+        root_layout.addLayout(body_layout, stretch=1)
+
+        # Footer: Status message on left, Revert / Save on right
+        footer = QHBoxLayout()
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px;")
+        footer.addWidget(self.status_label)
+        footer.addStretch(1)
+
+        revert = QPushButton("Revert")
+        revert.setToolTip("Discard unsaved edits and reload the panels from the current config.")
+        revert.clicked.connect(self.reload)
+
+        save = QPushButton("Save")
+        save.setStyleSheet(f"background-color: {ACCENT}; color: white; font-weight: bold; padding: 6px 18px;")
+        save.setToolTip(
+            "Write your overrides to the user config file. Each sim is checked first: its "
+            "folder must resolve and hold .rng range files, any ante named must be declared, "
+            "and the player count must match the seats the files imply. A sim that fails is "
+            "reported and nothing is written."
+        )
+        save.clicked.connect(self.save)
+
+        footer.addWidget(revert)
+        footer.addWidget(save)
+        root_layout.addLayout(footer)
+
+    def save(self) -> None:
+        try:
+            for panel in self.panels.values():
+                panel.collect(self.config)
+        except ValueError as error:
+            QMessageBox.critical(self, "Cannot save", str(error))
+            return
+        self.config.save()
+        self.configChanged.emit()
+        self.status_label.setText("✓ Configuration saved successfully.")
+        self.reload()
+
+    def reload(self) -> None:
+        for panel in self.panels.values():
+            panel.refresh()
+        self.status_label.setText("Configuration reloaded.")
