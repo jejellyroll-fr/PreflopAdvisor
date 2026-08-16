@@ -66,3 +66,63 @@ def test_package_file_points_inside_the_package():
 
     assert os.path.isfile(config)
     assert os.path.dirname(config) == paths.PACKAGE_ROOT
+
+
+def test_holds_range_files_spots_a_real_tree():
+    folder = os.path.join("ranges", "HU-100bb-with-limp")
+
+    assert paths.holds_range_files(folder) is True
+
+
+def test_holds_range_files_rejects_an_empty_folder(tmp_path):
+    assert paths.holds_range_files(str(tmp_path)) is False
+
+
+def test_holds_range_files_rejects_an_unresolvable_folder():
+    assert paths.holds_range_files("definitely-not-a-tree") is False
+
+
+def test_validate_tree_accepts_a_real_entry():
+    value = "2,100,PLO,ranges/HU-100bb-with-limp,no Rake"
+
+    assert paths.validate_tree(value, ante_declared=False) == (True, "")
+
+
+def test_validate_tree_rejects_a_folder_with_no_ranges(tmp_path):
+    ok, reason = paths.validate_tree(f"2,100,PLO,{tmp_path},no Rake", ante_declared=False)
+
+    assert not ok
+    assert "no .rng" in reason
+
+
+def test_validate_tree_rejects_an_unresolvable_folder():
+    ok, reason = paths.validate_tree("2,100,PLO,/nowhere/tree,no Rake", ante_declared=False)
+
+    assert not ok
+    assert "folder not found" in reason
+
+
+def test_validate_tree_rejects_an_undeclared_ante():
+    # Description mentions an ante but the size is not declared: the trainer would
+    # then draw with no pot and no stacks, silently.
+    ok, _reason = paths.validate_tree("6,100,PLO,ranges/HU-100bb-with-limp,has an ante", ante_declared=False)
+
+    assert not ok
+    assert "ante" in _reason
+
+
+def test_validate_tree_allows_a_declared_ante():
+    ok, _reason = paths.validate_tree(
+        "6,100,PLO,ranges/HU-100bb-with-limp,has an ante", ante_declared=True
+    )
+
+    assert ok
+
+
+def test_validate_tree_ignores_an_ante_explicitly_denied():
+    ok, _ = paths.validate_tree(
+        "6,100,PLO,ranges/HU-100bb-with-limp,no ante here", ante_declared=False
+    )
+
+    assert ok
+

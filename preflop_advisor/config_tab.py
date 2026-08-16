@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QTableWidget,
@@ -40,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from .config_store import LayeredConfig
-from .paths import resolve_range_folder
+from .paths import resolve_range_folder, validate_tree
 from .sizings import sizing_for_code
 
 logger = logging.getLogger(__name__)
@@ -161,8 +162,15 @@ class ConfigTab(QWidget):
         layout.addLayout(footer)
 
     def save(self) -> None:
-        for panel in self.panels.values():
-            panel.collect(self.config)
+        try:
+            for panel in self.panels.values():
+                panel.collect(self.config)
+        except ValueError as error:
+            # A panel refused to stage its edits (e.g. a sim whose folder holds no
+            # range files, or an ante mentioned but not declared). Nothing is written:
+            # the user fixes the row and saves again.
+            QMessageBox.critical(self, "Cannot save", str(error))
+            return
         self.config.save()
         self.configChanged.emit()
         self.reload()
@@ -488,7 +496,15 @@ class SimsPanel(_Panel):
             game = self.table.item(row, 3).text().strip()
             folder = self.table.item(row, 4).text().strip()
             description = self.table.item(row, 5).text().strip()
-            config.set("TreeInfos", key, f"{players},{bb},{game},{folder},{description}")
+            value = f"{players},{bb},{game},{folder},{description}"
+            # Refuse a sim that would answer nothing, before it reaches the ranges:
+            # the folder must resolve and actually hold range files, and an ante
+            # mentioned in the description must be declared (plan section 5.2).
+            ante_declared = bool(config.tree_metadata("TreeInfos", key).get("ante"))
+            ok, reason = validate_tree(value, ante_declared)
+            if not ok:
+                raise ValueError(f"{key}: {reason}")
+            config.set("TreeInfos", key, value)
         # Drop rows the user deleted via reset elsewhere (already handled on removal).
         for key in self._tree_rows():
             if key not in seen:

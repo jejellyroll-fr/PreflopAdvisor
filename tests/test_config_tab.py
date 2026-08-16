@@ -6,15 +6,10 @@ the package file is byte-for-byte what it was, while the user file holds only th
 differences. The rest exercises each panel's staging and the sim/sizing editors.
 """
 
-import shutil
 from pathlib import Path
-
-import pytest
-from PySide6.QtCore import Qt
 
 from preflop_advisor.config_store import LayeredConfig
 from preflop_advisor.config_tab import ConfigTab
-from preflop_advisor.gui import MainWindow
 from preflop_advisor.paths import package_file
 
 
@@ -108,7 +103,7 @@ def test_sizings_scan_finds_undecoded_codes(tmp_path, qtbot):
 
     config = _temp_config(tmp_path)
     tab = ConfigTab(config)
-    sizings = tab.panels["Sizings"]
+    assert "Sizings" in tab.panels
 
     # scan() opens a file dialog, so drive the discovery logic headlessly instead:
     # a folder holding a code the shipped config cannot decode must be reported.
@@ -136,3 +131,31 @@ def test_config_changed_emitted_on_save(tmp_path, qtbot):
     tab = ConfigTab(config)
     with qtbot.waitSignal(tab.configChanged, timeout=1000):
         tab.save()
+
+
+def test_sims_panel_refuses_a_sim_without_range_files(tmp_path, qtbot):
+    """Saving a sim whose folder holds no range files is refused, with its reason."""
+    import pytest
+
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+    sims = tab.panels["Sims"]
+    sims.populate()
+
+    # Add a sim pointing at an empty folder.
+    config.set("TreeInfos", "Table98", f"2,100,PLO,{tmp_path},new sim")
+    sims.populate()
+
+    empty_row = None
+    for row in range(sims.table.rowCount()):
+        if sims.table.item(row, 0).text() == "table98":
+            empty_row = row
+            break
+    assert empty_row is not None
+
+    with pytest.raises(ValueError) as exc:
+        sims.collect(config)
+    assert "no .rng" in str(exc.value)
+    # The invalid sim was staged by the test itself but refused by collect: it is
+    # present in the (unsaved) user layer yet nothing downstream ran.
+    assert config.user.has_option("TreeInfos", "table98")
