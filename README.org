@@ -113,6 +113,13 @@ Before you begin, ensure you have Python 3.x installed on your computer. You can
          Name=Number of Players,Stacksize in BB, GAME, path to the range folder, Rake setting
          The path may be absolute or relative to the project root. A path that no longer
          exists still resolves if a folder of the same name sits under =ranges/=.
+       + If the tree has an ante, say how big it is, in big blinds:
+         =Table12.ante=0.125=
+         The size is not in the export and nothing can guess it. A tree whose description
+         mentions an ante without declaring one is treated as having an ante of unknown
+         size, and the trainer draws its table with no pot and no stacks rather than with
+         numbers that are all short by the antes. Leave it out when there is none; a
+         description saying so -- =no ante= -- is understood.
      - [TreeToolTips]: Add tooltips for each tree, if desired. Ensure the number of tooltips matches the number of trees.
        I generated the tooltip infos programmatically using =scripts/frequency_report.py=
        For technical users read there and try to figure it output.
@@ -354,7 +361,11 @@ Deal a hand, answer, see what it cost.
   the sizings the tree declares, under the pot-limit rule: call first, then raise by no
   more than the pot that call makes. A tree using a sizing whose code has no published
   meaning is drawn without a pot and without stacks, rather than with numbers that might
-  be wrong. You can declare what your codes mean; see /RaiseSizeList/ above.
+  be wrong. Two things have to be readable for the table to carry numbers, and both can be
+  declared when they are not: what each sizing costs (see /RaiseSizeList/ above) and how
+  big the ante is (=Table12.ante=0.125=, beside the tree in =[TreeInfos]=). An ante left
+  out would understate the pot, every percentage raise, every stack and the tally's ratio,
+  which is why an undeclared one hides them instead.
 - *The verdict.* /Correct/, /Inaccuracy/, /Mistake/ or /Blunder/, decided by how much EV
   the answer gave up against the best action in that node -- not by how often the solver
   plays it. The whole strategy is revealed alongside, so a mixed node shows what it mixes.
