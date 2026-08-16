@@ -17,12 +17,44 @@ See Usage for detailed Information. Preflopranges are not uploaded to this repos
     - Supports multiple (indefinite) preflop strategy trees
     - Displays frequencies and corresponding EVs to make it easier to evaluate handstrength against opponents who dont play GTO preflop strategy.
     - Tooltips in order to get a quick overview of the general frequencies and strategies for a given tree.
+    - A trainer tab that deals hands from the selected tree and grades your answer against it, in EV rather than in frequency.
 
 ** Screenshots
-#+CAPTION: Preflop Advisor Overall Interface
-[[file:pics/Screenshot_2024-07-10_20-06-23.png]]
-#+CAPTION: Preflop Advisor Position Interface
-[[file:pics/Screenshot_2024-07-10_20-08-17.png]]
+Taken from the heads-up 100bb tree bundled in =ranges/=, so every number on them can be
+reproduced from a fresh clone.
+
+*** Advisor: the whole table at once
+Position =X= puts every seat in one grid: what the hand opens with, and what it does
+against each opponent. Frequency large, EV underneath, and the action's colour is the same
+wherever it appears.
+
+#+CAPTION: Advisor, overview of all seats
+[[file:pics/advisor-overview.png]]
+
+*** Advisor: one seat in detail
+Picking a seat replaces the grid with that seat's lines -- squeezes, 4bets, and what it
+faces after each.
+
+#+CAPTION: Advisor, one seat
+[[file:pics/advisor-position.png]]
+
+*** Trainer: a question
+The situation is drawn as a table: who is seated, what they did, what it left them, and
+what is in the middle. The pot and the stacks are computed from the sizings the tree
+declares, and a tree whose sizings cannot be read is drawn without them rather than with
+invented ones.
+
+#+CAPTION: Trainer, a hand to answer
+[[file:pics/trainer-question.png]]
+
+*** Trainer: the answer
+Answering reveals the solver's whole strategy for that node and what the chosen action
+cost against its best one. The verdict is EV-based, never frequency-based: taking a line
+the solver plays 3% of the time is not a mistake if it breaks even, and taking one it
+plays 40% of the time is one if it does not.
+
+#+CAPTION: Trainer, the verdict and the running tally
+[[file:pics/trainer-verdict.png]]
 
 * Installation Guide
 ** Prerequisites
@@ -143,6 +175,39 @@ tool says so rather than guessing.
 To add a sizing, find its code by looking at the file names in your range folder, add a
 =Name=code= line, and list =Name= in =RaiseSizeList=.
 
+*** What a sizing costs, and when that cannot be told
+The advisor never needed to know: a range file is found by the /names/ of the actions, so
+what they cost was never asked. The trainer's table cannot be drawn without it -- a pot of
+"1.5 BB" and a stack of "100" are the same two numbers whatever has happened.
+
+The meaning is in the code, not the name. Names are labels you chose, so =HouseSize=40062=
+still means 62 percent. Two families can be read:
+
+- the special codes every export uses: =0= fold, =1= call, =2= pot, =3= all-in;
+- =40000 + N=, a raise of N percent, matching the relative sizings Monker shows as =75%=.
+
+That second one is an inference from the shape of the family -- 40060, 40070, 40075, 40100
+against names saying 60, 70, 75 and 100 -- not a published fact. Monker publishes no table
+of codes.
+
+Everything else is unknown and says so. Monker has fixed sizings in small blinds as well
+(=12sb=), so a code such as =15= may be one, or an index, or a house convention. A tree
+whose sizings cannot be read is drawn without its pot and without its stacks rather than
+with invented ones. You can declare what yours mean:
+
+#+BEGIN_SRC ini
+# 3xOpen raises to three big blinds
+3xOpen=15
+3xOpen.blinds=3
+# HouseSize raises 45 percent of the pot
+HouseSize=17
+HouseSize.pot=0.45
+#+END_SRC
+
+Comments go on their own line, as everywhere else in this file: nothing strips a comment
+written after a value, so the number would be read with the sentence still attached to it
+and thrown out as unreadable.
+
 ** Seats, and what their names do
 
 =Positions= lists the seats shortest stack first. It is trimmed to the tree's player count
@@ -168,7 +233,7 @@ Which reads, in acting order:
 | 8 | UTG MP LJ HJ CO BU SB BB |
 | 9 | UTG UTG1 MP LJ HJ CO BU SB BB |
 
-**The names are labels.** A file name is built from the action codes and from where a seat
+*The names are labels.* A file name is built from the action codes and from where a seat
 sits in the list, never from what it is called, so renaming =HJ= to =LJ= changes the column
 header and nothing else. If your solver labels the middle seats differently, edit these
 lines to match it; what has to stay right is how many seats there are and the order they
@@ -218,7 +283,7 @@ python standalone.py
 ** Development
 #+BEGIN_SRC sh
 uv sync --extra dev
-uv run pytest              # 368 tests, coverage gate at 90%
+uv run pytest              # 504 tests, coverage gate at 90%
 uv run pytest -m "not slow"  # skip the subprocess smoke test
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                # strict; the package and scripts are fully annotated
@@ -226,6 +291,12 @@ uv run preflop_advisor --verbose   # log every range lookup
 #+END_SRC
 
 ** Interface Description
+
+Two tabs: /Advisor/, which answers about a hand you choose, and /Trainer/, which asks you
+about one it deals. Both read whichever tree the Advisor's selector is on, so switching
+trees switches what you are drilled on.
+
+*** Advisor tab
 
 The input sits in a band across the top -- cards on the left, tree, randomizer and seats on
 the right -- with the results underneath, separated by a divider you can drag. Where you
@@ -269,6 +340,31 @@ So it is the "tightest" of the squeeze spots possible vs this opener. If there i
 shows standard we open and face a 3bet from the other position.
 - vs 4bet: same idea. position before us means we face 4bet from opener after we 3bet him and otherwise we face cold4bet after we 3bet player right before us.
 - vs squeeze: we open and player right next to us flatts and we then face the squeeze from the column position (classic sandwich spot)
+
+*** Trainer tab
+
+Deal a hand, answer, see what it cost.
+
+- *Which situation.* The chooser offers the situations the selected tree's table size has:
+  opening first in, defending an open, and facing the 3bet back. Left on /any situation/
+  the whole catalogue is drilled. The big blind is never offered "first in" -- everyone
+  folding to it ends the hand -- so what it gets is the small blind's limp.
+- *The table.* Seats in acting order with you brought to the near side, what each one did
+  and has left, the dealer button, your cards, and the pot. Every figure is computed from
+  the sizings the tree declares, under the pot-limit rule: call first, then raise by no
+  more than the pot that call makes. A tree using a sizing whose code has no published
+  meaning is drawn without a pot and without stacks, rather than with numbers that might
+  be wrong. You can declare what your codes mean; see /RaiseSizeList/ above.
+- *The verdict.* /Correct/, /Inaccuracy/, /Mistake/ or /Blunder/, decided by how much EV
+  the answer gave up against the best action in that node -- not by how often the solver
+  plays it. The whole strategy is revealed alongside, so a mixed node shows what it mixes.
+- *The tally.* Hands, accuracy, EV lost in big blinds, and EV lost as a share of the pot.
+  A hand whose pot could not be read still counts as an answer; only that last ratio
+  abstains, and it averages over the hands it knows rather than counting the rest as
+  noughts.
+
+A tree holds the lines its solver was run for and no others, so a situation with nothing
+behind it says so rather than pretending the tree is empty.
 
 * License
 This project is licensed under the MIT License - see the =LICENSE= file for details.
