@@ -112,17 +112,12 @@ def test_validate_tree_rejects_an_undeclared_ante():
 
 
 def test_validate_tree_allows_a_declared_ante():
-    ok, _reason = paths.validate_tree(
-        "6,100,PLO,ranges/HU-100bb-with-limp,has an ante", ante_declared=True
-    )
+    ok, _reason = paths.validate_tree("6,100,PLO,ranges/HU-100bb-with-limp,has an ante", ante_declared=True)
 
     assert ok
 
 
 def test_validate_tree_ignores_an_ante_explicitly_denied():
-    ok, _ = paths.validate_tree(
-        "6,100,PLO,ranges/HU-100bb-with-limp,no ante here", ante_declared=False
-    )
+    ok, _ = paths.validate_tree("6,100,PLO,ranges/HU-100bb-with-limp,no ante here", ante_declared=False)
 
     assert ok
-

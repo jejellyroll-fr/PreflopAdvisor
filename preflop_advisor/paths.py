@@ -107,9 +107,7 @@ def validate_tree(value: str, ante_declared: bool) -> tuple[bool, str]:
         return False, f"folder holds no .rng files: {folder}"
     description = ",".join(parts[4:]).strip()
     mentions_ante = bool(re.search(r"\bantes?\b", description, re.IGNORECASE))
-    denies_ante = bool(
-        re.search(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", description, re.IGNORECASE)
-    )
+    denies_ante = bool(re.search(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", description, re.IGNORECASE))
     if mentions_ante and not denies_ante and not ante_declared:
         return False, "description mentions an ante but TableN.ante is not declared"
     return True, ""
