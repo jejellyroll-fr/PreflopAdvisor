@@ -64,6 +64,10 @@ db.sqlite3
 preflop.db
 preflop.db-wal
 preflop.db-shm
+**/preflop.db
+**/preflop.db-wal
+**/preflop.db-shm
+
 
 # Flask stuff:
 instance/

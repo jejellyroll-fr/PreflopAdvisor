@@ -154,14 +154,17 @@ def _tree_seats_match_files(parts: list[str], config: ConfigSource | None) -> bo
         "folder": parts[3],
         "infos": ",".join(parts[4:]).strip(),
     }
+    reader_config = dict(config)
+    reader_config["usedatabase"] = "no"
     try:
-        reader = TreeReader("AhKs4h3s", "X", tree_infos, config)
+        reader = TreeReader("AhKs4h3s", "X", tree_infos, reader_config)
     except Exception:  # noqa: BLE001 - any reader failure means the count is unusable
         return False
     try:
         grid = reader.get_results()
     except Exception:  # noqa: BLE001 - same: a broken tree is not a valid save
         return False
+
 
     filled_columns: set[int] = set()
     for row in grid:

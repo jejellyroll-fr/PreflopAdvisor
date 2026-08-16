@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -78,8 +79,10 @@ class _Field:
         self.choices: list[str] = []
         self._edit: QLineEdit | QComboBox | None = None
         self._reset: QPushButton | None = None
+        self._config: LayeredConfig | None = None
 
     def build(self, config: LayeredConfig) -> QWidget:
+        self._config = config
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 4, 0, 4)
@@ -121,10 +124,18 @@ class _Field:
 
         self._reset = QPushButton("Reset")
         self._reset.setFixedWidth(65)
-        self._reset.setEnabled(config.is_overridden(self.section, self.key))
+        self._update_reset_button()
         self._reset.clicked.connect(self._do_reset)
         row.addWidget(self._reset)
         row.addStretch(1)
+
+        def _on_change(*_args: Any) -> None:
+            self._update_reset_button()
+
+        if isinstance(self._edit, QLineEdit):
+            self._edit.textChanged.connect(_on_change)
+        elif isinstance(self._edit, QComboBox):
+            self._edit.currentTextChanged.connect(_on_change)
 
         layout.addLayout(row)
 
@@ -136,13 +147,31 @@ class _Field:
 
         return container
 
+    def _update_reset_button(self) -> None:
+        if self._reset is None or self._config is None:
+            return
+        preset_val = str(self._config.preset.get(self.section, self.key, fallback="") or "")
+        current_val = self.value()
+        is_diff = (
+            preset_val.strip().lower() != current_val.strip().lower()
+            if self.kind == "bool"
+            else preset_val != current_val
+        )
+        self._reset.setEnabled(is_diff)
+
     def _do_reset(self) -> None:
+        if self._config is None:
+            return
+        preset_val = str(self._config.preset.get(self.section, self.key, fallback="") or "")
         if isinstance(self._edit, QLineEdit):
-            self._edit.clear()
+            self._edit.setText(preset_val)
         elif isinstance(self._edit, QComboBox):
-            self._edit.setCurrentIndex(0)
-        if self._reset is not None:
-            self._reset.setEnabled(False)
+            idx = self._edit.findText(preset_val.lower() if self.kind == "bool" else preset_val)
+            if idx >= 0:
+                self._edit.setCurrentIndex(idx)
+            else:
+                self._edit.setCurrentIndex(0)
+        self._update_reset_button()
 
     def value(self) -> str:
         try:
@@ -153,17 +182,6 @@ class _Field:
         except RuntimeError:
             return ""
         return ""
-
-    def wants_reset(self) -> bool:
-        try:
-            if self._reset is not None and not self._reset.isEnabled():
-                if isinstance(self._edit, QLineEdit) and not self._edit.text().strip():
-                    return True
-                if isinstance(self._edit, QComboBox) and self._edit.currentIndex() == 0:
-                    return True
-        except RuntimeError:
-            return False
-        return False
 
 
 class SimEditDialog(QDialog):
@@ -356,17 +374,21 @@ class _Panel(QWidget):
 
     def collect(self, config: LayeredConfig) -> None:
         for field in self._fields:
-            if field.wants_reset():
-                config.reset(field.section, field.key)
-            else:
-                config.set(field.section, field.key, field.value())
+            val = field.value()
+            config.set(field.section, field.key, val)
 
     def refresh(self) -> None:
-        for _ in range(self.body.count()):
-            item = self.body.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        def _clear(layout: QLayout) -> None:
+            while layout.count():
+                item = layout.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+                child = item.layout()
+                if child is not None:
+                    _clear(child)
+
+        _clear(self.body)
         self._fields = []
         self.build()
 
@@ -861,6 +883,9 @@ class SimsPanel(_Panel):
                 config.set("TreeToolTips", key, tooltip)
             else:
                 config.reset("TreeToolTips", key)
+
+    def refresh(self) -> None:
+        self.populate()
 
 
 class ConfigTab(QWidget):

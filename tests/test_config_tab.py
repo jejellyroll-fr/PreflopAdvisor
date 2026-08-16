@@ -269,3 +269,124 @@ def test_saving_multiple_times_does_not_crash_on_deleted_objects(tmp_path, qtbot
     tab.save()
 
     assert config.user.get("Output", "ChipsPerBB", fallback=None) == "2500"
+
+
+def test_saving_usedatabase_sqlite_setting(tmp_path, qtbot):
+    """Setting UseDatabase=yes in the Reading panel saves to user config and disk."""
+    from PySide6.QtWidgets import QComboBox
+
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+    reading = tab.panels["Reading"]
+
+    field = next(f for f in reading._fields if f.key == "UseDatabase")
+    assert isinstance(field._edit, QComboBox)
+    assert field._edit.currentText() == "no"
+
+    # Change to "yes"
+    field._edit.setCurrentText("yes")
+    tab.save()
+
+    # Verify user config layer holds UseDatabase=yes
+    assert config.user.get("TreeReader", "UseDatabase", fallback=None) == "yes"
+    assert config.get("TreeReader", "UseDatabase") == "yes"
+
+    # Verify on disk
+    import configparser
+
+    saved_ini = configparser.ConfigParser()
+    saved_ini.read(config.user_path)
+    assert saved_ini.get("TreeReader", "UseDatabase") == "yes"
+
+    # Revert to "no" (the preset value)
+    field = next(f for f in reading._fields if f.key == "UseDatabase")
+    assert isinstance(field._edit, QComboBox)
+    field._edit.setCurrentText("no")
+    tab.save()
+
+    # Override is removed because it matches preset
+    assert not config.user.has_option("TreeReader", "UseDatabase")
+    assert config.get("TreeReader", "UseDatabase") == "no"
+
+
+def test_saving_bool_and_seat_settings(tmp_path, qtbot):
+    """Setting AdjustFoldEV, ToolTips, and custom seat orders saves properly."""
+    from PySide6.QtWidgets import QComboBox, QLineEdit
+
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+
+    # 1. Display panel - AdjustFoldEV
+    display = tab.panels["Display"]
+    fold_ev_field = next(f for f in display._fields if f.key == "AdjustFoldEV")
+    assert isinstance(fold_ev_field._edit, QComboBox)
+    fold_ev_field._edit.setCurrentText("no")
+
+    # 2. Seats panel - Positions9
+    seats = tab.panels["Seats"]
+    pos9_field = next(f for f in seats._fields if f.key == "Positions9")
+    assert isinstance(pos9_field._edit, QLineEdit)
+    pos9_field._edit.setText("BB,SB,BU,CO,HJ,LJ,MP,UTG+1,UTG")
+
+    tab.save()
+
+    assert config.get("Output", "AdjustFoldEV") == "no"
+    assert config.get("TreeReader", "Positions9") == "BB,SB,BU,CO,HJ,LJ,MP,UTG+1,UTG"
+
+
+def test_revert_restores_unsaved_changes(tmp_path, qtbot):
+    """Clicking Revert discards uncommitted UI changes."""
+    from PySide6.QtWidgets import QLineEdit
+
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+    display = tab.panels["Display"]
+
+    field = next(f for f in display._fields if f.key == "ChipsPerBB")
+    assert isinstance(field._edit, QLineEdit)
+    field._edit.setText("9999")
+
+    # Revert without saving
+    tab.reload()
+
+    # Field is restored to preset value
+    fresh_field = next(f for f in tab.panels["Display"]._fields if f.key == "ChipsPerBB")
+    assert isinstance(fresh_field._edit, QLineEdit)
+    assert fresh_field._edit.text() == "2000"
+    assert not config.user.has_option("Output", "ChipsPerBB")
+
+
+def test_saving_sim_ante_and_tooltip_metadata(tmp_path, qtbot):
+    """Editing ante and tooltip in SimsPanel saves to TreeInfos and TreeToolTips."""
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+    sims = tab.panels["Sims"]
+
+    # Select the first row (table12)
+    sims.table.selectRow(0)
+    sims.load_selected_meta()
+
+    sims.ante_edit.setText("0.125")
+    sims.tooltip_edit.setText("my_popup.png")
+    tab.save()
+
+    assert config.get("TreeInfos", "table12.ante") == "0.125"
+    assert config.get("TreeToolTips", "table12") == "my_popup.png"
+
+
+def test_saving_sizings_action_codes(tmp_path, qtbot):
+    """Editing standard codes in Sizings panel saves to TreeReader."""
+    from PySide6.QtWidgets import QLineEdit
+
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+    sizings = tab.panels["Sizings"]
+
+    field = next(f for f in sizings._fields if f.key.lower() == "raise100")
+    assert isinstance(field._edit, QLineEdit)
+    field._edit.setText("40150")
+
+    tab.save()
+
+    assert config.get("TreeReader", "raise100") == "40150"
+
