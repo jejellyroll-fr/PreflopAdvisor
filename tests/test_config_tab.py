@@ -389,3 +389,30 @@ def test_saving_sizings_action_codes(tmp_path, qtbot):
     tab.save()
 
     assert config.get("TreeReader", "raise100") == "40150"
+
+
+def test_switching_rows_preserves_pending_meta_edits(tmp_path, qtbot):
+    """Editing a sim's ante and switching to another row preserves the edit."""
+    config = _temp_config(tmp_path)
+    # Add a second dummy sim so we have 2 rows
+    config.set("TreeInfos", "table13", "2,100,PLO,ranges/HU-100bb-with-limp,second sim")
+    tab = ConfigTab(config)
+    sims = tab.panels["Sims"]
+    sims.populate()
+    assert sims.table.rowCount() >= 2
+
+    # Select row 0 (table12) and change its ante
+    sims.table.selectRow(0)
+    sims.load_selected_meta()
+    sims.ante_edit.setText("0.333")
+
+    # Select row 1 without saving first
+    sims.table.selectRow(1)
+    sims.load_selected_meta()
+
+    # Verify table12.ante was committed to memory
+    assert config.get("TreeInfos", "table12.ante") == "0.333"
+
+    # Save and verify persisted
+    tab.save()
+    assert config.get("TreeInfos", "table12.ante") == "0.333"

@@ -215,7 +215,7 @@ class SimEditDialog(QDialog):
         self.folder_edit.setPlaceholderText("Path to folder with .rng files...")
         self.folder_edit.textChanged.connect(self._on_folder_edited)
         self.browse_btn = QPushButton("Browse Folder...")
-        self.browse_btn.clicked.connect(self._browse_folder)
+        self.browse_btn.clicked.connect(self.browse_folder)
         folder_row.addWidget(self.folder_edit, stretch=1)
         folder_row.addWidget(self.browse_btn)
         folder_layout.addLayout(folder_row)
@@ -276,7 +276,7 @@ class SimEditDialog(QDialog):
         if initial_data:
             self._load_initial_data(initial_data)
 
-    def _browse_folder(self) -> None:
+    def browse_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Select Range Folder")
         if chosen:
             self.folder_edit.setText(chosen)
@@ -676,6 +676,7 @@ class SimsPanel(_Panel):
     """Every sim in [TreeInfos], editable, addable and removable."""
 
     def __init__(self, config: LayeredConfig) -> None:
+        self._current_meta_key: str | None = None
         super().__init__(config, "Sims")
 
     def build(self) -> None:
@@ -750,6 +751,7 @@ class SimsPanel(_Panel):
 
     def populate(self) -> None:
         assert self.table is not None
+        self._current_meta_key = None
         self.table.setRowCount(0)
         for key in self._tree_rows():
             value = self.config.get("TreeInfos", key, "") or ""
@@ -768,7 +770,7 @@ class SimsPanel(_Panel):
 
     def add_sim(self) -> None:
         dialog = SimEditDialog(self.config, parent=self)
-        dialog._browse_folder()
+        dialog.browse_folder()
         if dialog.exec() == QDialog.DialogCode.Accepted:
             data = dialog.get_result()
             key = data["key"]
@@ -836,17 +838,34 @@ class SimsPanel(_Panel):
         self.populate()
         self.feedback.setText(f"Removed {key} from your configuration.")
 
+    def _save_current_meta(self) -> None:
+        if self._current_meta_key:
+            ante = self.ante_edit.text().strip()
+            tooltip = self.tooltip_edit.text().strip()
+            if ante:
+                self.config.set("TreeInfos", f"{self._current_meta_key}.ante", ante)
+            else:
+                self.config.reset("TreeInfos", f"{self._current_meta_key}.ante")
+            if tooltip:
+                self.config.set("TreeToolTips", self._current_meta_key, tooltip)
+            else:
+                self.config.reset("TreeToolTips", self._current_meta_key)
+
     def load_selected_meta(self) -> None:
+        self._save_current_meta()
         row = self.table.currentRow() if self.table is not None else -1
         if row < 0 or self.table is None:
+            self._current_meta_key = None
             return
         key = self.table.item(row, 0).text()
+        self._current_meta_key = key
         ante = self.config.tree_metadata("TreeInfos", key).get("ante", "")
         self.ante_edit.setText(ante)
         self.tooltip_edit.setText(self.config.get("TreeToolTips", key, "") or "")
 
     def collect(self, config: LayeredConfig) -> None:
         assert self.table is not None
+        self._save_current_meta()
         seen: set[str] = set()
         for row in range(self.table.rowCount()):
             key = self.table.item(row, 0).text().strip()
@@ -869,20 +888,6 @@ class SimsPanel(_Panel):
         for key in self._tree_rows():
             if key not in seen:
                 config.reset("TreeInfos", key)
-
-        ante = self.ante_edit.text().strip()
-        tooltip = self.tooltip_edit.text().strip()
-        row = self.table.currentRow()
-        if row >= 0:
-            key = self.table.item(row, 0).text()
-            if ante:
-                config.set("TreeInfos", f"{key}.ante", ante)
-            else:
-                config.reset("TreeInfos", f"{key}.ante")
-            if tooltip:
-                config.set("TreeToolTips", key, tooltip)
-            else:
-                config.reset("TreeToolTips", key)
 
     def refresh(self) -> None:
         self.populate()

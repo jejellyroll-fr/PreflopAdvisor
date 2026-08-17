@@ -119,3 +119,4 @@ def test_tree_keys_exclude_metadata(preset_file):
     config = LayeredConfig(path, preset_file.parent / "ghost.ini")
     assert config.tree_keys("TreeInfos") == ["table12"]
     assert config.tree_metadata("TreeInfos", "table12") == {"ante": "0.125"}
+    assert config.tree_metadata("TreeInfos", "Table12") == {"ante": "0.125"}

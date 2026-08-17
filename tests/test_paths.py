@@ -135,7 +135,7 @@ def test_validate_tree_ignores_an_ante_explicitly_denied():
 def test_validate_tree_accepts_a_matching_player_count():
     config = _tree_reader_config()
 
-    ok, _reason = paths.validate_tree("9,100,PLO,ranges/fake-9max-100bb,fcitif", ante_declared=False, config=config)
+    ok, _reason = paths.validate_tree("2,100,PLO,ranges/HU-100bb-with-limp,fictif", ante_declared=False, config=config)
 
     assert ok
 
@@ -167,15 +167,23 @@ def test_inspect_range_folder_detects_hu_plo():
     assert "40100" in info["action_codes"]
 
 
-def test_inspect_range_folder_detects_6max_and_9max():
-    info6 = paths.inspect_range_folder("ranges/fake-6max-100bb")
+def test_inspect_range_folder_detects_6max_and_9max(tmp_path):
+    folder6 = tmp_path / "custom-6max-50bb"
+    folder6.mkdir()
+    (folder6 / "0.rng").write_text("AhKsQdJc\n0.5;100\n", encoding="utf-8")
+    info6 = paths.inspect_range_folder(str(folder6))
     assert info6["valid"] is True
     assert info6["players"] == 6
+    assert info6["bb"] == 50
     assert info6["game"] == "PLO"
 
-    info9 = paths.inspect_range_folder("ranges/fake-9max-100bb")
+    folder9 = tmp_path / "full-ring-9max-100bb"
+    folder9.mkdir()
+    (folder9 / "0.rng").write_text("AhKsQdJc9c\n0.5;100\n", encoding="utf-8")
+    info9 = paths.inspect_range_folder(str(folder9))
     assert info9["valid"] is True
     assert info9["players"] == 9
+    assert info9["game"] == "PLO5"
 
 
 def test_inspect_range_folder_rejects_empty_or_missing(tmp_path):

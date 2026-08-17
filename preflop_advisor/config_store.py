@@ -242,8 +242,8 @@ class LayeredConfig:
     def tree_metadata(self, section: str, table: str) -> dict[str, str]:
         """The ``TableN.<x>`` keys (e.g. ``Table5.ante``) for one tree."""
         meta: dict[str, str] = {}
+        prefix = f"{table.lower()}."
         for key in self.keys(section):
-            prefix = f"{table}."
             if key.startswith(prefix):
                 meta[key[len(prefix) :]] = self.get(section, key) or ""
         return meta
