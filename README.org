@@ -104,33 +104,38 @@ Before you begin, ensure you have Python 3.x installed on your computer. You can
      #+END_SRC
      this can take a few minutes
 6. Configure the Tool:
-   - Open =preflop_advisor/config.ini= in a text editor (e.g., Notepad, nano, vim).
-   - Edit the configuration sections as needed:
-     - [TreeSelector]: Set NumTrees to the number of trees you are using.
-     - [TreeInfos]: make an entry for each tree:
-       + Table12=2,100,PLO,ranges/HU-100bb-with-limp,   no Rake
-         this is an example for the 100bb HU tree - every entry has to be there.
-         Name=Number of Players,Stacksize in BB, GAME, path to the range folder, Rake setting
-         The path may be absolute or relative to the project root. A path that no longer
-         exists still resolves if a folder of the same name sits under =ranges/=.
-       + If the tree has an ante, say how big it is, in big blinds:
-         =Table12.ante=0.125=
-         The size is not in the export and nothing can guess it. A tree whose description
-         mentions an ante without declaring one is treated as having an ante of unknown
-         size, and the trainer draws its table with no pot and no stacks rather than with
-         numbers that are all short by the antes. Leave it out when there is none; a
-         description saying so -- =no ante= -- is understood.
-     - [TreeToolTips]: Add tooltips for each tree, if desired. Ensure the number of tooltips matches the number of trees.
-       I generated the tooltip infos programmatically using =scripts/frequency_report.py=
-       For technical users read there and try to figure it output.
-       Otherwise generate a Popup by hand or use one of mine from the popup-pics folder if it fits.
-       Tooltips are optional -> you can disable them setting
-       ToolTips=NO
-7. (Optional) Adjust Font Sizes for High-Resolution Monitors:
-   - CardSelector Font: In =card_selector.py=, update =BUTTON_FONT=.
-   - TreeSelector Font: In =config.ini= under [TreeSelector], update =FontSize=.
-   - PositionSelector Font: In =config.ini= under [PositionSelector], update =FontSize=.
-   - Output grid: font sizes scale with the cell size; colours live in =preflop_advisor/theme.py=.
+    - Most of the configuration is done in the application, in the
+      *Configuration* tab (next to Advisor and Trainer): sims, sizings, seats,
+      reading and display settings. Changes are saved to your own override file
+      under the application config location and never touch the shipped
+      =config.ini=, so its comments and sample trees survive.
+    - If you prefer editing text, open =preflop_advisor/config.ini= in a text
+      editor (e.g. Notepad, nano, vim). The sections below are the ones worth
+      knowing:
+      - [TreeInfos]: make an entry for each tree:
+        + Table12=2,100,PLO,ranges/HU-100bb-with-limp,   no Rake
+          this is an example for the 100bb HU tree - every entry has to be there.
+          Name=Number of Players,Stacksize in BB, GAME, path to the range folder, Rake setting
+          The path may be absolute or relative to the project root. A path that no longer
+          exists still resolves if a folder of the same name sits under =ranges/=.
+        + If the tree has an ante, say how big it is, in big blinds:
+          =Table12.ante=0.125=
+          The size is not in the export and nothing can guess it. A tree whose description
+          mentions an ante without declaring one is treated as having an ante of unknown
+          size, and the trainer draws its table with no pot and no stacks rather than with
+          numbers that are all short by the antes. Leave it out when there is none; a
+          description saying so -- =no ante= -- is understood.
+      - [TreeToolTips]: Add tooltips for each tree, if desired. Ensure the number of tooltips matches the number of trees.
+        I generated the tooltip infos programmatically using =scripts/frequency_report.py=
+        For technical users read there and try to figure it output.
+        Otherwise generate a Popup by hand or use one of mine from the popup-pics folder if it fits.
+        Tooltips are optional -> you can disable them setting
+        ToolTips=NO
+ 7. (Optional) Adjust Font Sizes for High-Resolution Monitors:
+    - CardSelector Font: In =card_selector.py=, update =BUTTON_FONT=.
+    - TreeSelector Font: In the Configuration tab (Display) or =config.ini= under [TreeSelector], update =FontSize=.
+    - PositionSelector Font: In the Configuration tab (Seats) or =config.ini= under [PositionSelector], update =FontSize=.
+    - Output grid: font sizes scale with the cell size; colours live in =preflop_advisor/theme.py=.
 
 * Range Files and Configuration
 
@@ -181,6 +186,10 @@ tool says so rather than guessing.
 
 To add a sizing, find its code by looking at the file names in your range folder, add a
 =Name=code= line, and list =Name= in =RaiseSizeList=.
+
+The Configuration tab's *Sizings* panel does this for you: it lists the action codes
+your sims actually contain and flags the ones the tool cannot yet decode, so you only
+declare the sizings your trees use.
 
 *** What a sizing costs, and when that cannot be told
 The advisor never needed to know: a range file is found by the /names/ of the actions, so
@@ -293,7 +302,7 @@ python standalone.py
 ** Development
 #+BEGIN_SRC sh
 uv sync --extra dev
-uv run pytest              # 504 tests, coverage gate at 90%
+uv run pytest              # 536 tests, coverage gate at 90%
 uv run pytest -m "not slow"  # skip the subprocess smoke test
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                # strict; the package and scripts are fully annotated

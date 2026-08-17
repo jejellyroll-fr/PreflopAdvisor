@@ -219,7 +219,7 @@ class TrainerPanel(QWidget):
         self.rng.shuffle(spots)
 
         processor = reader.action_processor
-        self.sizings = sizings_for(processor.action_codes, dict(self.tree_reader_configs))
+        self.sizings = sizings_for(processor.action_codes, self.tree_reader_configs)
         self.stack = float(tree.get("bb", 100))
         self.game = str(tree.get("game", "PLO"))
         self.ante = tree.get("ante", 0.0)

@@ -18,8 +18,14 @@ ConfigSource = Mapping[str, Any]
 
 
 def normalize(configs: ConfigSource) -> dict[str, Any]:
-    """Returns a plain dict of settings keyed by lowercase name."""
-    return {str(key).lower(): value for key, value in dict(configs).items()}
+    """Returns a plain dict of settings keyed by lowercase name.
+
+    Accepts any mapping, including a :class:`Settings` already built from one:
+    ``dict(some_settings)`` would mistake it for a sequence of pairs, so prefer
+    its ``items()`` when present.
+    """
+    pairs = configs.items() if hasattr(configs, "items") else dict(configs).items()
+    return {str(key).lower(): value for key, value in pairs}
 
 
 def get(configs: ConfigSource, name: str, default: Any = None) -> Any:
@@ -27,7 +33,7 @@ def get(configs: ConfigSource, name: str, default: Any = None) -> Any:
     return normalize(configs).get(name.lower(), default)
 
 
-class Settings:
+class Settings(Mapping[str, Any]):
     """Case-insensitive read-only view over a config section or dict."""
 
     def __init__(self, configs: ConfigSource) -> None:
@@ -39,11 +45,14 @@ class Settings:
     def __getitem__(self, name: str) -> Any:
         return self._values[name.lower()]
 
-    def __contains__(self, name: str) -> bool:
-        return name.lower() in self._values
+    def __contains__(self, name: object) -> bool:
+        return str(name).lower() in self._values
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
 
     def items(self) -> ItemsView[str, Any]:
         return self._values.items()

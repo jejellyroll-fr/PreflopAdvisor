@@ -74,12 +74,11 @@ class TreeSelector(QWidget):
         self.tree_tooltips = Settings(tree_tooltips) if tree_tooltips else None
         self.enable_tooltips = str(settings.get("ToolTips", "NO")).upper() == "YES"
         self.current_tooltip: CreateToolTip | None = None
-        self.num_trees = int(settings.get("NumTrees", 5))
         self.fontsize = int(settings.get("FontSize", 12))
         self.font_family = settings.get("Font", "Arial")
         self.trees: list[dict[str, Any]] = []
 
-        logger.debug("Initializing TreeSelector with %d trees.", self.num_trees)
+        logger.debug("Initializing TreeSelector.")
 
         # Process tree information
         self.process_tree_infos(tree_configs)
@@ -224,6 +223,35 @@ class TreeSelector(QWidget):
         """
         if self.current_tree:
             self.treeChanged.emit(self.current_tree)
+
+    def refresh_trees(self, tree_configs: ConfigSource, tree_tooltips: ConfigSource) -> None:
+        """Rebuild the dropdown from fresh configuration, keeping the selection if it survives.
+
+        Called after the Configuration tab saves: the list of sims may have gained or lost
+        entries, and the tooltips may have changed.
+        """
+        previous = self.current_tree["table_key"] if self.current_tree else None
+        self.tree_tooltips = Settings(tree_tooltips) if tree_tooltips else None
+        self.trees = []
+        self.process_tree_infos(tree_configs)
+
+        self.dropdown.blockSignals(True)
+        self.dropdown.clear()
+        for tree in self.trees:
+            self.dropdown.addItem(
+                f"{tree['plrs']}-max {tree['game']} {tree['infos']}",
+                tree,
+            )
+        self.dropdown.blockSignals(False)
+
+        index = 0
+        if previous is not None:
+            for candidate, tree in enumerate(self.trees):
+                if tree["table_key"] == previous:
+                    index = candidate
+                    break
+        self.dropdown.setCurrentIndex(index)
+        self.on_tree_selected(index)
 
     def get_tree_infos(self) -> dict[str, Any] | None:
         """

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 
 import logging
-import os
-from configparser import ConfigParser
 from typing import Any
 
 from PySide6.QtCore import QByteArray, QRect, QSettings, Qt
@@ -24,12 +22,14 @@ from PySide6.QtWidgets import (
 
 from . import sqlite_store
 from .card_selector import CardSelector
+from .config_store import LayeredConfig
+from .config_tab import ConfigTab
 from .errors import PreflopAdvisorError
 from .outputframe import OutputFrame
 from .paths import package_file
 from .position_selector import PositionSelector
 from .randomizer import RandomButton
-from .settings import ConfigSource, normalize
+from .settings import ConfigSource, Settings, normalize
 from .trainer_panel import TrainerPanel
 from .tree_reader import TreeReader
 from .tree_selector import TreeSelector
@@ -99,13 +99,7 @@ def build_progress(folder: str, total: int) -> DatabaseProgress:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.configs = ConfigParser()
-
-        # Load the config.ini file
-        config_path = package_file("config.ini")
-        if not os.path.exists(config_path):
-            raise FileNotFoundError(f"Configuration file not found: {config_path}")
-        self.configs.read(config_path)
+        self.configs = LayeredConfig(package_file("config.ini"))
 
         self.setWindowTitle("Preflop Advisor based on Monker")
 
@@ -154,8 +148,8 @@ class MainWindow(QMainWindow):
         self.tree_selector = TreeSelector(
             self,
             tree_selector_settings,
-            self.configs["TreeInfos"],
-            self.configs["TreeToolTips"],
+            self.configs.section("TreeInfos"),
+            self.configs.section("TreeToolTips"),
         )
         self.rand_button = RandomButton(self.input_frame, position_selector_settings)
         self.output = OutputFrame(self.output_frame, output_settings, tree_reader_settings)
@@ -196,9 +190,15 @@ class MainWindow(QMainWindow):
             output_settings,
         )
 
+        # The configuration tab edits the user layer of the config and, on save, asks the
+        # window to redraw with the new values and rebuild the sim list if it changed.
+        self.config_tab = ConfigTab(self.configs)
+        self.config_tab.configChanged.connect(self.on_configuration_changed)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self.advisor, "Advisor")
         self.tabs.addTab(self.trainer, "Trainer")
+        self.tabs.addTab(self.config_tab, "Configuration")
         main_layout.addWidget(self.tabs, 0, 0)
 
         # Set here rather than by the caller: both entry points get the same window, and
@@ -266,6 +266,17 @@ class MainWindow(QMainWindow):
 
     def on_selection_changed(self, _: object = None) -> None:
         """Slot for the component signals, which each carry a payload we do not need."""
+        self.update_output_frame()
+
+    def on_configuration_changed(self) -> None:
+        """A setting was saved in the Configuration tab.
+
+        The sim list and its tooltips are re-read straight away (the selector rebuilds),
+        while every scalar that feeds the grid -- chip convention, EV mode, sizings, ante --
+        takes effect on the next render, which is this call. Cache and database settings
+        apply to the next sim load, which is also covered here.
+        """
+        self.tree_selector.refresh_trees(self.configs.section("TreeInfos"), self.configs.section("TreeToolTips"))
         self.update_output_frame()
 
     def update_output_frame(self) -> None:
@@ -426,31 +437,40 @@ class MainWindow(QMainWindow):
 
     def _get_section_config(self, section: str) -> ConfigSource:
         """Helper to retrieve a configuration section.
-        Returns the real config section if it exists, otherwise a dict of defaults."""
-        if section in self.configs:
-            return self.configs[section]
-        # Fallback defaults if section missing from config.ini
+
+        Returns the merged section (user overrides over the preset) when the
+        preset declares one, otherwise a dict of built-in defaults for the few
+        sections a fresh checkout may lack. Wrapped in :class:`Settings` so the
+        CamelCase keys the components look up are matched case-insensitively,
+        exactly as the old ``ConfigParser`` section did.
+        """
+        if section in self.configs.sections():
+            return Settings(self.configs.section(section))
+        return self.fallback_section(section)
+
+    @staticmethod
+    def fallback_section(section: str) -> dict[str, str]:
+        """Built-in defaults for a section absent from the shipped configuration.
+
+        Used when a fresh checkout lacks one of the optional sections; the values are the
+        same as the packaged ``config.ini`` so behaviour is identical either way.
+        """
         default_configs = {
             "CardSelector": {
                 "NumCards": "4",
                 "ButtonPad": "5",
-                "Background": "#2c2c2c",
-                "BackgroundPressed": "#444444",
             },
             "PositionSelector": {
                 "PositionList": "X,UTG,UTG1,MP,LJ,HJ,CO,BU,SB,BB",
-                "PositionInactive": "SB,BB",
+                "PositionInactive": "",
                 "ButtonHeight": "30",
                 "ButtonWidth": "40",
                 "ButtonPad": "10",
                 "FontSize": "14",
                 "Font": "Helvetica",
-                "Background": "#2c2c2c",
-                "BackgroundPressed": "#444444",
                 "DefaultPosition": "0",
             },
             "TreeSelector": {
-                "NumTrees": "5",
                 "FontSize": "12",
                 "Font": "Arial",
                 "DefaultTree": "0",
