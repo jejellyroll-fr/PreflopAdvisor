@@ -29,8 +29,10 @@ import sys
 from configparser import ConfigParser
 from typing import Any
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # This script lives outside the package, so make the repository importable.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
 
 from preflop_advisor.sizings import Sizing, sizings_for
 from preflop_advisor.table_state import table_state
@@ -45,7 +47,7 @@ RAISE = "Raise100"
 KNOWN_ACTIONS = ("Fold", "Call", RAISE)
 #: Where the hand list comes from. Read rather than computed: these are the hands Monker
 #: itself wrote, in its own normalized notation, so nothing here has to reproduce it.
-DEMO_TREE = os.path.join("ranges", "HU-100bb-with-limp", "0.rng")
+DEMO_TREE = os.path.join(PROJECT_ROOT, "ranges", "HU-100bb-with-limp", "0.rng")
 #: Monker's own unit. The reader divides by [Output] ChipsPerBB to display big blinds.
 CHIPS_PER_BB = 2000.0
 
@@ -54,7 +56,7 @@ RANKS = "23456789TJQKA"
 
 def hands_of(path: str) -> list[str]:
     """Every hand of a range file, in the order the solver wrote them."""
-    with open(path) as handle:
+    with open(path, encoding="utf-8") as handle:
         return [line.strip() for index, line in enumerate(handle) if index % 2 == 0 and line.strip()]
 
 
@@ -208,7 +210,7 @@ def write_family(
             lines[name].append(f"{hand}\n{share:.3f};{ev * CHIPS_PER_BB:.1f}")
 
     for name in names:
-        with open(os.path.join(folder, name), "w") as handle:
+        with open(os.path.join(folder, name), "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines[name]) + "\n")
 
 
@@ -218,7 +220,7 @@ def build(players: int, hands: list[str], out: str, configs: Any) -> str:
     os.makedirs(folder, exist_ok=True)
     # Discovery needs a folder that already looks like a tree, since the reader refuses
     # one holding no range files at all.
-    with open(os.path.join(folder, "0.rng"), "w") as handle:
+    with open(os.path.join(folder, "0.rng"), "w", encoding="utf-8") as handle:
         handle.write("")
 
     nodes = discover(players, configs, folder)
@@ -233,12 +235,14 @@ def build(players: int, hands: list[str], out: str, configs: Any) -> str:
     return folder
 
 
-CONFIG = os.path.join("preflop_advisor", "config.ini")
+CONFIG = os.path.join(PROJECT_ROOT, "preflop_advisor", "config.ini")
 
 
 def entry_for(players: int, out: str) -> str:
     """The one line in [TreeInfos] that describes a generated tree of this size."""
-    return f"Table{players}0={players},100,PLO,{out}/fake-{players}max-100bb,fictive no ante"
+    # Normalize path if relative
+    display_out = out if not os.path.isabs(out) else os.path.relpath(out, PROJECT_ROOT)
+    return f"Table{players}0={players},100,PLO,{display_out}/fake-{players}max-100bb,fictive no ante"
 
 
 def switch_entries(on: bool, players: list[int], out: str) -> None:
@@ -256,7 +260,7 @@ def switch_entries(on: bool, players: list[int], out: str) -> None:
     wanted = {entry_for(count, out) for count in players}
     lines = []
     changed = 0
-    with open(CONFIG) as handle:
+    with open(CONFIG, encoding="utf-8") as handle:
         for line in handle:
             bare = line.lstrip("#")
             if bare.strip() in wanted:
@@ -264,7 +268,7 @@ def switch_entries(on: bool, players: list[int], out: str) -> None:
                 changed += new != line
                 line = new
             lines.append(line)
-    with open(CONFIG, "w") as handle:
+    with open(CONFIG, "w", encoding="utf-8") as handle:
         handle.writelines(lines)
     print(f"{changed} entree(s) {'activee(s)' if on else 'desactivee(s)'} dans {CONFIG}")
 
@@ -283,7 +287,7 @@ def main() -> None:
         return
 
     configs = ConfigParser()
-    configs.read(os.path.join("preflop_advisor", "config.ini"))
+    configs.read(CONFIG, encoding="utf-8")
     reader_configs = configs["TreeReader"]
 
     hands = hands_of(DEMO_TREE)
