@@ -947,9 +947,12 @@ def test_an_ante_declaration_is_not_read_as_a_tree(qtbot, raw_config):
     selector = TreeSelector(None, raw_config["TreeSelector"], raw_config["TreeInfos"], raw_config["TreeToolTips"])
     qtbot.addWidget(selector)
 
-    # configparser keeps its keys in lower case; what matters is that one tree was found.
-    assert [tree["table_key"] for tree in selector.trees] == ["table12"]
-    assert selector.get_tree_infos()["ante"] == 0.125
+    # The property, not the shipped configuration's tree list: asserting the whole list
+    # made this fail the moment config.ini offered another tree.
+    keys = [tree["table_key"] for tree in selector.trees]
+    assert "table12.ante" not in keys, "the declaration was enumerated as a tree of its own"
+    assert "table12" in keys
+    assert next(tree for tree in selector.trees if tree["table_key"] == "table12")["ante"] == 0.125
 
 
 def test_the_table_shows_the_folds_that_had_to_happen(main_window, raw_config):
