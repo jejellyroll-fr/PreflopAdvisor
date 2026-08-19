@@ -162,7 +162,7 @@ def get_total_weight(filename: str) -> float:
     """Calculate the total weight from a file."""
     total_weight = 0.0
     try:
-        with open(filename, "r") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             for line in f:
                 if ";" not in line:
                     hand = line.strip()

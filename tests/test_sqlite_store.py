@@ -9,6 +9,7 @@ being half-written.
 import inspect
 import os
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -82,7 +83,7 @@ def test_every_range_file_is_ingested(small_tree):
     """
     sqlite_store.get_store(small_tree, ".rng")
 
-    with sqlite3.connect(database_of(small_tree)) as conn:
+    with closing(sqlite3.connect(database_of(small_tree))) as conn:
         indexed = {row[0] for row in conn.execute("SELECT DISTINCT filename FROM hands")}
 
     assert indexed == {"0.rng", "2.rng"}
@@ -211,7 +212,7 @@ def test_a_database_from_an_older_schema_is_rebuilt(small_tree, monkeypatch):
 
     store = sqlite_store.get_store(small_tree, ".rng")
 
-    with sqlite3.connect(database_of(small_tree)) as conn:
+    with closing(sqlite3.connect(database_of(small_tree))) as conn:
         stored = dict(conn.execute("SELECT key, value FROM meta"))
     assert stored["schema_version"] == "999"
     assert store.lookup_hand("2.rng", REFERENCE_HAND_MONKER) is not None

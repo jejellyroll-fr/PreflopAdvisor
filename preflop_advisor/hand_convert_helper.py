@@ -303,14 +303,14 @@ def replace_monker_2_hands(filename: str) -> None:
     """
     new_content = ""
     logger.debug(f"Processing file: {filename}")
-    with open(filename, "r") as f:
+    with open(filename, "r", encoding="utf-8") as f:
         for line in f:
             if ";" not in line and line[0] != "0":  # Line containing a hand, not EV values
                 sorted_hand = sort_monker_2_hand(line.strip())
                 new_content += sorted_hand + "\n"
             else:
                 new_content += line
-    with open(filename, "w") as f:
+    with open(filename, "w", encoding="utf-8") as f:
         f.write(new_content)
     logger.debug(f"File updated: {filename}")
 
@@ -330,12 +330,12 @@ def move_plo5_file(work_path: str, inputfilename: str, outputfilename: str) -> N
     Converts a JSON file containing PLO5 hands to an adapted format and writes it to a new file.
     """
     input_file = os.path.join(work_path, inputfilename)
-    with open(input_file, "r") as json_file:
+    with open(input_file, "r", encoding="utf-8") as json_file:
         data = json.load(json_file)
 
     hands = data["items"]
     output_file = os.path.join(work_path, outputfilename)
-    with open(output_file, "w") as range_file:
+    with open(output_file, "w", encoding="utf-8") as range_file:
         for item in hands:
             converted_hand = sort_omaha5_hand(item["combo"].replace("[", "(").replace("]", ")"))
             range_file.write(converted_hand + "\n")
@@ -348,11 +348,11 @@ def move_plo5_postflop_file(work_path: str, inputfilename: str, outputfilename: 
     Converts a JSON file containing PLO5 post-flop hands to a CSV file.
     """
     input_file = os.path.join(work_path, inputfilename)
-    with open(input_file, "r") as json_file:
+    with open(input_file, "r", encoding="utf-8") as json_file:
         data = json.load(json_file)
 
     hands = data["items"]
     output_file = os.path.join(work_path, outputfilename)
-    with open(output_file, "w") as range_file:
+    with open(output_file, "w", encoding="utf-8") as range_file:
         range_file.writelines(f"{item['combo']},{item['weight']},{item['ev'] * 1000}\n" for item in hands)
     logger.debug(f"Converted post-flop file written: {output_file}")

@@ -193,7 +193,7 @@ class ActionProcessor:
         logger.debug("Reading file and creating hash: %s", filename)
         hand_info_hash = {}
         try:
-            with open(filename, "r") as file:
+            with open(filename, "r", encoding="utf-8") as file:
                 lines = file.readlines()
                 for i in range(0, len(lines), 2):
                     hand = lines[i].strip()
@@ -326,7 +326,7 @@ class ActionProcessor:
         filename = os.path.join(self.path, self.get_filename(action_sequence))
         logger.debug("Reading data for hand: %s from file: %s", hand, filename)
         try:
-            with open(filename, "r") as handle:
+            with open(filename, "r", encoding="utf-8") as handle:
                 # Range files are strict line pairs: hand, then "frequency;ev". Read them
                 # as pairs and compare hands for equality -- a substring match would let
                 # "AA(2A)" be found inside a longer line, and the previous length guard

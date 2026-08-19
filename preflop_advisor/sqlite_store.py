@@ -19,6 +19,7 @@ Two deliberate departures from ksoeze/PreflopAdvisor e88cb01, which this is port
   which cannot be reconciled with rebuilding it when they change.
 """
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -185,7 +186,7 @@ def parse_range_file(path: str) -> Iterator[tuple[str, float, float]]:
     next line with one is its values, and anything that does not pair up is skipped.
     Hands are stored canonically, so a Monker 2 export is queried like any other.
     """
-    with open(path, "r") as handle:
+    with open(path, "r", encoding="utf-8") as handle:
         pending = None
         for raw in handle:
             line = raw.strip()
@@ -269,7 +270,11 @@ class TreeStore:
         if not os.path.isfile(self.db_path):
             return None
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            # ``closing`` rather than the connection's own context manager, which commits
+            # the transaction and leaves the connection open: Windows refuses to rename
+            # over a file something still holds open, so the leak silently reduced every
+            # rebuild to "no database" there.
+            with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
                 stored = dict(conn.execute("SELECT key, value FROM meta"))
         except sqlite3.Error as error:
             logger.warning("Unreadable database %s (%s); rebuilding", self.db_path, error)
