@@ -231,7 +231,7 @@ def build(players: int, hands: list[str], out: str, configs: Any) -> str:
         write_family(folder, names, nodes, hands, seats.position_list, sizings)
 
     size = sum(os.path.getsize(os.path.join(folder, name)) for name in os.listdir(folder))
-    print(f"{players} joueurs: {len(nodes):4} noeuds, {size / 1e6:7.1f} Mo  {folder}")
+    print(f"{players} players: {len(nodes):4} nodes, {size / 1e6:7.1f} MB  {folder}")
     return folder
 
 
@@ -270,7 +270,7 @@ def switch_entries(on: bool, players: list[int], out: str) -> None:
             lines.append(line)
     with open(CONFIG, "w", encoding="utf-8") as handle:
         handle.writelines(lines)
-    print(f"{changed} entree(s) {'activee(s)' if on else 'desactivee(s)'} dans {CONFIG}")
+    print(f"{changed} entr{'y' if changed == 1 else 'ies'} {'enabled' if on else 'disabled'} in {CONFIG}")
 
 
 def main() -> None:
@@ -296,7 +296,7 @@ def main() -> None:
         # range of hands instead of everything the solver happened to write first.
         step = max(1, len(hands) // int(arguments.hands))
         hands = hands[::step][: int(arguments.hands)]
-    print(f"{len(hands)} mains par noeud")
+    print(f"{len(hands)} hands per node")
 
     entries = []
     for players in arguments.players:
@@ -307,10 +307,10 @@ def main() -> None:
         switch_entries(True, arguments.players, arguments.out)
         return
 
-    print("\nDeja dans [TreeInfos] de preflop_advisor/config.ini, commentees :")
+    print("\nAlready in [TreeInfos] of preflop_advisor/config.ini, commented out:")
     for entry in entries:
         print(f"  {entry}")
-    print("Relancer avec --enable pour les activer, --disable pour les remettre en commentaire.")
+    print("Run again with --enable to switch them on, --disable to comment them out again.")
 
 
 if __name__ == "__main__":
