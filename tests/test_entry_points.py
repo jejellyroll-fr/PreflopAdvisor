@@ -118,7 +118,10 @@ def test_runtime_data_is_declared_as_package_data():
     packages.find only discovers Python packages; config.ini and popup-pics are what the
     app reads at startup, and ranges/ is deliberately left out (15MB of demo trees).
     """
-    import tomllib
+    # tomllib landed in 3.11 and the project supports 3.10. What this checks is a static
+    # property of pyproject.toml, identical on every interpreter, so the two cells that
+    # can read the file are enough to hold it.
+    tomllib = pytest.importorskip("tomllib")
 
     from preflop_advisor.paths import PROJECT_ROOT
 
