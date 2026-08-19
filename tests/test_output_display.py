@@ -6,13 +6,15 @@ strategy.
 """
 
 import pytest
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QFont, QFontMetrics
 
 from preflop_advisor import theme
 from preflop_advisor.outputframe import (
     EMPTY_CELL_TEXT,
     MIN_CELL_HEIGHT,
     MIN_CELL_WIDTH,
+    MIN_FONT_POINT,
+    ActionTile,
     OutputFrame,
     TableEntry,
     short_action_label,
@@ -575,6 +577,38 @@ def test_the_cell_floor_fits_what_a_tile_has_to_show(qtbot):
     ):
         needed = QFontMetrics(label.font()).horizontalAdvance(text)
         assert needed <= label.width(), f"{text!r} needs {needed}px, has {label.width()}px"
+
+
+def test_a_line_is_shrunk_until_it_measures_small_enough():
+    """The size comes from what the text measures, not from a pixels-per-point constant.
+
+    The constant was measured on one machine. Windows renders the same point size half
+    again as wide, so the frequency -- the figure the grid is read for -- was clipped
+    there while every assertion passed on the machine it was tuned on. Narrow widths are
+    passed here so the shrinking runs on any platform, whatever its metrics.
+    """
+    font = QFont(theme.FONT_FAMILY, 24, QFont.Weight.Bold)
+
+    fitted = ActionTile.fitted(QFont(font), "62%", 30)
+
+    assert fitted.pointSize() < font.pointSize()
+    assert QFontMetrics(fitted).horizontalAdvance("62%") <= 30
+
+
+def test_shrinking_stops_at_the_floor_rather_than_vanishing():
+    """A width nothing fits in leaves readable text, clipped, not a zero-point font."""
+    fitted = ActionTile.fitted(QFont(theme.FONT_FAMILY, 24, QFont.Weight.Bold), "+2.41", 1)
+
+    assert fitted.pointSize() == MIN_FONT_POINT
+
+
+def test_a_line_wide_enough_for_its_text_is_left_alone():
+    """Fitting only ever takes room away when the text does not have it."""
+    font = QFont(theme.FONT_FAMILY, 12, QFont.Weight.Bold)
+
+    fitted = ActionTile.fitted(QFont(font), "62%", 400)
+
+    assert fitted.pointSize() == font.pointSize()
 
 
 @pytest.mark.parametrize("height", [MIN_CELL_HEIGHT, 60, 80, 120, 160])

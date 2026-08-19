@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QResizeEvent
+from PySide6.QtGui import QFont, QFontMetrics, QResizeEvent
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -44,9 +44,11 @@ MIN_CELL_HEIGHT = 52
 # What a tile's own frame costs it, on top of the text: borders, padding, the gap to its
 # neighbour. Subtracted before deciding what font the text may have.
 TILE_CHROME = 16
-# What the frequency line costs in pixels per point of font size, measured on a rendered
-# "62%". Used to bound the font by the room the text actually has.
-PIXELS_PER_POINT = 2.7
+# How small a line may be shrunk to fit the room it has. Reached only at the smallest cell
+# size, and only where the platform renders wider than the layout assumed; a line that
+# cannot fit even here is drawn at this size and clipped, which is still better than
+# choosing a size that clips every platform equally.
+MIN_FONT_POINT = 6
 # And what one line costs down: a rendered line is about a third taller than its point
 # size (8pt occupies 11 pixels, 15pt occupies 20).
 POINTS_TO_LINE = 1.35
@@ -164,11 +166,9 @@ class ActionTile(QWidget):
     def apply_fonts(self, height: int, width: int | None = None) -> None:
         """Scales the three lines together, preserving their relative weight.
 
-        Bounded by the room in both directions. Sized on height alone, a cell in a
-        nine-handed grid -- as tall as any other, and a third as wide -- asked for a 24
-        point "98%" in a tile with room for half of it. ``PIXELS_PER_POINT`` is what the
-        widest line costs per point of font size across, ``POINTS_TO_LINE`` what any of
-        them costs down.
+        Height decides the sizes: sized on height alone, a cell in a nine-handed grid --
+        as tall as any other, and a third as wide -- asked for a 24 point "98%" in a tile
+        with room for half of it, so each line is then shrunk to the room it has across.
 
         The two outer lines grow from the floor rather than from nothing, and the middle
         one takes what they leave. Sized independently, a cell at the floor was given 13
@@ -177,15 +177,31 @@ class ActionTile(QWidget):
         """
         secondary = max(8, min(8 + max(height - MIN_CELL_HEIGHT, 0) // 10, 13))
         remaining = int((height - TILE_CHROME) / POINTS_TO_LINE) - 2 * secondary
-
         primary = max(9, min(11 + height // 4, 24, remaining))
-        if width is not None:
-            primary = max(9, min(primary, int(width / PIXELS_PER_POINT)))
 
-        font = QFont(theme.FONT_FAMILY, primary, QFont.Weight.Bold)
-        self.frequency_label.setFont(font)
-        self.action_label.setFont(QFont(theme.FONT_FAMILY, secondary))
-        self.ev_label.setFont(QFont(theme.FONT_FAMILY, secondary, QFont.Weight.Bold))
+        self.frequency_label.setFont(
+            self.fitted(QFont(theme.FONT_FAMILY, primary, QFont.Weight.Bold), self.frequency_label.text(), width)
+        )
+        self.action_label.setFont(self.fitted(QFont(theme.FONT_FAMILY, secondary), self.action_label.text(), width))
+        self.ev_label.setFont(
+            self.fitted(QFont(theme.FONT_FAMILY, secondary, QFont.Weight.Bold), self.ev_label.text(), width)
+        )
+
+    @staticmethod
+    def fitted(font: QFont, text: str, width: int | None) -> QFont:
+        """The same font, shrunk until the text it carries actually fits across.
+
+        Measured with :class:`QFontMetrics` rather than predicted from a pixels-per-point
+        constant. The constant (2.7 pixels per point, from a rendered "62%") was measured
+        on one machine: Windows renders the same point size half again as wide, so the
+        frequency -- the figure the grid is read for -- came out clipped there, and the
+        cell showed "6" where the solver said 62%.
+        """
+        if width is None or not text:
+            return font
+        while font.pointSize() > MIN_FONT_POINT and QFontMetrics(font).horizontalAdvance(text) > width:
+            font.setPointSize(font.pointSize() - 1)
+        return font
 
 
 class TableEntry(QWidget):
