@@ -14,6 +14,7 @@ from contextlib import closing
 import pytest
 
 from preflop_advisor import sqlite_store
+from preflop_advisor.hand_convert_helper import normalize_monker_hand
 from preflop_advisor.tree_reader_helpers import ActionProcessor, clear_cache
 
 from .conftest import REFERENCE_HAND, REFERENCE_HAND_MONKER
@@ -65,7 +66,7 @@ def test_a_hand_comes_back_with_its_frequency_and_ev(small_tree):
     store = sqlite_store.get_store(small_tree, ".rng")
 
     assert store.lookup_hand("2.rng", REFERENCE_HAND_MONKER) == pytest.approx((0.75, 1500.0))
-    assert store.lookup_hand("0.rng", "AAAA") == pytest.approx((1.0, 4000.0))
+    assert store.lookup_hand("0.rng", normalize_monker_hand("AAAA")) == pytest.approx((1.0, 4000.0))
 
 
 def test_a_hand_the_file_does_not_hold_reads_as_missing(small_tree):
@@ -448,3 +449,49 @@ def test_a_reader_survives_its_store_being_dropped(tmp_path, hu_tree, tree_confi
     sqlite_store.forget(processor.path)
 
     assert processor.get_results(REFERENCE_HAND, [], "SB") == expected
+
+
+@pytest.fixture()
+def tree_with_missing_ev(tmp_path):
+    """A tree holding the two shapes Monker writes when it omits an EV.
+
+    It leaves the EV out for a hand the board makes impossible — measured at 944
+    of 16432 entries on a preflop export with a board applied — and writes either
+    the frequency alone or the frequency with a trailing separator.
+    """
+    folder = tmp_path / "gaps"
+    folder.mkdir()
+    (folder / "0.rng").write_text(
+        f"{REFERENCE_HAND_MONKER}\n0.25;-100.0\n"
+        "AAAA\n0.5\n"          # no separator at all
+        "AAA2\n0.75;\n"        # separator, empty EV
+        "AAA3\n1.0;4000.0\n"
+    )
+    return str(folder)
+
+
+def test_a_hand_without_an_ev_keeps_its_frequency(tree_with_missing_ev):
+    """The frequency is the data; losing it turned a played hand into a folded one."""
+    store = sqlite_store.get_store(tree_with_missing_ev, ".rng")
+    assert store is not None
+    assert store.lookup_hand("0.rng", normalize_monker_hand("AAAA")) == (0.5, None)
+    assert store.lookup_hand("0.rng", normalize_monker_hand("AAA2")) == (0.75, None)
+    assert store.lookup_hand("0.rng", normalize_monker_hand("AAA3")) == (1.0, 4000.0)
+
+
+def test_an_entry_without_an_ev_does_not_shift_the_pairing(tree_with_missing_ev):
+    """A values line was mistaken for the next hand, dropping what followed too."""
+    store = sqlite_store.get_store(tree_with_missing_ev, ".rng")
+    assert store is not None
+    # Every hand of the file is present, the ones after the gaps included.
+    assert store.lookup_hand("0.rng", REFERENCE_HAND_MONKER) == (0.25, -100.0)
+    assert store.lookup_hand("0.rng", normalize_monker_hand("AAA3")) == (1.0, 4000.0)
+
+
+def test_a_null_ev_survives_the_round_trip(tree_with_missing_ev):
+    """The column is nullable, so an absent EV stays absent rather than reading as zero."""
+    sqlite_store.get_store(tree_with_missing_ev, ".rng")
+    with closing(sqlite3.connect(database_of(tree_with_missing_ev))) as conn:
+        rows = dict(conn.execute("SELECT hand, ev FROM hands WHERE filename='0.rng'"))
+    assert rows[normalize_monker_hand("AAAA")] is None
+    assert rows[normalize_monker_hand("AAA3")] == 4000.0

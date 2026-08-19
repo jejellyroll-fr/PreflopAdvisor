@@ -10,6 +10,7 @@ from . import sqlite_store
 from .errors import InvalidRaiseSizing
 from .hand_convert_helper import convert_hand, normalize_monker_hand
 from .paths import resolve_range_folder
+from .rng_format import parse_values
 from .settings import ConfigSource, normalize
 from .types import ActionSequence, Result
 
@@ -426,14 +427,21 @@ class ActionProcessor:
         return os.path.join(self.path, sqlite_store.DB_NAME)
 
     def _parse_entry(self, info_line: str, action_sequence: ActionSequence, filename: str) -> Result:
-        """Turn a ``frequency;ev`` line into a ``[action, frequency, ev]`` result."""
-        infos = info_line.strip().split(";")
+        """Turn a ``frequency;ev`` line into a ``[action, frequency, ev]`` result.
+
+        The EV is optional. Monker leaves it out for a hand the board makes
+        impossible, writing the frequency alone — about one hand in twenty on a
+        preflop export with a board applied. Requiring it dropped those hands to
+        a zero frequency, which reads as "never played" rather than "played, EV
+        unknown".
+        """
         last_action = action_sequence[-1][1]
-        try:
-            return [last_action, float(infos[0]), float(infos[1])]
-        except (IndexError, ValueError):
+        values = parse_values(info_line)
+        if values is None:
             logger.error("Malformed entry %r in %s", info_line.strip(), filename)
             return ["", 0.0, 0.0]
+        frequency, ev = values
+        return [last_action, frequency, ev]
 
     def read_hand_with_cache(self, hand: str, action_sequence: ActionSequence) -> Result:
         """

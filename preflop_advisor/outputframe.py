@@ -80,8 +80,15 @@ def short_action_label(action: str) -> str:
     return key
 
 
-def format_ev(ev: str | float) -> str:
+#: Shown where an EV is absent rather than zero — Monker omits it for a hand the
+#: board makes impossible, and "+0.00" would claim a figure it never gave.
+EV_ABSENT = "–"
+
+
+def format_ev(ev: str | float | None) -> str:
     """Signs an EV figure so gain and loss are told apart at a glance, not by a glyph."""
+    if ev is None:
+        return EV_ABSENT
     try:
         value = float(ev)
     except (TypeError, ValueError):

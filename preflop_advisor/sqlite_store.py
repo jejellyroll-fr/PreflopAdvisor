@@ -29,6 +29,7 @@ from typing import Any, Protocol
 
 from .errors import RangeFilesChanging
 from .hand_convert_helper import normalize_monker_hand
+from .rng_format import parse_values
 
 logger = logging.getLogger(__name__)
 
@@ -59,15 +60,16 @@ class Ingestible(Protocol):
 DB_NAME = "preflop.db"
 
 #: Bumped when the schema or the ingestion changes in a way that invalidates a database
-#: built by an earlier version.
-SCHEMA_VERSION = "1"
+#: built by an earlier version. Version 2 makes ``ev`` nullable and stops dropping the
+#: hands whose EV Monker omits, so a version 1 database is missing rows.
+SCHEMA_VERSION = "2"
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS hands (
     filename TEXT NOT NULL,   -- basename only, e.g. "2.40100.1.rng"
     hand     TEXT NOT NULL,   -- canonical hand string, as convert_hand produces it
     freq     REAL NOT NULL,
-    ev       REAL NOT NULL,
+    ev       REAL,          -- absent when the board makes the hand impossible
     PRIMARY KEY (filename, hand)
 ) WITHOUT ROWID;
 
@@ -180,11 +182,12 @@ def tree_fingerprint(folder: str, ending: str) -> str:
 
 
 def parse_range_file(path: str) -> Iterator[tuple[str, float, float]]:
-    """Yield ``(hand, frequency, ev)`` from a range file.
+    """Yield ``(hand, frequency, ev)`` from a range file; ``ev`` may be ``None``.
 
-    Tolerant of a header and of stray lines: a line without ``;`` is a pending hand, the
-    next line with one is its values, and anything that does not pair up is skipped.
-    Hands are stored canonically, so a Monker 2 export is queried like any other.
+    Tolerant of a header and of stray lines: a line that does not read as values is a
+    pending hand, the next one that does is its values, and anything that never pairs up
+    is skipped. Hands are stored canonically, so a Monker 2 export is queried like any
+    other.
     """
     with open(path, "r", encoding="utf-8") as handle:
         pending = None
@@ -192,18 +195,19 @@ def parse_range_file(path: str) -> Iterator[tuple[str, float, float]]:
             line = raw.strip()
             if not line:
                 continue
-            if ";" not in line:
+            if pending is None:
                 pending = line
                 continue
-            if pending is None:
+            # A line is values when it reads as one, not when it carries a
+            # semicolon: Monker omits the EV for a hand the board makes
+            # impossible and writes the frequency alone, which the previous
+            # test mistook for the next hand — dropping the entry and
+            # shifting the pairing behind it.
+            values = parse_values(line)
+            if values is None:
+                pending = line
                 continue
-            values = line.split(";")
-            try:
-                frequency, ev = float(values[0]), float(values[1])
-            except (IndexError, ValueError):
-                logger.debug("Skipping malformed entry %r in %s", line, path)
-                pending = None
-                continue
+            frequency, ev = values
             try:
                 yield normalize_monker_hand(pending), frequency, ev
             except (AttributeError, IndexError, KeyError):
@@ -372,10 +376,11 @@ class TreeStore:
         """Whether the database holds any hand of that range file."""
         return basename in self._filenames
 
-    def lookup_hand(self, basename: str, hand: str) -> tuple[float, float] | None:
+    def lookup_hand(self, basename: str, hand: str) -> tuple[float, float | None] | None:
         """Look a hand up in one range file.
 
-        :return: ``(frequency, ev)``, or ``None`` when the file does not hold that hand.
+        :return: ``(frequency, ev)`` with ``ev`` possibly ``None``, or ``None`` when the
+            file does not hold that hand.
         """
         if self._conn is None:
             # Closed under the caller: a processor holds its store, and another one
