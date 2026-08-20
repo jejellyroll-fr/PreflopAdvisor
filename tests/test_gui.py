@@ -1,0 +1,987 @@
+"""Widget behaviour, driven through Qt rather than by calling handlers directly.
+
+Calling ``process_button_clicked`` by hand skips the signal/slot machinery, which is
+exactly where the interesting regressions live. These tests click real buttons with
+``qtbot`` and assert on emitted signals.
+"""
+
+import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
+
+from preflop_advisor.card_selector import CardSelector
+from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
+from preflop_advisor.hand_convert_helper import convert_hand
+from preflop_advisor.outputframe import short_action_label
+from preflop_advisor.position_selector import PositionSelector
+from preflop_advisor.sizings import sizings_for
+from preflop_advisor.trainer import Spot
+from preflop_advisor.tree_reader import TreeReader
+from preflop_advisor.tree_reader_helpers import ActionProcessor
+from preflop_advisor.tree_selector import TreeSelector, ante_of
+
+from .conftest import REFERENCE_HAND
+
+# Grid coordinates of the card buttons: column 0 is hearts, rows are A, K, Q, J.
+# Seats of a table that size, in acting order, as the reader hands them to the selector.
+HEADS_UP = ["SB", "BB"]
+SIX_MAX = ["UTG", "MP", "CO", "BU", "SB", "BB"]
+SEVEN_MAX = ["UTG", "MP", "HJ", "CO", "BU", "SB", "BB"]
+
+ACE_OF_HEARTS = (0, 0)
+KING_OF_HEARTS = (1, 0)
+QUEEN_OF_HEARTS = (2, 0)
+JACK_OF_HEARTS = (3, 0)
+
+
+def click_card(qtbot, selector, row, column):
+    qtbot.mouseClick(selector.button_list[column][row], Qt.LeftButton)
+
+
+# --------------------------------------------------------------------------------------
+# CardSelector
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def card_selector(qtbot, raw_config):
+    selector = CardSelector(raw_config["CardSelector"])
+    qtbot.addWidget(selector)
+    return selector
+
+
+def test_clicking_cards_builds_the_hand(qtbot, card_selector):
+    card_selector.set_num_cards(4)
+
+    for row, column in (ACE_OF_HEARTS, KING_OF_HEARTS, QUEEN_OF_HEARTS, JACK_OF_HEARTS):
+        click_card(qtbot, card_selector, row, column)
+
+    assert card_selector.get_selected_hand() == "AhKhQhJh"
+
+
+def test_completing_a_hand_emits_hand_changed(qtbot, card_selector):
+    card_selector.set_num_cards(2)
+
+    with qtbot.waitSignal(card_selector.handChanged, timeout=1000) as blocker:
+        click_card(qtbot, card_selector, *ACE_OF_HEARTS)
+        click_card(qtbot, card_selector, *KING_OF_HEARTS)
+
+    assert blocker.args == ["AhKh"]
+
+
+def test_an_incomplete_hand_emits_nothing(qtbot, card_selector):
+    card_selector.set_num_cards(4)
+    emitted = []
+    card_selector.handChanged.connect(emitted.append)
+
+    click_card(qtbot, card_selector, *ACE_OF_HEARTS)
+    click_card(qtbot, card_selector, *KING_OF_HEARTS)
+
+    assert emitted == []
+
+
+def test_clicking_a_selected_card_deselects_it(qtbot, card_selector):
+    card_selector.set_num_cards(4)
+
+    click_card(qtbot, card_selector, *ACE_OF_HEARTS)
+    click_card(qtbot, card_selector, *ACE_OF_HEARTS)
+
+    assert card_selector.get_selected_hand() == ""
+
+
+def test_changing_the_card_count_clears_the_selection(qtbot, card_selector):
+    card_selector.set_num_cards(4)
+    click_card(qtbot, card_selector, *ACE_OF_HEARTS)
+
+    card_selector.set_num_cards(2)
+
+    assert card_selector.selected_cards == []
+    assert card_selector.num_cards == 2
+
+
+def test_card_count_ignores_sizes_that_match_no_game(qtbot, card_selector):
+    card_selector.set_num_cards(4)
+    card_selector.set_num_cards(3)
+    assert card_selector.num_cards == 4
+
+
+def test_get_hand_is_an_alias_of_get_selected_hand(qtbot, card_selector):
+    card_selector.set_num_cards(2)
+    click_card(qtbot, card_selector, *ACE_OF_HEARTS)
+
+    assert card_selector.get_hand() == card_selector.get_selected_hand()
+
+
+# --------------------------------------------------------------------------------------
+# PositionSelector
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def position_selector(qtbot, raw_config):
+    selector = PositionSelector(None, raw_config["PositionSelector"])
+    qtbot.addWidget(selector)
+    return selector
+
+
+def test_small_blind_is_selectable_heads_up(position_selector):
+    """SB is one of two seats heads-up, so it must never be greyed out.
+
+    It used to be listed in PositionInactive, which disables a seat regardless of table
+    size.
+    """
+    position_selector.update_active_positions(HEADS_UP)
+
+    index = position_selector.convert_position_name_to_index("SB")
+    assert position_selector.button_list[index].isEnabled()
+
+
+@pytest.mark.parametrize(
+    "seats,expected",
+    [
+        (HEADS_UP, {"X", "SB", "BB"}),
+        (SIX_MAX, {"X", "UTG", "MP", "CO", "BU", "SB", "BB"}),
+        (SEVEN_MAX, {"X", "UTG", "MP", "HJ", "CO", "BU", "SB", "BB"}),
+    ],
+)
+def test_active_seats_follow_the_table_size(position_selector, seats, expected):
+    position_selector.update_active_positions(seats)
+
+    enabled = {
+        position
+        for position in position_selector.position_list
+        if position_selector.button_list[position_selector.convert_position_name_to_index(position)].isEnabled()
+    }
+    assert enabled == expected
+
+
+def test_shrinking_the_table_falls_back_to_the_default_seat(position_selector):
+    position_selector.update_active_positions(SIX_MAX)
+    position_selector.process_button_clicked(position_selector.convert_position_name_to_index("UTG"))
+    assert position_selector.get_position() == "UTG"
+
+    position_selector.update_active_positions(HEADS_UP)
+
+    assert position_selector.get_position() in position_selector.get_active_positions(HEADS_UP)
+
+
+def test_shrinking_the_table_does_not_recurse(position_selector):
+    """Falling back to the default seat must notify exactly once.
+
+    Going through process_button_clicked made the notification re-enter this method via
+    the output refresh.
+    """
+    position_selector.update_active_positions(SIX_MAX)
+    position_selector.process_button_clicked(position_selector.convert_position_name_to_index("UTG"))
+
+    emitted = []
+    position_selector.positionChanged.connect(emitted.append)
+    position_selector.update_active_positions(HEADS_UP)
+
+    assert len(emitted) == 1
+
+
+def test_clicking_a_seat_emits_position_changed(qtbot, position_selector):
+    index = position_selector.convert_position_name_to_index("BB")
+
+    with qtbot.waitSignal(position_selector.positionChanged, timeout=1000) as blocker:
+        qtbot.mouseClick(position_selector.button_list[index], Qt.LeftButton)
+
+    assert blocker.args == ["BB"]
+
+
+def test_clicking_the_current_seat_emits_nothing(position_selector):
+    emitted = []
+    position_selector.positionChanged.connect(emitted.append)
+
+    position_selector.process_button_clicked(position_selector.current_position)
+
+    assert emitted == []
+
+
+# --------------------------------------------------------------------------------------
+# TreeSelector
+# --------------------------------------------------------------------------------------
+
+
+def test_tree_selector_exposes_the_default_tree(qtbot, raw_config):
+    selector = TreeSelector(
+        None,
+        raw_config["TreeSelector"],
+        raw_config["TreeInfos"],
+        raw_config["TreeToolTips"],
+    )
+    qtbot.addWidget(selector)
+
+    infos = selector.get_tree_infos()
+    assert infos["game"] == "PLO"
+    assert infos["plrs"] == 2
+    assert infos["bb"] == 100
+
+
+# --------------------------------------------------------------------------------------
+# MainWindow, end to end
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def main_window(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    return window
+
+
+def test_main_window_builds_without_swallowing_errors(main_window, capsys):
+    """MainWindow catches broad exceptions and prints them, so an empty stdout matters."""
+    assert "Error" not in capsys.readouterr().out
+
+
+def test_selecting_a_hand_populates_the_grid(qtbot, main_window):
+    main_window.card_selector.set_num_cards(4)
+    for row, column in (ACE_OF_HEARTS, KING_OF_HEARTS, QUEEN_OF_HEARTS, JACK_OF_HEARTS):
+        click_card(qtbot, main_window.card_selector, row, column)
+
+    populated = [
+        entry
+        for row in main_window.output.table_entries
+        for entry in row
+        if entry.label_left.text() or entry.label_right.text()
+    ]
+    assert populated, "no result cell was filled after selecting a full hand"
+
+
+@pytest.mark.parametrize("position", ["X", "SB", "BB"])
+def test_every_heads_up_view_renders_results(qtbot, main_window, position):
+    main_window.card_selector.set_num_cards(4)
+    for row, column in (ACE_OF_HEARTS, KING_OF_HEARTS, QUEEN_OF_HEARTS, JACK_OF_HEARTS):
+        click_card(qtbot, main_window.card_selector, row, column)
+
+    index = main_window.position_selector.convert_position_name_to_index(position)
+    main_window.position_selector.process_button_clicked(index)
+
+    populated = [
+        entry
+        for row in main_window.output.table_entries
+        for entry in row
+        if entry.label_left.text() or entry.label_right.text()
+    ]
+    assert populated, f"view {position} rendered no results"
+
+
+def test_the_card_count_follows_the_selected_game(main_window):
+    tree_infos = main_window.tree_selector.get_tree_infos()
+    main_window.update_card_and_position_selector(tree_infos)
+
+    assert main_window.card_selector.num_cards == 4  # PLO
+
+
+# --------------------------------------------------------------------------------------
+# Database build progress
+# --------------------------------------------------------------------------------------
+
+
+def test_the_build_progress_reports_files_and_closes(qtbot):
+    """The dialog is driven by hand from the build loop, not by the event loop."""
+    progress = DatabaseProgress("/ranges/some-tree", 4)
+    qtbot.addWidget(progress.dialog)
+
+    progress.update(3, 4)
+
+    assert "/ranges/some-tree" in progress.dialog.labelText()
+    assert "3 / 4 range files" in progress.dialog.labelText()
+    assert progress.dialog.value() == 3
+
+    progress.close()
+    assert not progress.dialog.isVisible()
+
+
+def test_the_window_registers_a_progress_dialog_for_database_builds(main_window):
+    """Without it a build reports nowhere, and the window looks frozen for minutes."""
+    from preflop_advisor import sqlite_store
+
+    factory = sqlite_store._PROGRESS_FACTORY
+
+    assert factory is not None
+    progress = factory("/ranges/some-tree", 2)
+    try:
+        assert isinstance(progress, DatabaseProgress)
+    finally:
+        progress.close()
+
+
+def test_the_progress_factory_outlives_the_window_that_registered_it(qtbot):
+    """The store keeps the factory for the whole process; a window does not last that long.
+
+    Closing over the window meant every later build reached a MainWindow Qt had already
+    destroyed, and raised instead of showing progress.
+    """
+    import gc
+
+    from preflop_advisor import sqlite_store
+
+    # Deliberately not handed to qtbot: the point is to let Qt destroy it while the store
+    # still holds whatever the window registered, which is what qtbot's teardown prevents.
+    window = MainWindow()
+    window.deleteLater()
+    del window
+    gc.collect()
+    qtbot.wait(10)
+
+    progress = sqlite_store._PROGRESS_FACTORY("/ranges/some-tree", 2)
+    progress.close()
+
+
+# --------------------------------------------------------------------------------------
+# Window shape
+# --------------------------------------------------------------------------------------
+
+
+def test_the_card_grid_is_laid_out_four_rows_of_thirteen(card_selector):
+    """Suits down, ranks across: the deck the wide way round.
+
+    Thirteen rows of four made the selector 366 pixels tall on its own, which is what the
+    window could not shrink past on a screen that is short and wide.
+    """
+    layout = card_selector.layout()
+
+    for suit in range(4):
+        for rank in range(13):
+            row, column, _, _ = layout.getItemPosition(layout.indexOf(card_selector.button_list[suit][rank]))
+            assert (row, column) == (suit, rank)
+
+
+def test_a_card_button_keeps_its_place_in_the_deck(qtbot, card_selector):
+    """Laying the grid out the other way must not renumber the cards."""
+    card_selector.set_num_cards(2)
+    click_card(qtbot, card_selector, *ACE_OF_HEARTS)
+
+    assert card_selector.get_hand().startswith("Ah")
+
+
+def test_the_window_opens_wider_than_it_is_tall(main_window):
+    assert main_window.width() > main_window.height()
+
+
+def test_the_window_opens_inside_the_screen_it_is_on(main_window):
+    """A size that fits a 1080p display does not fit a 1366x768 laptop.
+
+    Opening at a fixed height meant one of the two was always wrong: either the window
+    came up taller than the screen, or a display with room for the whole table opened
+    showing four rows of it.
+    """
+    available = QApplication.primaryScreen().availableGeometry()
+
+    assert main_window.height() <= available.height()
+    assert main_window.width() <= max(available.width(), main_window.minimumSizeHint().width())
+
+
+def test_the_window_can_be_made_short(main_window):
+    """The floor is the layout's own, and it has to clear a laptop screen."""
+    main_window.resize(200, 200)
+
+    # The tab bar over the Advisor / Trainer / Configuration tabs costs a little
+    # height; the floor must still clear a laptop screen (well under 768px).
+    assert main_window.minimumSizeHint().height() <= 600
+
+
+def test_enlarging_the_window_does_not_raise_its_floor(main_window):
+    """Fixing each card button to the size it was given made the floor follow the window.
+
+    Once enlarged, the window could never be brought back down: the buttons had adopted
+    their new size as a minimum, and the grid demanded the total.
+    """
+    floor = main_window.card_selector.minimumSizeHint().height()
+
+    main_window.resize(1900, 1200)
+    main_window.card_selector.resize(1800, 900)
+
+    assert main_window.card_selector.minimumSizeHint().height() == floor
+
+
+def test_the_card_grid_stops_growing_before_its_buttons_become_slabs(main_window):
+    """Four rows in a full-height column left each button twice as tall as it was wide."""
+    main_window.resize(1360, 1000)
+    grid = main_window.card_selector
+    grid.resize(760, 800)
+
+    button = grid.button_list[0][0]
+    assert grid.height() <= grid.maximumHeight()
+    assert button.height() < button.width() * 2
+
+
+def test_the_divider_position_survives_a_restart(qtbot, main_window):
+    """It is what makes the layout fit a screen this code cannot see.
+
+    Both windows are shown: a divider is only placed once its page has a real size, and
+    only a placed one is worth saving.
+    """
+    main_window.show()
+    qtbot.wait(20)
+    main_window.splitter.setSizes([500, 860])
+    moved = main_window.splitter.sizes()
+    main_window.save_layout()
+
+    reopened = MainWindow()
+    qtbot.addWidget(reopened)
+    reopened.show()
+    qtbot.wait(20)
+
+    assert reopened.splitter.sizes() == moved
+
+
+def test_a_taller_window_goes_to_the_results(qtbot, main_window):
+    """The band holds a card grid and nothing else; the table is what wants the room."""
+    main_window.show()
+    main_window.resize(1360, 720)
+    qtbot.wait(20)
+    band_height = main_window.input_frame.height()
+    output_height = main_window.output_frame.height()
+
+    main_window.resize(1360, 1040)
+    qtbot.wait(20)
+
+    assert main_window.input_frame.height() == band_height
+    assert main_window.output_frame.height() > output_height + 250
+
+
+@pytest.mark.parametrize("players", [7, 8, 9])
+def test_an_overview_fits_across_the_window(qtbot, main_window, players):
+    """A table of N seats is N+2 columns: a row label, the open, and every seat to face.
+
+    Nine-handed that is eleven, and a column cannot go under 112 without cutting the
+    numbers in it. Beside the card grid they fit on no ordinary screen, which is why the
+    input sits above the table rather than next to it.
+    """
+    main_window.show()
+    # The preferred width, not the opening one: on a screen narrower than this the table
+    # scrolls and should, so what is being pinned down is that the preferred size is enough.
+    main_window.resize(DEFAULT_WINDOW_SIZE[0], main_window.height())
+    qtbot.wait(20)
+
+    main_window.output.create_result_grid(players + 1, players + 2)
+    qtbot.wait(20)
+
+    used = sum(entry.width() for entry in main_window.output.table_entries[0])
+    assert used <= main_window.output.scroll_area.viewport().width()
+    assert not main_window.output.scroll_area.horizontalScrollBar().isVisible()
+
+
+def test_a_seven_handed_tree_gets_seven_named_seats(raw_config, hu_tree):
+    """PLO is dealt seven-handed, and a tree declaring more seats than there are names
+    for is quietly cut down to the names that exist -- six of them, until now.
+    """
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=7), raw_config["TreeReader"])
+    selectable = [seat.strip() for seat in raw_config["PositionSelector"]["PositionList"].split(",")]
+
+    assert reader.position_list == SEVEN_MAX
+    for seat in reader.position_list:
+        assert seat in selectable, f"{seat} has no button in the position selector"
+
+
+def test_six_max_keeps_its_own_seat_names(raw_config, hu_tree):
+    """Trimming the seven-handed list would drop UTG and keep the hijack."""
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=6), raw_config["TreeReader"])
+
+    assert reader.position_list == SIX_MAX
+
+
+@pytest.mark.parametrize(
+    "num_players,expected",
+    [
+        (2, ["SB", "BB"]),
+        (5, ["MP", "CO", "BU", "SB", "BB"]),
+        (6, SIX_MAX),
+        (7, SEVEN_MAX),
+        (8, ["UTG", "MP", "LJ", "HJ", "CO", "BU", "SB", "BB"]),
+        (9, ["UTG", "UTG1", "MP", "LJ", "HJ", "CO", "BU", "SB", "BB"]),
+    ],
+)
+def test_every_table_size_names_its_seats(raw_config, hu_tree, num_players, expected):
+    """Two through nine, each with the seat its own table adds where it adds it."""
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=num_players), raw_config["TreeReader"])
+    selectable = [seat.strip() for seat in raw_config["PositionSelector"]["PositionList"].split(",")]
+
+    assert reader.position_list == expected
+    for seat in reader.position_list:
+        assert seat in selectable, f"{seat} has no button in the position selector"
+
+
+@pytest.mark.parametrize("num_players,expected", [(6, SIX_MAX), (7, SEVEN_MAX)])
+def test_the_fallback_configuration_names_seats_correctly_too(hu_tree, num_players, expected):
+    """The defaults used when config.ini has no [TreeReader] are a configuration as well.
+
+    They carried the seven-name list on its own, which is the arrangement that renames a
+    six-handed table.
+    """
+    from preflop_advisor.gui import MainWindow
+
+    defaults = MainWindow.fallback_section("TreeReader")
+
+    reader = TreeReader(REFERENCE_HAND, "X", dict(hu_tree, plrs=num_players), defaults)
+
+    assert reader.position_list == expected
+
+
+def test_a_long_seat_name_is_shown_whole(position_selector):
+    """Pinned to the configured width, "UTG1" was cut down to what looked like "JTG1".
+
+    The clipped upright of the U reads as a J, so the button did not look broken -- it
+    looked like a seat nobody has.
+    """
+    from PySide6.QtGui import QFontMetrics
+
+    for button in position_selector.button_list:
+        needed = QFontMetrics(button.font()).horizontalAdvance(button.text())
+        assert needed <= button.minimumWidth(), f"{button.text()!r} does not fit its button"
+
+
+def test_a_window_larger_than_its_screen_is_trimmed(qtbot, main_window):
+    """Sizing at construction cannot know which display the window ends up on.
+
+    Nor can it know that the geometry it just restored came from a monitor that has since
+    been unplugged, and does not fit the panel that is left.
+    """
+    available = main_window.usable_screen()
+    main_window.resize(available.width() + 800, available.height() + 800)
+
+    main_window.fit_to_screen()
+
+    assert main_window.width() <= available.width()
+    assert main_window.height() <= available.height()
+
+
+def test_showing_the_window_trims_it(qtbot, main_window):
+    available = main_window.usable_screen()
+    main_window.resize(available.width() + 800, available.height() + 800)
+
+    main_window.show()
+    qtbot.wait(20)
+
+    assert main_window.height() <= available.height()
+
+
+# --------------------------------------------------------------------------------------
+# Trainer tab
+# --------------------------------------------------------------------------------------
+
+
+def test_the_window_offers_both_the_advisor_and_the_trainer(main_window):
+    tabs = [main_window.tabs.tabText(index) for index in range(main_window.tabs.count())]
+
+    assert tabs == ["Advisor", "Trainer", "Configuration"]
+
+
+def test_dealing_asks_a_spot_the_selected_tree_can_answer(main_window):
+    """The trainer reads the Advisor's tree, so there is one answer to which tree it is."""
+    trainer = main_window.trainer
+
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert trainer.question.results, "a question must carry the solver's answer"
+    assert trainer.spot_label.text() == trainer.question.spot.label
+    assert len(trainer.buttons) == len(trainer.question.actions())
+
+
+def test_only_the_actions_of_the_node_are_offered(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+
+    offered = [button.text() for button in trainer.buttons]
+    expected = [short_action_label(action) for action in trainer.question.actions()]
+
+    assert offered == expected
+
+
+def test_answering_grades_the_choice_and_reveals_the_strategy(qtbot, main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    question = trainer.question
+
+    qtbot.mouseClick(trainer.buttons[0], Qt.LeftButton)
+
+    assert trainer.session.hands == 1
+    assert trainer.verdict_label.text(), "the answer must be scored on screen"
+    assert len(trainer.tiles) == len(question.results), "every action's numbers are shown"
+    assert all(not button.isEnabled() for button in trainer.buttons), "no answering twice"
+
+
+def test_the_session_tally_follows_the_answers(qtbot, main_window):
+    trainer = main_window.trainer
+
+    for _ in range(3):
+        trainer.next_hand()
+        qtbot.mouseClick(trainer.buttons[0], Qt.LeftButton)
+
+    assert trainer.session.hands == 3
+    assert trainer.stat_labels["Hands"].text() == "3"
+    assert sum(trainer.session.counts.values()) == 3
+
+
+def test_a_new_hand_clears_the_previous_answer(qtbot, main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    qtbot.mouseClick(trainer.buttons[0], Qt.LeftButton)
+
+    trainer.next_hand()
+
+    assert trainer.verdict_label.text() == ""
+    assert trainer.tiles == []
+    assert all(button.isEnabled() for button in trainer.buttons)
+
+
+def test_a_window_that_was_never_shown_saves_no_layout(qtbot):
+    """Its divider holds the proportions of a page that was never laid out.
+
+    Saved, they are what the next launch opens on.
+    """
+    from PySide6.QtCore import QSettings
+
+    from preflop_advisor.gui import SPLITTER_KEY
+
+    QSettings().remove(SPLITTER_KEY)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.save_layout()
+
+    assert QSettings().value(SPLITTER_KEY) is None
+
+
+def test_every_spot_is_looked_at_before_calling_a_tree_empty(main_window, monkeypatch):
+    """Sampling with replacement can miss a spot that is there.
+
+    A nine-handed catalogue is 81 spots; a tree exporting one line would have been
+    declared empty better than half the time.
+    """
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    # "UTG" is not seated at the heads-up tree, so these answer nothing.
+    barren = [Spot(f"nowhere {index}", "UTG", []) for index in range(60)]
+    real = Spot("SB first in", "SB", [])
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [*barren, real])
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is not None
+    assert main_window.trainer.question.spot.label == "SB first in"
+
+
+def test_a_tree_with_nothing_to_drill_says_so(main_window, monkeypatch):
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "UTG", [])])
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is None
+    assert "No situation" in main_window.trainer.spot_label.text()
+
+
+def test_a_question_never_carries_a_nameless_action(main_window, tmp_path):
+    """A node that lacks the hand dealt answers ["", 0.0, 0.0] -- a placeholder.
+
+    Asked as it stands, it renders a nameless button and grades whatever is pressed as
+    costing nothing. The sparse tree here holds one hand, so the question that comes back
+    is about that hand, and every action in it is named.
+    """
+    folder = tmp_path / "sparse"
+    folder.mkdir()
+    (folder / "1.rng").write_text("AAAA\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "AAAA"
+    assert all(question.actions()), "no action of a question may be nameless"
+    assert all(button.text() for button in main_window.trainer.buttons)
+
+
+def test_a_selector_with_no_configured_tree_says_so_rather_than_raising(qtbot, raw_config):
+    """It is read on the way to the first render, before anything can report a problem.
+
+    Raising there ended the application instead of leaving an empty selector the user can
+    still fix their configuration from.
+    """
+    raw_config.remove_section("TreeInfos")
+    raw_config.add_section("TreeInfos")
+    selector = TreeSelector(None, raw_config["TreeSelector"], raw_config["TreeInfos"], raw_config["TreeToolTips"])
+    qtbot.addWidget(selector)
+
+    assert selector.get_tree_infos() is None
+
+
+def test_the_window_refreshes_quietly_when_no_tree_is_configured(main_window, monkeypatch):
+    monkeypatch.setattr(main_window.tree_selector, "get_tree_infos", lambda: None)
+
+    main_window.update_output_frame()  # must not raise
+
+
+def test_the_trainer_asks_for_a_tree_when_none_is_configured(main_window, monkeypatch):
+    monkeypatch.setattr(main_window.trainer, "tree_source", lambda: None)
+
+    main_window.trainer.next_hand()
+
+    assert main_window.trainer.question is None
+    assert "tree" in main_window.trainer.spot_label.text().lower()
+
+
+def test_a_node_holding_one_hand_is_still_asked(main_window, tmp_path, monkeypatch):
+    """A truncated export may hold a handful of a node's sixteen thousand hands.
+
+    Dealing at random would miss them however many times it tried, so the node is asked
+    which hands it has and one of those is dealt back out.
+    """
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "partial"
+    folder.mkdir()
+    # One hand in the whole tree: "(3K)(4A)", which is what AhKs4h3s converts to.
+    (folder / "1.rng").write_text("(3K)(4A)\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    # Every random deal misses, as it would in practice.
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c3d4h5s")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None, "the node holds a hand, so it has a question in it"
+    assert convert_hand(question.hand) == "(3K)(4A)"
+
+
+def test_a_line_with_no_file_is_not_dealt_again(main_window, tmp_path, monkeypatch):
+    """Another hand cannot conjure a file, so it is looked at once and left."""
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    folder = tmp_path / "empty"
+    folder.mkdir()
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "SB", [])])
+
+    deals = []
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: deals.append(1) or "AhKs4h3s")
+    main_window.trainer.next_hand()
+
+    assert deals == [1], "one look at a line that has no ranges behind it"
+
+
+def test_a_sparse_monker_2_node_is_asked(main_window, tmp_path, monkeypatch):
+    """The file holds the Monker 2 spelling, which the reader normalises on the way in."""
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "monker2"
+    folder.mkdir()
+    (folder / "1.rng").write_text("AK(23)\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c3d4h5s")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "KA(23)"
+
+
+def test_a_sparse_holdem_node_is_asked(main_window, tmp_path, monkeypatch):
+    """A two-card tree, whose keys carry their suitedness in a letter."""
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "holdem"
+    folder.mkdir()
+    (folder / "1.rng").write_text("AKs\n1.0;4000.0\n")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "NL", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c7d")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "AKs"
+
+
+def test_an_empty_action_file_does_not_hide_a_full_one(main_window, tmp_path, monkeypatch):
+    """A spot is one file per action, and a truncated export can leave one of them empty.
+
+    Looking only at the first that exists let the empty Fold hide the Call beside it, and
+    the spot was passed over as though the tree had nothing for it.
+    """
+    from preflop_advisor import trainer_panel
+
+    folder = tmp_path / "lopsided"
+    folder.mkdir()
+    (folder / "0.rng").write_text("")  # Fold: exists, holds nothing
+    (folder / "1.rng").write_text("AAAA\n1.0;4000.0\n")  # Call: holds a hand
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: "2c3d4h5s")
+
+    main_window.trainer.next_hand()
+
+    question = main_window.trainer.question
+    assert question is not None
+    assert convert_hand(question.hand) == "AAAA"
+
+
+# --------------------------------------------------------------------------------------
+# Choosing a situation, and the table it is asked at
+# --------------------------------------------------------------------------------------
+
+
+def test_the_chooser_offers_the_situations_of_the_selected_tree(main_window):
+    """A heads-up tree has heads-up situations; a seven-handed one would have its own."""
+    trainer = main_window.trainer
+    trainer.next_hand()
+
+    offered = [trainer.spot_choice.itemText(index) for index in range(trainer.spot_choice.count())]
+
+    assert offered[0] == "Any situation"
+    assert "BB vs SB open" in offered
+    assert "SB first in" in offered
+
+
+def test_choosing_a_situation_is_what_gets_dealt(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.spot_choice.setCurrentText("BB vs SB open")
+
+    for _ in range(3):
+        trainer.next_hand()
+        assert trainer.question.spot.label == "BB vs SB open"
+
+
+def test_the_choice_survives_the_next_hand(main_window):
+    """Rebuilding the list on every deal would reset it, which is the point of choosing."""
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.spot_choice.setCurrentText("SB first in")
+
+    trainer.next_hand()
+
+    assert trainer.spot_choice.currentText() == "SB first in"
+
+
+def test_a_situation_with_no_ranges_says_which_one(main_window, tmp_path):
+    folder = tmp_path / "empty"
+    folder.mkdir()
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    main_window.trainer.next_hand()
+    main_window.trainer.spot_choice.setCurrentText("BB vs SB open")
+
+    main_window.trainer.next_hand()
+
+    assert "BB vs SB open" in main_window.trainer.spot_label.text()
+
+
+def test_the_question_carries_the_table_it_was_asked_at(main_window):
+    """The blinds are posted whatever happens, so even a first-in spot has a pot."""
+    trainer = main_window.trainer
+    trainer.refresh_spots()  # what opening the tab does, and what fills the chooser
+    trainer.spot_choice.setCurrentText("BB vs SB open")
+    trainer.next_hand()
+
+    state = trainer.question.table
+    assert state is not None
+    assert state.seat("SB").action == "Raise100"
+    assert state.pot == pytest.approx(4.0)  # 3 from the small blind, 1 from the big
+    assert state.seat("BB").hero
+
+
+def test_the_pot_of_the_hand_feeds_the_tally(main_window):
+    """It used to be guessed from how many actions preceded."""
+    trainer = main_window.trainer
+    trainer.refresh_spots()
+    trainer.spot_choice.setCurrentText("BB vs SB open")
+    trainer.next_hand()
+    pot = trainer.question.table.pot
+
+    trainer.answer(trainer.question.actions()[0])
+
+    assert trainer.session.costed_hands == 1
+    assert trainer.session.average_pot_loss == pytest.approx(trainer.session.ev_loss / pot)
+
+
+def test_the_situations_are_offered_before_the_first_deal(qtbot, main_window):
+    """Filled only on dealing, the list held nothing to choose from until a hand had been
+    played -- so picking what to drill was only possible after drilling something else.
+    """
+    main_window.show()
+    main_window.tabs.setCurrentIndex(1)
+    qtbot.wait(20)
+
+    offered = [main_window.trainer.spot_choice.itemText(i) for i in range(main_window.trainer.spot_choice.count())]
+
+    assert "BB vs SB open" in offered
+    assert main_window.trainer.question is None, "offering situations must not deal one"
+
+
+@pytest.mark.parametrize(
+    "description,declared,expected",
+    [
+        ("no Rake", None, 0.0),
+        ("ANTE", None, None),
+        ("ante structure", "0.125", 0.125),
+        ("no Rake", "0.2", 0.2),
+        ("ANTE", "much", None),
+        # A description saying there is none is not a description saying there is one.
+        ("no ante", None, 0.0),
+        ("No Ante", None, 0.0),
+        ("sans ante", None, 0.0),
+        ("100bb, antes", None, None),
+    ],
+)
+def test_a_tree_says_whether_it_has_an_ante(raw_config, description, declared, expected):
+    """Declared beside its tree, or unknown when the description says there is one."""
+    section = dict(raw_config["TreeInfos"])
+    if declared is not None:
+        section["table99.ante"] = declared
+
+    assert ante_of("Table99", description, section) == expected
+
+
+def test_an_ante_declaration_is_not_read_as_a_tree(qtbot, raw_config):
+    """Table5.ante describes a tree; enumerated as one, its single field broke startup."""
+    raw_config["TreeInfos"]["Table12.ante"] = "0.125"
+
+    selector = TreeSelector(None, raw_config["TreeSelector"], raw_config["TreeInfos"], raw_config["TreeToolTips"])
+    qtbot.addWidget(selector)
+
+    # The property, not the shipped configuration's tree list: asserting the whole list
+    # made this fail the moment config.ini offered another tree.
+    keys = [tree["table_key"] for tree in selector.trees]
+    assert "table12.ante" not in keys, "the declaration was enumerated as a tree of its own"
+    assert "table12" in keys
+    assert next(tree for tree in selector.trees if tree["table_key"] == "table12")["ante"] == 0.125
+
+
+def test_the_table_shows_the_folds_that_had_to_happen(main_window, raw_config):
+    """The reader fills those in only when told who acts next.
+
+    Left out, a cutoff opening first in was drawn with everyone before it still to act.
+    """
+    seats = ["UTG", "MP", "CO", "BU", "SB", "BB"]
+    processor = ActionProcessor(seats, main_window.tree_selector.get_tree_infos(), raw_config["TreeReader"])
+
+    trainer = main_window.trainer
+    trainer.seats = seats
+    trainer.sizings = sizings_for(processor.action_codes, dict(raw_config["TreeReader"]))
+    question = trainer.question_for(processor, Spot("CO first in", "CO", []), "AhKs4h3s", [])
+
+    assert question.table.seat("UTG").folded
+    assert question.table.seat("MP").folded
+    assert question.table.seat("CO").action == "", "the hero has not acted yet"
+    assert question.table.seat("BU").action == "", "and neither have the seats after them"
+
+
+def test_an_ante_declaration_is_read_whatever_its_casing():
+    """configparser lower-cases its keys; a plain mapping keeps what was written.
+
+    Both are valid here, and a declaration missed reads as no ante at all -- which
+    understates the pot, every percentage raise and every stack.
+    """
+    section = {"Table5": "PLO,6,100,folder", "Table5.ante": "0.125"}
+
+    assert ante_of("Table5", "6-max ante PLO", section) == 0.125

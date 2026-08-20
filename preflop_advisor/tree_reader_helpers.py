@@ -1,40 +1,236 @@
 #!/usr/bin/env python3
 
-from configparser import ConfigParser
-from preflop_advisor.hand_convert_helper import convert_hand
-from collections import OrderedDict
-
 import logging
-import os.path
+import os
+import sqlite3
+from collections import OrderedDict
+from typing import Any
 
-CACHE = OrderedDict()
+from . import sqlite_store
+from .errors import InvalidRaiseSizing
+from .hand_convert_helper import convert_hand, normalize_monker_hand
+from .paths import resolve_range_folder
+from .rng_format import parse_values
+from .settings import ConfigSource, normalize
+from .types import ActionSequence, Result
 
-class ActionProcessor():
-    def __init__(self, position_list, tree_infos, configs):
-        self.configs = configs  # just saving total info dictionaries for later
-        self.tree_infos = tree_infos
+logger = logging.getLogger(__name__)
 
+#: Shared across processors that read the same tree, so switching position or hand does
+#: not re-read files. Keyed by absolute file path; entries are evicted least-recently
+#: inserted first. Call :func:`clear_cache` when the range files change on disk.
+CACHE: OrderedDict[str, dict[str, str]] = OrderedDict()
+
+#: Monker 2 view of the cached files, keyed the same way. Built per file only once a
+#: direct lookup has missed, and dropped with the file it indexes.
+NORMALIZED_CACHE: dict[str, dict[str, str]] = {}
+
+
+def clear_cache() -> None:
+    """Drop every cached range file."""
+    CACHE.clear()
+    NORMALIZED_CACHE.clear()
+
+
+# Default Monker codes, used when the configuration does not supply them.
+DEFAULT_ACTION_CODES = {
+    "fold": "0",
+    "call": "1",
+    "raisepot": "2",
+    "all_in": "3",
+}
+DEFAULT_RAISE_SIZE_LIST = "RaisePot"
+DEFAULT_VALID_ACTIONS = "Fold, Call, Raise"
+DEFAULT_ENDING = ".rng"
+
+# Keys of the [TreeReader] section that drive the reader itself and are therefore not
+# action codes.
+_META_KEYS = frozenset({"positions", "raisesizelist", "validactions", "cachesize", "ending", "gametype", "usedatabase"})
+
+
+class ActionProcessor:
+    """
+    Class to process actions and interact with poker range files.
+    """
+
+    def __init__(self, position_list: list[str], tree_infos: dict[str, Any], configs: ConfigSource) -> None:
+        """
+        Initializes the ActionProcessor with positions, tree information, and configurations.
+
+        :param position_list: List of active positions.
+        :param tree_infos: Information about the range tree.
+        :param configs: Application configurations.
+        """
         self.position_list = position_list
-        self.valid_actions = configs["ValidActions"].replace(
-            " ", "").split(",")
-        self.valid_raise_sizes = configs["RaiseSizeList"].replace(
-            " ", "").split(",")
-        self.path = tree_infos["folder"]
-        #self.cache = OrderedDict()
-        self.cache_size = int(self.configs["CacheSize"])
+        self.tree_infos = tree_infos
+        self.configs = configs
+        # A missing folder is not fatal here: the node index simply comes back empty and
+        # every cell reads as unavailable. TreeReader is the layer that refuses to build.
+        self.path: str = resolve_range_folder(tree_infos["folder"]) or tree_infos["folder"]
+        self.tree_infos["folder"] = self.path
 
-    def get_action_sequence(self, action_list):
-        # action list contains all "active" actions of players as tuples (position, action)
-        # actions inbetween are asumed to be folds
+        self._settings = normalize(configs)
 
+        self.cache_size: int = int(self._setting("CacheSize", 100))
+        self.ending: str = str(self._setting("Ending", DEFAULT_ENDING))
+        self.valid_actions = [
+            action.strip()
+            for action in self._setting("ValidActions", DEFAULT_VALID_ACTIONS).split(",")
+            if action.strip()
+        ]
+        self.action_codes = self._build_action_codes()
+        self.raise_size_keys = self._build_raise_size_keys()
+        self._nodes = self._index_tree_nodes()
+        # Which line of play exists is still answered from the folder index: the range
+        # files stay, and that lookup is already O(1). Only reading a hand out of one of
+        # them is worth handing to a database.
+        self.store = sqlite_store.get_store(self.path, self.ending) if self._use_database() else None
+
+        logger.debug(
+            "ActionProcessor ready: %s, sizings=%s, %d indexed nodes",
+            self.path,
+            self.raise_size_keys,
+            len(self._nodes),
+        )
+
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
+
+    def _setting(self, name: str, default: Any = None) -> Any:
+        """Read a setting regardless of key casing."""
+        return self._settings.get(name.lower(), default)
+
+    def _use_database(self) -> bool:
+        """Whether this tree should be read through its SQLite store."""
+        return str(self._setting("UseDatabase", "no")).strip().lower() in ("yes", "true", "1")
+
+    def _build_action_codes(self) -> dict[str, str]:
+        """Map every action name to the numeric code used in range file names.
+
+        ``Positions`` and its per-table-size variants name seats, not actions, so the
+        whole family is skipped rather than each spelling being listed.
+        """
+        codes = dict(DEFAULT_ACTION_CODES)
+        for key, value in self._settings.items():
+            if key not in _META_KEYS and not key.startswith("positions"):
+                codes[key] = value
+        return codes
+
+    def _build_raise_size_keys(self) -> list[str]:
+        """Order the candidate raise sizings declared in ``RaiseSizeList``.
+
+        Each entry of the list *is* the name of a configuration key: ``Raise75`` must
+        exist and hold the matching Monker code (``40075``). An unknown entry is a
+        configuration error, not a value to invent -- that silent auto-fill is exactly
+        what used to make the application go mute.
+        """
+        raw = self._setting("RaiseSizeList", DEFAULT_RAISE_SIZE_LIST)
+        keys, unknown = [], []
+        for entry in raw.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if entry.lower() in self.action_codes:
+                keys.append(entry)
+            else:
+                unknown.append(entry)
+
+        if unknown:
+            available = sorted(k for k in self.action_codes if k not in DEFAULT_ACTION_CODES)
+            raise InvalidRaiseSizing(
+                f"RaiseSizeList references unknown sizings: {', '.join(unknown)}. "
+                f"Declare them in [TreeReader] together with their Monker code "
+                f"(known sizings: {', '.join(available) or 'none'})."
+            )
+        if not keys:
+            raise InvalidRaiseSizing("RaiseSizeList is empty: no raise sizing declared.")
+        return keys
+
+    # ------------------------------------------------------------------
+    # Tree index
+    # ------------------------------------------------------------------
+
+    def _index_tree_nodes(self) -> set[str]:
+        """Index every reachable node of the tree.
+
+        An intermediate node does not always own a file, but it always prefixes the
+        files of its descendants, so every prefix is recorded. This makes testing a line
+        of play an O(1) lookup instead of one disk access per displayed cell.
+        """
+        nodes: set[str] = set()
+        try:
+            entries = os.listdir(self.path)
+        except OSError as error:
+            logger.warning("Range folder unreadable (%s): %s", self.path, error)
+            return nodes
+
+        for name in entries:
+            if not name.endswith(self.ending):
+                continue
+            parts = name[: -len(self.ending)].split(".")
+            for depth in range(1, len(parts) + 1):
+                nodes.add(".".join(parts[:depth]))
+        return nodes
+
+    def _stem(self, action_sequence: ActionSequence) -> str:
+        """File name of a sequence, without the extension."""
+        return ".".join(self.action_codes[action.lower()] for _, action in action_sequence)
+
+    def has_node(self, action_sequence: ActionSequence) -> bool:
+        """Whether an action sequence maps to a line that exists in the tree."""
+        try:
+            return self._stem(action_sequence) in self._nodes
+        except KeyError:
+            return False
+
+    def read_file_into_hash(self, filename: str) -> dict[str, str]:
+        """
+        Reads a range file and returns its content as a dictionary.
+
+        :param filename: Path to the file to read.
+        :return: Dictionary containing hands and their associated information.
+        """
+        logger.debug("Reading file and creating hash: %s", filename)
+        hand_info_hash = {}
+        try:
+            with open(filename, "r", encoding="utf-8") as file:
+                lines = file.readlines()
+                for i in range(0, len(lines), 2):
+                    hand = lines[i].strip()
+                    if i + 1 < len(lines):
+                        info = lines[i + 1].strip()
+                        hand_info_hash[hand] = info
+        except FileNotFoundError:
+            logger.error("Specified file not found: %s", filename)
+        except OSError as error:
+            logger.error("Error reading file %s: %s", filename, error)
+        return hand_info_hash
+
+    def hands_at(self, action_sequence: ActionSequence) -> list[str]:
+        """The hands a node holds, as its file stores them.
+
+        Asked when a hand has to be one the node actually has, rather than one dealt at
+        random and hoped for -- which a truncated export does not answer.
+        """
+        filename = os.path.join(self.path, self.get_filename(action_sequence))
+        return list(self.read_file_into_hash(filename))
+
+    def get_action_sequence(self, action_list: ActionSequence) -> ActionSequence:
+        """
+        Generates a complete action sequence by filling in with 'Fold'.
+
+        :param action_list: List of actions to analyze.
+        :return: Complete list of actions.
+        """
+        logger.debug("Generating action sequence for: %s", action_list)
         full_action_list = []
         start_index = 0
         position_already_folded = []
 
         for action in action_list:
             for index in range(len(self.position_list)):
-                position_index = (
-                    index + start_index) % len(self.position_list)
+                position_index = (index + start_index) % len(self.position_list)
                 position = self.position_list[position_index]
                 if position != action[0]:
                     if position not in position_already_folded:
@@ -44,152 +240,247 @@ class ActionProcessor():
                     full_action_list.append((position, action[1]))
                     start_index = position_index + 1
                     break
+        logger.debug("Complete action sequence generated: %s", full_action_list)
         return full_action_list
 
-    def get_results(self, hand, action_before_list, position):
+    def get_results(self, hand: str, action_before_list: ActionSequence, position: str) -> list[Result]:
+        """
+        Retrieves results for a given hand and action sequence.
+
+        :param hand: Hand to analyze.
+        :param action_before_list: Actions taken before the current position.
+        :param position: Current position.
+        :return: Results as a list.
+        """
         if position not in self.position_list:
-            logging.error(
-                "{} is not a valid Position for the selected Tree".format(position))
+            logger.error("%s is not a valid position in the selected tree.", position)
             return []
+
         hand = convert_hand(hand)
+        logger.debug("Analyzing results for hand: %s and position: %s", hand, position)
         results = []
 
-        for item in self.valid_actions:
-            action_sequence = action_before_list + [(position, item)]
+        for action in self.valid_actions:
+            action_sequence = action_before_list + [(position, action)]
             full_action_sequence = self.get_action_sequence(action_sequence)
-            full_action_sequence = self.find_valid_raise_sizes(
-                full_action_sequence)
+            full_action_sequence = self.find_valid_raise_sizes(full_action_sequence)
             if self.test_action_sequence(full_action_sequence):
-                if self.cache_size == 0:
-                    result = self.read_hand(hand, full_action_sequence)
+                if self.store is not None:
+                    result = self.read_hand_from_store(hand, full_action_sequence)
                 else:
-                    result = self.read_hand_with_cache(hand,full_action_sequence)
+                    result = self.read_hand_from_files(hand, full_action_sequence)
                 results.append(result)
-
+        logger.debug("Results retrieved: %s", results)
         return results
 
-    def find_valid_raise_sizes(self, full_action_sequence):
-        new_action_sequence = []
-        for action in full_action_sequence:
-            if action[1] != "Raise":
-                new_action_sequence.append(action)
+    def find_valid_raise_sizes(self, full_action_sequence: ActionSequence) -> ActionSequence:
+        """
+        Substitutes every generic 'Raise' by a sizing that exists in this tree.
+
+        Each entry of ``RaiseSizeList`` is tried in order and kept as soon as the
+        resulting line of play is present in the tree. Probing matters because trees do
+        not all use the same sizings: taking the first entry unconditionally yields a
+        file name that does not exist, and the cell silently comes back empty.
+
+        :param full_action_sequence: Complete action sequence.
+        :return: New sequence with concrete raise sizings.
+        """
+        resolved = []
+        for position, action in full_action_sequence:
+            if action != "Raise":
+                resolved.append((position, action))
+                continue
+
+            for size_key in self.raise_size_keys:
+                if self.has_node(resolved + [(position, size_key)]):
+                    resolved.append((position, size_key))
+                    break
             else:
-                for raise_size in self.valid_raise_sizes:
-                    if self.test_action_sequence(new_action_sequence + [(action[0], raise_size)]):
-                        new_action_sequence.append((action[0], raise_size))
-                        break  # TODO this fails if we dont find any valid raise size?
+                # No sizing leads anywhere; keep the first one so the caller still gets a
+                # well-formed sequence, and let test_action_sequence reject it.
+                logger.debug("No valid raise sizing for %s after %s in %s", position, resolved, self.path)
+                resolved.append((position, self.raise_size_keys[0]))
 
-        if len(full_action_sequence) != len(new_action_sequence):
-            if full_action_sequence[-1][1] == "Raise" and "All_In" in [action[1] for action in new_action_sequence]:
-                # we have all in but trying to find reraise action
-                # duno but just adding action anyway so we get empty result?
-                # print("Adding Invalid raise action to see what happens")
-                new_action_sequence.append(
-                    (full_action_sequence[-1][0], self.valid_raise_sizes[-1]))
-            else:
-                logging.warning(
-                    "Something went wrong with finding valid RAISE sizes...TAKE A LOOK")
-                logging.warning(
-                    "Action Sequence: {}".format(full_action_sequence))
-                logging.warning(
-                    "New Action Sequence: {}".format(new_action_sequence)
-                )
-        return new_action_sequence
+        logger.debug("Sequence after sizing resolution: %s", resolved)
+        return resolved
 
-    def test_action_sequence(self, action_sequence):
+    def test_action_sequence(self, action_sequence: ActionSequence) -> bool:
+        """
+        Checks if a file for a given action sequence exists.
+
+        :param action_sequence: Action sequence.
+        :return: Boolean indicating file existence.
+        """
         filename = os.path.join(self.path, self.get_filename(action_sequence))
-        return os.path.isfile(filename)
-    
-    def read_file_into_hash(self,filename):
-        hand_info_hash = {}
-        with open(filename, "r") as f:
-            lines = f.readlines()
-            for i in range(0, len(lines), 2):  # assuming every hand is followed by its info line
-                hand = lines[i].strip()
-                info = lines[i + 1].strip()
-                hand_info_hash[hand] = info
-        return hand_info_hash
+        exists = os.path.isfile(filename)
+        logger.debug("Testing existence of file %s: %s", filename, exists)
+        return exists
 
+    def read_hand(self, hand: str, action_sequence: ActionSequence) -> Result:
+        """
+        Reads hand data directly from a file.
 
-    def read_hand(self, hand, action_sequence):
-        info_line = ""
+        :param hand: Hand to read.
+        :param action_sequence: Action sequence.
+        :return: Hand information.
+        """
         filename = os.path.join(self.path, self.get_filename(action_sequence))
+        logger.debug("Reading data for hand: %s from file: %s", hand, filename)
         try:
-            with open(filename, "r") as f:
-                for line in f:
-                    if hand + "\n" in line and len(line) < 12: # newline added to distinguish between 2345 and (2345)
-                        info_line = f.readline()
+            with open(filename, "r", encoding="utf-8") as handle:
+                # Range files are strict line pairs: hand, then "frequency;ev". Read them
+                # as pairs and compare hands for equality -- a substring match would let
+                # "AA(2A)" be found inside a longer line, and the previous length guard
+                # silently excluded the longer PLO5 hand strings.
+                for line in handle:
+                    info_line = handle.readline()
+                    if not info_line:
                         break
-        except EnvironmentError:
-            logging.error("Could not find File: {}".format(filename))
-            logging.error("ActionSequence is: {}").format(action_sequence)
-            return ["", 0, 0]
-        logging.debug("Info Line: {} in file: {}".format(info_line, filename))
-        if info_line == "":
-            logging.error(
-                "Could not find Hand: {} in File: {}".format(hand, filename))
-            return ["", 0, 0]
-        infos = info_line.split(";")
-        frequency = float(infos[0])
-        ev = float(infos[1])
-        last_action = action_sequence[-1][1]
-        return [last_action, self.beautify_freq(frequency), self.beautify_ev(ev)]
-    
-    def read_hand_with_cache(self, hand, action_sequence):
-        filename = os.path.join(self.path, self.get_filename(action_sequence))
+                    if line.strip() == hand:
+                        return self._parse_entry(info_line, action_sequence, filename)
+        except FileNotFoundError:
+            logger.error("File not found: %s", filename)
+            return ["", 0.0, 0.0]
+        except OSError as error:
+            logger.error("Error reading file %s: %s", filename, error)
+            return ["", 0.0, 0.0]
+
+        normalized = self._normalized_entries(self.read_file_into_hash(filename)).get(hand)
+        if normalized is None:
+            return ["", 0.0, 0.0]
+        return self._parse_entry(normalized, action_sequence, filename)
+
+    def _normalized_entries(self, entries: dict[str, str]) -> dict[str, str]:
+        """Indexes one file's entries by their canonical hand, for a Monker 2 tree.
+
+        Built only once a direct lookup has missed. Normalizing every stored hand up
+        front makes reading a range file roughly seven times slower (2.7ms to 18.5ms for
+        the 16432 hands of a file in the shipped tree), for a case a Monker 1 tree never
+        has.
+
+        :param entries: ``{stored hand: info line}`` for one range file.
+        :return: ``{canonical hand: info line}``.
+        """
+        index: dict[str, str] = {}
+        for stored, info in entries.items():
+            # This walks a file that nothing has validated, so a line the converter
+            # cannot make sense of is skipped rather than allowed to end the lookup.
+            try:
+                index.setdefault(normalize_monker_hand(stored), info)
+            except (AttributeError, IndexError, KeyError):
+                logger.debug("Skipping unreadable entry %r while indexing a range file", stored)
+        return index
+
+    def _cached_normalized_entries(self, filename: str) -> dict[str, str]:
+        """The Monker 2 index of a cached file, built on its first miss and kept.
+
+        A Monker 2 tree misses the direct lookup every single time, so rebuilding the
+        index per action and per hand would put that 18.5ms back on every one of them --
+        seconds across a grid. It is kept next to the file it indexes and dropped with it.
+        """
+        index = NORMALIZED_CACHE.get(filename)
+        if index is None:
+            index = self._normalized_entries(CACHE.get(filename, {}))
+            NORMALIZED_CACHE[filename] = index
+        return index
+
+    def read_hand_from_files(self, hand: str, action_sequence: ActionSequence) -> Result:
+        """Reads hand data from the range file itself, through the cache or not."""
+        if self.cache_size == 0:
+            return self.read_hand(hand, action_sequence)
+        return self.read_hand_with_cache(hand, action_sequence)
+
+    def read_hand_from_store(self, hand: str, action_sequence: ActionSequence) -> Result:
+        """
+        Reads hand data from the SQLite store instead of the range file.
+
+        Hands are stored canonically, so the Monker 2 fallback of the file reader has no
+        equivalent here -- the ordering was resolved when the database was built.
+
+        A database that becomes unusable mid-session -- deleted, corrupted, a failing
+        disk -- costs this reader its store and nothing else: the range files it was built
+        from are still there, and the request is served from them.
+
+        :param hand: Hand to read.
+        :param action_sequence: Action sequence.
+        :return: Hand information.
+        """
+        basename = self.get_filename(action_sequence)
+        store = self.store
+        if store is None:  # pragma: no cover - get_results only calls this with a store
+            return self.read_hand_from_files(hand, action_sequence)
         try:
-            # Check if file data is already in memory
-            if filename not in CACHE:
-                if len(CACHE) >= self.cache_size:
-                    CACHE.popitem(last=False)
-                CACHE[filename] = self.read_file_into_hash(filename)
-            
-            CACHE.move_to_end(filename)
+            row = store.lookup_hand(basename, hand)
+        except sqlite3.Error as error:
+            logger.error("Lookup failed in %s (%s); reading range files instead", self.db_label(), error)
+            self.store = None
+            sqlite_store.forget(self.path)
+            return self.read_hand_from_files(hand, action_sequence)
+        if row is None:
+            logger.debug("Hand %s not found in %s of %s", hand, basename, self.db_label())
+            return ["", 0.0, 0.0]
+        frequency, ev = row
+        return [action_sequence[-1][1], frequency, ev]
 
-            hand_info = CACHE[filename].get(hand)
-            if not hand_info:
-                logging.error("Could not find Hand: {} in File: {}".format(hand, filename))
-                return ["", 0, 0]
+    def db_label(self) -> str:
+        """The store's database, for log lines."""
+        return os.path.join(self.path, sqlite_store.DB_NAME)
 
-            infos = hand_info.split(";")
-            frequency = float(infos[0])
-            ev = float(infos[1])
-            last_action = action_sequence[-1][1]
-            return [last_action, self.beautify_freq(frequency), self.beautify_ev(ev)]
+    def _parse_entry(self, info_line: str, action_sequence: ActionSequence, filename: str) -> Result:
+        """Turn a ``frequency;ev`` line into a ``[action, frequency, ev]`` result.
 
-        except EnvironmentError:
-            logging.error("Could not find File: {}".format(filename))
-            logging.error("ActionSequence is: {}").format(action_sequence)
-            return ["", 0, 0]
+        The EV is optional. Monker leaves it out for a hand the board makes
+        impossible, writing the frequency alone — about one hand in twenty on a
+        preflop export with a board applied. Requiring it dropped those hands to
+        a zero frequency, which reads as "never played" rather than "played, EV
+        unknown".
+        """
+        last_action = action_sequence[-1][1]
+        values = parse_values(info_line)
+        if values is None:
+            logger.error("Malformed entry %r in %s", info_line.strip(), filename)
+            return ["", 0.0, 0.0]
+        frequency, ev = values
+        return [last_action, frequency, ev]
 
-    def beautify_ev(self, ev):
-        return ev
+    def read_hand_with_cache(self, hand: str, action_sequence: ActionSequence) -> Result:
+        """
+        Reads hand data using a cache.
 
-    def beautify_freq(self, freq):
-        return freq
+        :param hand: Hand to read.
+        :param action_sequence: Action sequence.
+        :return: Hand information.
+        """
+        filename = os.path.join(self.path, self.get_filename(action_sequence))
+        logger.debug("Reading data for hand: %s with cache from file: %s", hand, filename)
 
-    def get_filename(self, action_sequence):
-        filename = ""
-        for position, action in action_sequence:
-            filename = filename + "." + self.configs[action]
-        filename = filename[1:]
-        filename += self.configs["Ending"]
+        if filename not in CACHE:
+            if len(CACHE) >= self.cache_size:
+                evicted, _ = CACHE.popitem(last=False)
+                NORMALIZED_CACHE.pop(evicted, None)
+            CACHE[filename] = self.read_file_into_hash(filename)
+
+        hand_info = CACHE[filename].get(hand)
+        if hand_info is None:
+            hand_info = self._cached_normalized_entries(filename).get(hand)
+        if hand_info is None:
+            logger.debug("Hand %s not found in file %s", hand, filename)
+            return ["", 0.0, 0.0]
+
+        return self._parse_entry(hand_info, action_sequence, filename)
+
+    def get_filename(self, action_sequence: ActionSequence) -> str:
+        """
+        Generates a filename based on the action sequence.
+
+        :param action_sequence: Action sequence.
+        :return: Filename, or "" if an action has no configured code.
+        """
+        try:
+            stem = self._stem(action_sequence)
+        except KeyError as error:
+            logger.error("Missing code for action %s in configuration.", error)
+            return ""
+        filename = stem + self.ending
+        logger.debug("Generated filename: %s", filename)
         return filename
-
-
-def test():
-    config = ConfigParser()
-    config.read("config.ini")
-    config = config["TreeReader"]
-    tree = {"Path": "/home/johann/monker/ranges/Omaha/6-way/100bb/"}
-    position_list = ["UTG", "MP", "CO", "BU", "SB", "BB"]
-    action_sequence = ActionProcessor(position_list, tree, config)
-    action_list = [("CO", "Raise"), ("BU", "Raise")]
-    hand = "AhKs4h3s"
-    result = action_sequence.get_results(hand, action_list, "SB")
-    for item in result:
-        print(item)
-
-
-if (__name__ == '__main__'):
-    test()

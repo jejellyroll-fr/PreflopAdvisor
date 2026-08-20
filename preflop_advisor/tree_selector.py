@@ -1,123 +1,268 @@
 #!/usr/bin/env python3
 
-import tkinter as tk
-from configparser import ConfigParser
-from preflop_advisor.tooltip import CreateToolTip
+import logging
+import re
+from typing import Any
+
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QHideEvent
+from PySide6.QtWidgets import (
+    QComboBox,
+    QLabel,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .settings import ConfigSource, Settings, get
+from .tooltip import CreateToolTip
+
+logger = logging.getLogger(__name__)
+
+#: What separates a tree's name from a fact about it: Table5 declares a tree, Table5.ante
+#: describes one.
+METADATA_MARKER = "."
+#: A description saying the tree has an ante -- a whole word, so that a description merely
+#: containing the letters does not count.
+MENTIONS_ANTE = re.compile(r"\bantes?\b", re.IGNORECASE)
+#: And one saying it has none, which the descriptions in the shipped configuration are
+#: full of ("no Rake"). Read as a mention of an ante, it hid every number of a tree whose
+#: description was telling us there was nothing to hide.
+DENIES_ANTE = re.compile(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", re.IGNORECASE)
 
 
-class TreeSelector(tk.Frame):
-    def __init__(self, root, tree_selector_settings, tree_configs, tree_tooltips, update_output):
-        # self.root = root
-        tk.Frame.__init__(self, root)
-        self.update_output = update_output
-        self.num_trees = int(tree_selector_settings["NumTrees"])
-        self.button_height = int(tree_selector_settings["ButtonHeight"])
-        self.button_width = int(tree_selector_settings["ButtonWidth"])
-        self.button_pad = int(tree_selector_settings["ButtonPad"])
-        self.fontsize = tree_selector_settings["FontSize"]
-        self.font = tree_selector_settings["Font"]
-        self.background = tree_selector_settings["Background"]
-        self.background_pressed = tree_selector_settings["BackgroundPressed"]
-        self.trees = []
+def ante_of(table: str, description: str, tree_infos: ConfigSource) -> float | None:
+    """What each seat posts before the blinds, in big blinds.
 
+    Declared beside the tree it belongs to, as ``Table5.ante=0.125``. A tree whose
+    description says it has one without saying how much comes back as ``None``: the size
+    is not in the export, and every number built on the pot would be short without it.
+    """
+    # Read case-insensitively on both sides: configparser hands its keys over in lower
+    # case, a plain mapping -- which the type accepts and the tests pass -- keeps whatever
+    # spelling it was written in, and a declaration missed here is silently read as no ante
+    # at all.
+    declared = get(tree_infos, f"{table}.ante")
+    if declared is not None:
+        try:
+            return float(declared)
+        except ValueError:
+            logger.warning("Ignoring %s.ante=%r: not a number", table, declared)
+            return None
+    if DENIES_ANTE.search(description):
+        return 0.0
+    return None if MENTIONS_ANTE.search(description) else 0.0
+
+
+class TreeSelector(QWidget):
+    """
+    Widget allowing the selection of a tree from a list defined in the configurations.
+    """
+
+    treeChanged = Signal(dict)
+
+    def __init__(
+        self,
+        root: QWidget | None,
+        tree_selector_settings: ConfigSource,
+        tree_configs: ConfigSource,
+        tree_tooltips: ConfigSource,
+    ) -> None:
+        super().__init__(root)
+        self.root = root  # Store the parent to access other components
+        settings = Settings(tree_selector_settings)
+        self.tree_tooltips = Settings(tree_tooltips) if tree_tooltips else None
+        self.enable_tooltips = str(settings.get("ToolTips", "NO")).upper() == "YES"
+        self.current_tooltip: CreateToolTip | None = None
+        self.fontsize = int(settings.get("FontSize", 12))
+        self.font_family = settings.get("Font", "Arial")
+        self.trees: list[dict[str, Any]] = []
+
+        logger.debug("Initializing TreeSelector.")
+
+        # Process tree information
         self.process_tree_infos(tree_configs)
-        self.button_list = [self.create_button(
-            r) for r in range(self.num_trees)]
-        
-        if tree_selector_settings["ToolTips"] == "YES":
-            self.tooltips = [tree_tooltips[i] for i in tree_tooltips]
-            self.tooltip_list = self.create_tooltip_list()
 
-        self.current_tree = int(tree_selector_settings["DefaultTree"])
-        self.select_button(self.current_tree)
+        # Main layout
+        self.main_layout = QVBoxLayout(self)
 
-    def process_tree_infos(self, tree_infos):
-        for index,table in enumerate(tree_infos):
+        # Label to display the current selection
+        self.label = QLabel("Select a Tree")
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.main_layout.addWidget(self.label)
+
+        # Create a dropdown list (QComboBox)
+        self.dropdown = QComboBox()
+        self.dropdown.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        # Add options to the QComboBox
+        for tree in self.trees:
+            self.dropdown.addItem(
+                f"{tree['plrs']}-max {tree['bb']}bb {tree['game']} {tree['infos']}",
+                tree,
+            )
+        logger.debug("Trees loaded into selector: %s", self.trees)
+
+        # Connect the signal to handle selection changes
+        self.dropdown.currentIndexChanged.connect(self.on_tree_selected)
+        self.dropdown.installEventFilter(self)
+
+        # Add the QComboBox to the layout
+        self.main_layout.addWidget(self.dropdown)
+
+        # Select the default tree
+        default_tree = int(settings.get("DefaultTree", 0))
+        self.dropdown.setCurrentIndex(default_tree)
+        self.current_tree: dict[str, Any] | None = self.trees[default_tree] if self.trees else None
+
+        # Trigger the action associated with the change
+        self.on_tree_selected(default_tree)
+
+    def process_tree_infos(self, tree_infos: ConfigSource) -> None:
+        """
+        Processes tree information from the configurations.
+
+        :param tree_infos: Section containing tree configurations.
+        """
+        logger.debug("Processing tree information...")
+        # A key with a dot in it describes a tree rather than declaring one -- Table5.ante
+        # says how much its ante is. Enumerated as a tree of its own, its single field
+        # reached the player count and the application would not start.
+        tables = [key for key in tree_infos if METADATA_MARKER not in key]
+        for index, table in enumerate(tables):
             infos = tree_infos[table].split(",")
-            table_dic = {}
-            table_dic["index"] = index
-            table_dic["plrs"] = int(infos[0])
-            table_dic["bb"] = int(infos[1])
-            table_dic["game"] = infos[2]
-            table_dic["folder"] = infos[3]
-            table_dic["infos"]=infos[4]
-            info_length = len(infos[4])
-            if info_length < 11:
-                table_dic["infos"]=" "*(11-info_length)+infos[4]
+            table_dic = {
+                "index": index,
+                "table_key": table,
+                "plrs": int(infos[0]),
+                "bb": int(infos[1]),
+                "game": infos[2],
+                "folder": infos[3],
+                "infos": infos[4].strip(),
+                "ante": ante_of(table, infos[4], tree_infos),
+            }
             self.trees.append(table_dic)
+        logger.debug("Processed tree information: %s", self.trees)
 
-    def create_tooltip_list(self):
-        tooltip_list = []
-        for tooltip, button in zip(self.tooltips, self.button_list):
-            tip = CreateToolTip(button, tooltip)
-            tooltip_list.append(tip)
-        return tip
+    def on_tree_selected(self, index: int) -> None:
+        """
+        Handles selection changes in the QComboBox.
 
-    def create_button(self, row):
-        plr_txt = str(self.trees[row]["plrs"]) + "-max "
-        bb_txt = " "*(3-len(str(self.trees[row]["bb"]))) + str(self.trees[row]["bb"]) + "bb " 
-        #text = str(self.trees[row]["plrs"]) + "m " + \
-        #    str(self.trees[row]["bb"]) + "bb" + " " + self.trees[row]["infos"] 
-        #self.trees[row]["game"] + " " +
-
-        text = plr_txt + bb_txt + self.trees[row]["game"]+" " + self.trees[row]["infos"]
-        if len(text) > self.button_width:
-            self.button_width = len(text)
-        button = tk.Button(
-            self, text=text, command=self.on_button_clicked(row))
-        button.config(height=self.button_height,
-                      width=self.button_width,
-                      bg=self.background,
-                      font=(self.font, self.fontsize, 'bold'), padx=self.button_pad, pady=self.button_pad)
-        button.grid(row=row)
-        return button
-
-    def on_button_clicked(self, row):
-        def event_handler():
-            self.process_button_clicked(row)
-        return event_handler
-
-    def process_button_clicked(self, row):
-        if row == self.current_tree:
+        :param index: Selected index.
+        """
+        if index < 0 or index >= len(self.trees):
+            logger.warning("Invalid selected index: %d", index)
             return
-        self.deselect_button(self.current_tree)
-        self.current_tree = row
-        self.select_button(row)
+        self.current_tree = self.trees[index]
+        self.label.setText(f"Selected: {self.current_tree['game']} {self.current_tree['infos']}")
+        logger.debug("Selected tree: %s", self.current_tree)
+
+        self.update_tooltip()
         self.tree_changed()
 
-    def set_other_tree(self, row):
-        if row == self.current_tree:
+    def tooltip_for_current_tree(self) -> str:
+        """Tooltip text or image path configured for the selected tree, if any."""
+        if not (self.enable_tooltips and self.tree_tooltips and self.current_tree):
+            return ""
+        return str(self.tree_tooltips.get(self.current_tree.get("table_key", ""), ""))
+
+    def update_tooltip(self) -> None:
+        """Points the single tooltip instance at the selected tree.
+
+        A fresh CreateToolTip used to be built on every selection change, each one a
+        top-level window that was never released.
+        """
+        self.hide_tooltip()
+        content = self.tooltip_for_current_tree()
+        if not content:
+            self.current_tooltip = None
             return
-        self.deselect_button(self.current_tree)
-        self.current_tree = row
-        self.select_button(row)
-        #self.tree_changed()
+        if self.current_tooltip is None:
+            self.current_tooltip = CreateToolTip(self, content)
+        else:
+            self.current_tooltip.set_content(content)
 
-    def deselect_button(self, row):
-        self.button_list[row].config(relief="raised", bg=self.background)
+    def show_tooltip(self) -> None:
+        if self.current_tooltip is not None:
+            self.current_tooltip.show_tooltip(self.dropdown)
 
-    def select_button(self, row):
-        self.button_list[row].config(
-            relief="sunken", bg=self.background_pressed)
+    def hide_tooltip(self) -> None:
+        if self.current_tooltip is not None:
+            self.current_tooltip.hide_tooltip()
 
-    def tree_changed(self):
-        self.update_output()
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Shows the tooltip while the pointer is over the dropdown.
 
-    def get_tree_infos(self):
-        return self.trees[self.current_tree]
+        An event filter replaces reassigning the dropdown's enterEvent/leaveEvent
+        attributes. Those were rebound on every selection change, and no Leave arrives
+        once the combo popup opens, which is how the tooltip got stranded on screen over
+        the results grid.
+        """
+        if watched is self.dropdown:
+            if event.type() == QEvent.Type.Enter:
+                self.show_tooltip()
+            elif event.type() in (
+                QEvent.Type.Leave,
+                QEvent.Type.Hide,
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.FocusOut,
+            ):
+                self.hide_tooltip()
+        return super().eventFilter(watched, event)
 
+    def hideEvent(self, event: QHideEvent) -> None:
+        """A hidden selector must not leave its tooltip floating."""
+        self.hide_tooltip()
+        super().hideEvent(event)
 
-def test(root):
-    configs = ConfigParser()
-    configs.read("../config.ini")
-    settings = configs["TreeSelector"]
-    infos = configs["TreeInfos"]
-    action = "do something"
-    tree_selector = TreeSelector(
-        root, settings, infos, action).grid(row=0, column=0)
+    def tree_changed(self) -> None:
+        """
+        Callback called when the selected tree changes and emits treeChanged signal.
+        """
+        if self.current_tree:
+            self.treeChanged.emit(self.current_tree)
 
+    def refresh_trees(self, tree_configs: ConfigSource, tree_tooltips: ConfigSource) -> None:
+        """Rebuild the dropdown from fresh configuration, keeping the selection if it survives.
 
-if (__name__ == '__main__'):
-    root = tk.Tk()
-    test(root)
-    root.mainloop()
+        Called after the Configuration tab saves: the list of sims may have gained or lost
+        entries, and the tooltips may have changed.
+        """
+        previous = self.current_tree["table_key"] if self.current_tree else None
+        self.tree_tooltips = Settings(tree_tooltips) if tree_tooltips else None
+        self.trees = []
+        self.process_tree_infos(tree_configs)
+
+        self.dropdown.blockSignals(True)
+        self.dropdown.clear()
+        for tree in self.trees:
+            self.dropdown.addItem(
+                f"{tree['plrs']}-max {tree['game']} {tree['infos']}",
+                tree,
+            )
+        self.dropdown.blockSignals(False)
+
+        index = 0
+        if previous is not None:
+            for candidate, tree in enumerate(self.trees):
+                if tree["table_key"] == previous:
+                    index = candidate
+                    break
+        self.dropdown.setCurrentIndex(index)
+        self.on_tree_selected(index)
+
+    def get_tree_infos(self) -> dict[str, Any] | None:
+        """
+        Retrieves information of the selected tree.
+
+        A selector with nothing configured in ``[TreeInfos]`` has no tree, and says so
+        rather than raising: this is read on the way to the first render, before anything
+        is in place to report a problem, so an exception here ends the application instead
+        of leaving an empty selector the user can still fix their configuration from.
+
+        :return: Dictionary containing current tree information, or ``None`` when no tree
+            is configured.
+        """
+        return self.current_tree

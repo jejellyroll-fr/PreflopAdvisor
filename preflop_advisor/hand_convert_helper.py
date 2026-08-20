@@ -1,171 +1,219 @@
 #!/usr/bin/env python3
 
-import logging
-import re
 import glob
 import json
+import logging
 import os
+import re
 
-RANK_ORDER = {'A': 12, 'K': 11, 'Q': 10, 'J': 9, 'T': 8, '9': 7,
-              '8': 6, '7': 5, '6': 4, '5': 3, '4': 2, '3': 1, '2': 0}
-RANKS = list("AKQJT98765432")
-SUITS = list("cdhs")
+logger = logging.getLogger(__name__)
 
-# Converts 4 Card Hand like "AsAcTh3d" to monker tree format
-# Added support for 2 Card NL Hands
 
-def convert_hand(hand):
-    hand = hand.replace(" ","")
+# Dictionary for card rank order
+RANK_ORDER = {
+    "A": 12,
+    "K": 11,
+    "Q": 10,
+    "J": 9,
+    "T": 8,
+    "9": 7,
+    "8": 6,
+    "7": 5,
+    "6": 4,
+    "5": 3,
+    "4": 2,
+    "3": 1,
+    "2": 0,
+}
+RANKS = list("AKQJT98765432")  # List of card ranks
+SUITS = list("cdhs")  # List of suits
+# Order in which suits are grouped when normalizing a hand. Only affects the tie-break
+# between equal-ranked cards, but is pinned down so output stays reproducible.
+SUIT_GROUPING_ORDER = ("s", "d", "h", "c")
+
+# Converts a 4-card hand like "AsAcTh3d" to Monker tree format
+# Added support for 2-card NL hands
+
+
+def convert_hand(hand: str) -> str:
+    """
+    Determines the type of hand based on its length and calls the appropriate conversion function.
+    """
+    hand = hand.replace(" ", "")
     if len(hand) == 8:
+        logger.debug(f"Converting an Omaha hand: {hand}")
         return convert_omaha_hand(hand)
     elif len(hand) == 4:
+        logger.debug(f"Converting a Hold'em hand: {hand}")
         return convert_holdem_hand(hand)
     elif len(hand) == 10:
+        logger.debug(f"Converting an Omaha 5 hand: {hand}")
         return convert_omaha5_hand(hand)
-    logging.error(
-            "Hand: {} cannot be converted...wrong length".format(hand))
+    logger.error(f"Hand: {hand} cannot be converted...wrong length")
     return hand
 
-def convert_holdem_hand(hand):
+
+def convert_holdem_hand(hand: str) -> str:
+    """
+    Converts a Hold'em hand to a compact format (e.g., "AKs" or "QQ").
+    """
     if len(hand) != 4:
-        logging.error(
-            "NL Hand: {} cannot be converted...wrong length".format(hand))
-    ranks = [hand[0],hand[2]]
-    suits = [hand[1],hand[3]]
-    ranks.sort(key=lambda x: RANK_ORDER[x],reverse=True)
-    if ranks[0] == ranks[1]:
-        return "{}{}".format(ranks[0],ranks[0])
-    if suits[0] == suits[1]:
-        return "{}{}{}".format(ranks[0],ranks[1],"s")
-    else:
-        return "{}{}{}".format(ranks[0],ranks[1],"o")
-    
-def convert_omaha_hand(hand):
-    if len(hand) != 8:
-        logging.error(
-            "Omaha Hand: {} cannot be converted...wrong length".format(hand))
+        logger.error(f"NL Hand: {hand} cannot be converted...wrong length")
         return hand
+    ranks = [hand[0], hand[2]]
+    suits = [hand[1], hand[3]]
+    ranks.sort(key=lambda x: RANK_ORDER[x], reverse=True)
+    if ranks[0] == ranks[1]:
+        logger.debug(f"Detected a pair: {ranks[0]}{ranks[0]}")
+        return f"{ranks[0]}{ranks[0]}"
+    if suits[0] == suits[1]:
+        logger.debug(f"Detected a suited hand: {ranks[0]}{ranks[1]}s")
+        return f"{ranks[0]}{ranks[1]}s"
+    else:
+        logger.debug(f"Detected an offsuit hand: {ranks[0]}{ranks[1]}o")
+        return f"{ranks[0]}{ranks[1]}o"
+
+
+def convert_omaha_hand(hand: str) -> str:
+    """
+    Converts a 4-card Omaha hand to Monker format.
+    """
+    if len(hand) != 8:
+        logger.error(f"Omaha Hand: {hand} cannot be converted...wrong length")
+        return hand
+    # Extract ranks and suits
     ranks = [hand[0], hand[2], hand[4], hand[6]]
     suits = [hand[1], hand[3], hand[5], hand[7]]
+
+    # Validate ranks
     for rank in ranks:
         if rank not in RANKS:
-            logging.error(
-                "Hand: {} cannot be converted...invalid ranks".format(hand))
+            logger.error(f"Hand: {hand} cannot be converted...invalid ranks")
             return hand
+    # Validate suits
     for suit in suits:
         if suit not in SUITS:
-            logging.error(
-                "Hand: {} cannot be converted...invalid suits".format(hand))
+            logger.error(f"Hand: {hand} cannot be converted...invalid suits")
             return hand
+
+    # Group cards by suit, in a fixed suit order so the result stays deterministic
+    # before the rank sorting below.
     cards = [hand[0:2], hand[2:4], hand[4:6], hand[6:8]]
-    suit_count = {"s": 0, "d": 0, "h": 0, "c": 0}
-    for s in suit_count:
-        for card_s in suits:
-            if card_s == s:
-                suit_count[s] += 1
+    cards_by_suit = {suit: [card for card in cards if card[1] == suit] for suit in SUIT_GROUPING_ORDER}
+
+    # Classify cards by how many share their suit
     cards_single_suit = []
-    cards_two_suited = []  # nested list
-    cards_three_suited = []  # only card list
-    cards_four_suited = []
-    for s in suit_count:
-        if suit_count[s] == 0:
-            continue
-        elif suit_count[s] == 1:
-            for card in cards:
-                if card[1] == s:
-                    cards_single_suit.append(card)
-        elif suit_count[s] == 2:
-            two_suits = []
-            for card in cards:
-                if card[1] == s:
-                    two_suits.append(card)
-            cards_two_suited.append(two_suits)
-        elif suit_count[s] == 3:
-            for card in cards:
-                if card[1] == s:
-                    cards_three_suited.append(card)
-        elif suit_count[s] == 4:
-            for card in cards:
-                if card[1] == s:
-                    cards_four_suited.append(card)
+    cards_two_suited = []  # Nested lists for suits appearing twice
+    cards_three_suited = []  # List of cards for suits appearing three times
+    cards_four_suited = []  # List of cards for suits appearing four times
+
+    for suited_cards in cards_by_suit.values():
+        if len(suited_cards) == 1:
+            cards_single_suit.extend(suited_cards)
+        elif len(suited_cards) == 2:
+            cards_two_suited.append(suited_cards)
+        elif len(suited_cards) == 3:
+            cards_three_suited.extend(suited_cards)
+        elif len(suited_cards) == 4:
+            cards_four_suited.extend(suited_cards)
+
+    # Build the converted hand
     return_hand = ""
     if cards_single_suit:
         cards_single_suit.sort(key=lambda x: RANK_ORDER[x[0]])
         for item in cards_single_suit:
             return_hand += item[0]
     if cards_two_suited:
-        for item in cards_two_suited:
-            item.sort(key=lambda x: RANK_ORDER[x[0]])
-        cards_two_suited.sort(key=lambda x: (RANK_ORDER[x[1][0]],RANK_ORDER[x[0][0]]))
-        for item in cards_two_suited:
-            return_hand += "(" + item[0][0] + item[1][0] + ")"
+        for pair in cards_two_suited:
+            pair.sort(key=lambda x: RANK_ORDER[x[0]])
+        cards_two_suited.sort(key=lambda x: (RANK_ORDER[x[1][0]], RANK_ORDER[x[0][0]]))
+        for pair in cards_two_suited:
+            return_hand += f"({pair[0][0]}{pair[1][0]})"
     if cards_three_suited:
         cards_three_suited.sort(key=lambda x: RANK_ORDER[x[0]])
-        return_hand += "(" + cards_three_suited[0][0] + \
-            cards_three_suited[1][0] + cards_three_suited[2][0] + ")"
+        return_hand += f"({cards_three_suited[0][0]}{cards_three_suited[1][0]}{cards_three_suited[2][0]})"
     if cards_four_suited:
         cards_four_suited.sort(key=lambda x: RANK_ORDER[x[0]])
-        return_hand += "("
-        for card in cards_four_suited:
-            return_hand += card[0]
-        return_hand += ")"
+        return_hand += "(" + "".join([card[0] for card in cards_four_suited]) + ")"
+    logger.debug(f"Converted Omaha hand: {return_hand}")
     return return_hand
 
 
-def convert_omaha5_hand(hand):
-    if len(hand) != 8 and len(hand) !=10:
-        logging.error(
-            "Omaha Hand: {} cannot be converted...wrong length".format(hand))
+def convert_omaha5_hand(hand: str) -> str:
+    """
+    Converts a 5-card Omaha hand to an adapted format.
+    """
+    if len(hand) != 8 and len(hand) != 10:
+        logger.error(f"Omaha Hand: {hand} cannot be converted...wrong length")
         return hand
+    # Extract ranks and suits
     ranks = [x for x in hand if x in RANKS]
     suits = [x for x in hand if x in SUITS]
-    if len(ranks) != 4 and len(ranks) != 5 or len(ranks)-len(suits)!=0:
-        logging.error(
-            "Omaha Hand: {} cannot be converted".format(hand))
+    if len(ranks) not in [4, 5] or len(ranks) - len(suits) != 0:
+        logger.error(f"Omaha Hand: {hand} cannot be converted")
         return hand
 
-    cards = [hand[i:i+2] for i in range(0,len(hand),2)]
-    suit_ranks = {"s": [], "d": [], "h": [], "c": []}
-    for s in suit_ranks:
-        for card in cards:
-            if card[1] == s:
-                suit_ranks[s].append(card[0])
-    for s in suit_ranks:
-        suit_ranks[s] = sorted(suit_ranks[s],key=lambda  x:RANK_ORDER[x])
+    # Ranks held in each suit, each group sorted from low to high
+    cards = [hand[i : i + 2] for i in range(0, len(hand), 2)]
+    suit_ranks = {
+        suit: sorted((card[0] for card in cards if card[1] == suit), key=lambda x: RANK_ORDER[x])
+        for suit in SUIT_GROUPING_ORDER
+    }
 
-    unsuited_cards=[]
-    for s in suit_ranks:
-        if len(suit_ranks[s]) == 1:
-            unsuited_cards.append(suit_ranks[s][0])
-    suited_cards=[]
-    for s in suit_ranks:
-        if len(suit_ranks[s]) > 1:
-            suited_cards.append(suit_ranks[s])
-    unsuited_string = ''.join(sorted(unsuited_cards,key=lambda  x:RANK_ORDER[x]))
-    suited_cards = sorted(suited_cards,key=lambda x:(RANK_ORDER[x[0]],RANK_ORDER[x[1]]))
-    suited_string=''
+    # Classify cards
+    unsuited_cards = []
+    suited_cards = []
+    for ranks_of_suit in suit_ranks.values():
+        if len(ranks_of_suit) == 1:
+            unsuited_cards.append(ranks_of_suit[0])
+        elif len(ranks_of_suit) > 1:
+            suited_cards.append(ranks_of_suit)
+
+    # Build the result string
+    unsuited_string = "".join(sorted(unsuited_cards, key=lambda x: RANK_ORDER[x]))
+    # Ordered on every rank, not just the first two: a 2-card and a 3-card group sharing
+    # their two lowest ranks tied, and the stable sort then fell back to the order the
+    # suits happened to come in. The same hand dealt in other suits keyed differently --
+    # "(24)(248)" against "(248)(24)" -- and one of the two matched no file.
+    suited_cards = sorted(suited_cards, key=lambda group: [RANK_ORDER[rank] for rank in group])
+    suited_string = ""
     for item in suited_cards:
-        suited_string+="(" + ''.join(item) + ")"
-    return unsuited_string+suited_string
+        suited_string += "(" + "".join(item) + ")"
+    result = unsuited_string + suited_string
+    logger.debug(f"Converted Omaha5 hand: {result}")
+    return result
 
-def sort_monker_2_hand(hand):
+
+def sort_monker_2_hand(hand: str) -> str:
+    """
+    Sorts a hand in Monker format to ensure a consistent representation.
+    """
     if "(" not in hand:
         if hand[0] not in RANKS:
-            print(hand)
-        return ''.join(sorted(hand,key=lambda x: RANK_ORDER[x[0]]))
+            logger.warning(f"Unknown hand: {hand}")
+        return "".join(sorted(hand, key=lambda x: RANK_ORDER[x]))
     if hand.count("(") == 1:
-        suited = re.search('\((.+?)\)',hand).group(1)
-        unsuited = re.sub('\((.+?)\)','',hand)
-        return ''.join(sorted(unsuited,key=lambda x: RANK_ORDER[x[0]])) + "(" + ''.join(sorted(suited,key=lambda x: RANK_ORDER[x[0]])) + ")"
+        # Hand with one suited combination
+        group = re.search(r"\((.+?)\)", hand)
+        if group is None:
+            logger.warning(f"Unbalanced parentheses in hand: {hand}")
+            return hand
+        suited = group.group(1)
+        unsuited = re.sub(r"\((.+?)\)", "", hand)
+        return (
+            "".join(sorted(unsuited, key=lambda x: RANK_ORDER[x]))
+            + "("
+            + "".join(sorted(suited, key=lambda x: RANK_ORDER[x]))
+            + ")"
+        )
     if hand.count("(") == 2:
+        # Hand with two suited combinations
         suited1 = hand[0:4]
         if RANK_ORDER[suited1[1]] > RANK_ORDER[suited1[2]]:
-            suited1 = "("+suited1[2]+suited1[1] + ")"
+            suited1 = "(" + suited1[2] + suited1[1] + ")"
         suited2 = hand[4:8]
-        #print(suited1)
-        #print(suited2)
         if RANK_ORDER[suited2[1]] > RANK_ORDER[suited2[2]]:
-            suited2 = "("+suited2[2]+suited2[1] + ")"
+            suited2 = "(" + suited2[2] + suited2[1] + ")"
 
         if RANK_ORDER[suited1[2]] == RANK_ORDER[suited2[2]]:
             if RANK_ORDER[suited1[1]] > RANK_ORDER[suited2[1]]:
@@ -178,72 +226,133 @@ def sort_monker_2_hand(hand):
             return suited1 + suited2
     return hand
 
-def sort_omaha5_hand(hand):
+
+def sort_omaha5_hand(hand: str) -> str:
+    """
+    Sorts a 5-card Omaha hand to ensure a consistent representation.
+    """
+    if "(" not in hand:
+        # Five cards cannot hold five distinct suits, so no solver exports a rainbow
+        # five-card key. It still has to come back as something rather than raise on an
+        # empty group list: the read-path fallback normalizes every line of a file whose
+        # contents it has not validated.
+        if any(card not in RANK_ORDER for card in hand):
+            logger.warning(f"Unknown hand: {hand}")
+            return hand
+        return "".join(sorted(hand, key=lambda x: RANK_ORDER[x]))
     if hand.count("(") == 1:
-        suited = re.search('\((.+?)\)',hand).group(1)
-        unsuited = re.sub('\((.+?)\)','',hand)
-        return ''.join(sorted(unsuited,key=lambda x: RANK_ORDER[x[0]])) + "(" + ''.join(sorted(suited,key=lambda x: RANK_ORDER[x[0]])) + ")"
+        # Hand with one suited combination
+        group = re.search(r"\((.+?)\)", hand)
+        if group is None:
+            logger.warning(f"Unbalanced parentheses in hand: {hand}")
+            return hand
+        suited = group.group(1)
+        unsuited = re.sub(r"\((.+?)\)", "", hand)
+        return (
+            "".join(sorted(unsuited, key=lambda x: RANK_ORDER[x]))
+            + "("
+            + "".join(sorted(suited, key=lambda x: RANK_ORDER[x]))
+            + ")"
+        )
     else:
-        suited = re.findall('\((.+?)\)',hand)
-        unsuited = re.sub('\((.+?)\)(.*?)\((.+?)\)','',hand)
+        # Hand with two suited combinations
+        suited = re.findall(r"\((.+?)\)", hand)
+        # Each group is removed on its own. Matching both in one pattern also swallowed
+        # whatever sat between them, so the fifth rank of "(54)A(32)" -- the ordering
+        # Monker 2 writes -- disappeared and the hand came out as "(23)(45)".
+        unsuited = re.sub(r"\((.+?)\)", "", hand)
         suited_list = []
         for item in suited:
-            suited_list.append(''.join(sorted(item,key=lambda x: RANK_ORDER[x[0]])))
-        suited_list = sorted(suited_list,key=lambda x: (RANK_ORDER[x[0]],RANK_ORDER[x[1]]))
-        suited = "("+''.join(suited_list[0])+")"+"("+''.join(suited_list[1])+")"
-        return ''.join(sorted(unsuited,key=lambda x: RANK_ORDER[x[0]])) + suited
-    print("convert error! {}".format(hand))
+            suited_list.append("".join(sorted(item, key=lambda x: RANK_ORDER[x])))
+        # Same full-rank ordering as convert_omaha5_hand: the two must agree, since this
+        # is what a stored hand is normalized to before being compared to a converted one.
+        suited_list = sorted(suited_list, key=lambda group: [RANK_ORDER[rank] for rank in group])
+        suited = "(" + "".join(suited_list[0]) + ")" + "(" + "".join(suited_list[1]) + ")"
+        return "".join(sorted(unsuited, key=lambda x: RANK_ORDER[x])) + suited
+    logger.error(f"convert error! {hand}")
 
-def replace_monker_2_hands(filename):
-    new_content=""
-    with open(filename,'r') as f:
-        #print(filename)
+
+def normalize_monker_hand(hand: str) -> str:
+    """
+    Maps a stored hand string to the ordering ``convert_hand`` produces.
+
+    Monker Solver 1 and Monker Solver 2 export the same hands with rank and suit
+    groups in a different order -- "(2A)AA" against "AA(2A)", "AAA2" against "2AAA" --
+    so a hand converted the canonical way never matches what a Monker 2 file holds.
+    Both sort helpers are idempotent on already-canonical strings, so normalizing a
+    stored hand makes the lookup ordering-independent: every one of the 509394 hands
+    in the Monker 1 tree shipped under ranges/ normalizes to itself.
+
+    Ported from ksoeze/PreflopAdvisor e88cb01, where it feeds the SQLite store.
+
+    :param hand: Hand string as written in a range file.
+    :return: The same hand in canonical ordering.
+    """
+    ranks = [card for card in hand if card in RANKS]
+    if len(ranks) == 4:
+        return sort_monker_2_hand(hand)
+    if len(ranks) == 5:
+        return sort_omaha5_hand(hand)
+    # 2-card NL hands ("AKs"/"AKo"/"AA") share one ordering across both versions.
+    return hand
+
+
+def replace_monker_2_hands(filename: str) -> None:
+    """
+    Reads a file, sorts the hands it contains, and rewrites the file with the sorted hands.
+    """
+    new_content = ""
+    logger.debug(f"Processing file: {filename}")
+    with open(filename, "r", encoding="utf-8") as f:
         for line in f:
-            if ";" not in line and line[0]!="0": #hand not ev values
-                new_content += sort_monker_2_hand(line[0:-1]) + "\n"
+            if ";" not in line and line[0] != "0":  # Line containing a hand, not EV values
+                sorted_hand = sort_monker_2_hand(line.strip())
+                new_content += sorted_hand + "\n"
             else:
-                new_content+=line
-    with open(filename,"w") as f:
+                new_content += line
+    with open(filename, "w", encoding="utf-8") as f:
         f.write(new_content)
+    logger.debug(f"File updated: {filename}")
 
-def replace_all_monker_2_files(path):
-    all_files = glob.glob(path+"*.rng")
+
+def replace_all_monker_2_files(path: str) -> None:
+    """
+    Applies the replacement function to all .rng files in a given directory.
+    """
+    all_files = glob.glob(os.path.join(path, "*.rng"))
     for file in all_files:
         replace_monker_2_hands(file)
+    logger.debug(f"All .rng files in {path} have been processed.")
 
-def move_plo5_file(work_path,inputfilename,outputfilename):
-    input_file = os.path.join(work_path,inputfilename)
-    with open(input_file,'r') as json_file:
+
+def move_plo5_file(work_path: str, inputfilename: str, outputfilename: str) -> None:
+    """
+    Converts a JSON file containing PLO5 hands to an adapted format and writes it to a new file.
+    """
+    input_file = os.path.join(work_path, inputfilename)
+    with open(input_file, "r", encoding="utf-8") as json_file:
         data = json.load(json_file)
 
     hands = data["items"]
-    output_file = os.path.join(work_path,outputfilename)
-    with open(output_file,'w') as range_file:
+    output_file = os.path.join(work_path, outputfilename)
+    with open(output_file, "w", encoding="utf-8") as range_file:
         for item in hands:
-            range_file.write(
-                sort_omaha5_hand(item["combo"].replace("[","(").replace("]",")"))+"\n")
-            range_file.write(str(item["frequency"])+";"+str(item["ev"])+"\n")
+            converted_hand = sort_omaha5_hand(item["combo"].replace("[", "(").replace("]", ")"))
+            range_file.write(converted_hand + "\n")
+            range_file.write(f"{item['frequency']};{item['ev']}\n")
+    logger.debug(f"Converted file written: {output_file}")
 
-def move_plo5_postflop_file(work_path,inputfilename,outputfilename):
-    input_file = os.path.join(work_path,inputfilename)
-    with open(input_file,'r') as json_file:
+
+def move_plo5_postflop_file(work_path: str, inputfilename: str, outputfilename: str) -> None:
+    """
+    Converts a JSON file containing PLO5 post-flop hands to a CSV file.
+    """
+    input_file = os.path.join(work_path, inputfilename)
+    with open(input_file, "r", encoding="utf-8") as json_file:
         data = json.load(json_file)
 
     hands = data["items"]
-    output_file = os.path.join(work_path,outputfilename)
-    with open(output_file,'w') as range_file:
-        for item in hands:
-            range_file.write(item["combo"]+"," + str(item["weight"])+"," + str(item["ev"]*1000)+"\n")
-
-def test():
-    #print(convert_hand("Ad8s7h2c4c"))
-    #print(sort_monker_2_hand("(98)(T7)"))
-    #print(sort_monker_2_hand("(QA)(3A)"))
-    #replace_monker_2_hands("/media/johann/MONKER/monker-beta/ranges/Omaha/6-way/40bb/0.0.rng")
-
-    replace_all_monker_2_files("/home/johann/monker-beta/ranges/Omaha5/6-way/100bb/")
-
-    #move_plo5_postflop_file("/home/johann/monker-beta/ranges","CHECK","CHECK.csv")
-    #move_plo5_postflop_file("/home/johann/monker-beta/ranges","BET75","BET75.csv")
-if (__name__ == '__main__'):
-    test()
+    output_file = os.path.join(work_path, outputfilename)
+    with open(output_file, "w", encoding="utf-8") as range_file:
+        range_file.writelines(f"{item['combo']},{item['weight']},{item['ev'] * 1000}\n" for item in hands)
+    logger.debug(f"Converted post-flop file written: {output_file}")
