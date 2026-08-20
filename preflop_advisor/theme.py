@@ -79,11 +79,13 @@ def blend(color: str, background: str, alpha: float) -> str:
     ).name()
 
 
-def ev_color(ev: str | float) -> str:
-    """Colour for an EV figure, neutral when it is zero or unreadable."""
+def ev_color(ev: str | float | None) -> str:
+    """Colour for an EV figure, neutral when it is zero, absent or unreadable."""
     try:
-        value = float(ev)
+        value = float(ev) if ev is not None else None
     except (TypeError, ValueError):
+        return EV_NEUTRAL
+    if value is None:
         return EV_NEUTRAL
     if value > 0:
         return EV_POSITIVE

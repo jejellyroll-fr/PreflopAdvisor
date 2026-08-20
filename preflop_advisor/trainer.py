@@ -236,13 +236,20 @@ def playable(results: list[Result]) -> list[Result]:
 def grade(results: list[Result], chosen: str, chips_per_bb: float) -> Verdict:
     """Score an answer by what it gives up against the best action of the node.
 
-    :param results: The node, as ``[action, frequency, ev]`` per action.
+    :param results: The node, as ``[action, frequency, ev]`` per action; an entry whose
+        EV the solver omitted (a hand the board makes impossible) has ``None`` and cannot
+        be scored.
     :param chosen: The action answered.
     :param chips_per_bb: What the solver's EV unit is worth in big blinds.
     :return: The verdict, with the loss in big blinds.
+    :raises ValueError: if the node holds nothing this can score -- every entry's EV is
+        absent, or the answered action's is. Callers skip such a node before asking.
     """
-    best = max(results, key=lambda entry: float(entry[2]))
-    answered = next((entry for entry in results if entry[0] == chosen), None)
+    scored = [entry for entry in results if entry[2] is not None]
+    if not scored:
+        raise ValueError("No entry of this node carries an EV to grade against")
+    best = max(scored, key=lambda entry: float(entry[2]))
+    answered = next((entry for entry in scored if entry[0] == chosen), None)
     if answered is None:  # pragma: no cover - the buttons are built from the node itself
         raise ValueError(f"{chosen} is not an action of this node")
 

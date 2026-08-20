@@ -14,6 +14,7 @@ ActionSequence: TypeAlias = list[tuple[str, str]]
 
 #: What one action of a node reads as: ``[action, frequency, ev]``. The frequency is a
 #: share of one and the EV is in the solver's own units until the display converts them;
+#: the EV may be ``None`` where Monker omitted it (a hand the board makes impossible), and
 #: an unavailable action comes back as ``["", 0.0, 0.0]``.
 Result: TypeAlias = list[Any]
 

@@ -227,7 +227,7 @@ class TrainerPanel(QWidget):
         for spot in spots:
             hand = deal(cards, self.rng)
             results = playable(processor.get_results(hand, spot.line, spot.hero))
-            if results:
+            if self.gradable(results):
                 return self.question_for(processor, spot, hand, results)
 
             # The spot did not answer for that hand. Rather than deal again and hope, ask
@@ -242,7 +242,7 @@ class TrainerPanel(QWidget):
                 if held is None:
                     continue
                 results = playable(processor.get_results(held, spot.line, spot.hero))
-                if results:
+                if self.gradable(results):
                     return self.question_for(processor, spot, held, results)
         logger.warning("No spot of %s answered", tree.get("folder"))
         return None
@@ -265,6 +265,18 @@ class TrainerPanel(QWidget):
             ante=self.ante,
         )
         return Question(spot, hand, results, state)
+
+    @staticmethod
+    def gradable(results: list[Any]) -> bool:
+        """Whether a node's entries can be scored against one another.
+
+        Monker omits the EV for a hand the board makes impossible -- for the hand, so
+        across the node -- and a node with an unknown EV has nothing to grade the answer
+        by: the best action is unknown, and an action whose EV is missing has no cost to
+        measure. Such a spot is passed over like one that answered nothing, rather than
+        asked and then refused.
+        """
+        return bool(results) and all(entry[2] is not None for entry in results)
 
     def offer_spots(self, seats: list[str]) -> None:
         """Fill the chooser with the situations a table of these seats has.
@@ -372,7 +384,7 @@ class TrainerPanel(QWidget):
             tile.set_action(
                 str(action),
                 f"{float(frequency) * 100:.0f}",
-                f"{float(ev) / self.chips_per_bb:.2f}",
+                f"{float(ev) / self.chips_per_bb:.2f}" if ev is not None else None,
                 selected=action == chosen,
             )
             tile.setMaximumHeight(TILE_HEIGHT)

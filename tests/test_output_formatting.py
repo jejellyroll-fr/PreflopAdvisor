@@ -114,4 +114,29 @@ def test_real_results_render_without_error(frame, hu_tree, tree_configs):
                 for action, frequency, ev in frame.preprocess_results(cell["Results"]):
                     assert isinstance(action, str)
                     float(frequency)
-                    float(ev)
+                    if ev is not None:
+                        float(ev)
+
+
+def test_an_absent_ev_survives_the_display_pipeline(raw_frame):
+    """The tile shows a dash; converting to big blinds must not crash on it."""
+    from preflop_advisor.outputframe import EV_ABSENT, format_ev
+
+    formatted = raw_frame.preprocess_results([["Raise100", 0.5, None], ["Call", 0.5, -100.0]])
+
+    assert formatted[0][2] is None
+    assert format_ev(formatted[0][2]) == EV_ABSENT
+    assert formatted[1][2] == "-0.05"
+
+
+def test_an_absent_ev_reads_as_absent_rather_than_zero():
+    """Monker omits the EV for a hand the board makes impossible.
+
+    "+0.00" would claim a figure it never gave, and the tile would sit alongside
+    genuinely break-even actions.
+    """
+    from preflop_advisor.outputframe import EV_ABSENT, format_ev
+
+    assert format_ev(None) == EV_ABSENT
+    assert format_ev(0.0) == "+0.00"
+    assert format_ev(-1.5) == "-1.50"

@@ -80,8 +80,15 @@ def short_action_label(action: str) -> str:
     return key
 
 
-def format_ev(ev: str | float) -> str:
+#: Shown where an EV is absent rather than zero — Monker omits it for a hand the
+#: board makes impossible, and "+0.00" would claim a figure it never gave.
+EV_ABSENT = "–"
+
+
+def format_ev(ev: str | float | None) -> str:
     """Signs an EV figure so gain and loss are told apart at a glance, not by a glyph."""
+    if ev is None:
+        return EV_ABSENT
     try:
         value = float(ev)
     except (TypeError, ValueError):
@@ -125,7 +132,7 @@ class ActionTile(QWidget):
             return ""
         return f"{self.action_label.text()} {self.frequency_label.text()} {self.ev_label.text()}"
 
-    def set_action(self, action: str, frequency: str, ev: str, selected: bool = False) -> None:
+    def set_action(self, action: str, frequency: str, ev: str | None, selected: bool = False) -> None:
         self.action = action
         self.action_label.setText(short_action_label(action))
         self.frequency_label.setText(f"{frequency}%")
@@ -571,7 +578,11 @@ class OutputFrame(QWidget):
         adjust = str(self.output_configs.get("AdjustFoldEV", "no")).strip().lower() == "yes"
         fold_ev = 0.0
         if adjust:
-            fold_ev = next((entry[2] for entry in results if entry[0] == "Fold"), 0.0)
+            # An absent fold EV is an unknown baseline, not zero.
+            fold_ev = next(
+                (entry[2] for entry in results if entry[0] == "Fold" and entry[2] is not None),
+                0.0,
+            )
 
         chips_per_bb = float(self.output_configs.get("ChipsPerBB", CHIPS_PER_BB))
         displayed = [entry for entry in results if entry[0] != "Fold"]
@@ -582,11 +593,13 @@ class OutputFrame(QWidget):
                 MAX_DISPLAYED_ACTIONS,
             )
 
+        def in_big_blinds(ev: float | None) -> str | None:
+            """The EV in big blinds, or ``None`` where it is absent: the tile shows a dash."""
+            if ev is None:
+                return None
+            return f"{(ev - fold_ev) / chips_per_bb:.2f}"
+
         return [
-            [
-                action,
-                f"{frequency * 100:.0f}",
-                f"{(ev - fold_ev) / chips_per_bb:.2f}",
-            ]
+            [action, f"{frequency * 100:.0f}", in_big_blinds(ev)]
             for action, frequency, ev in displayed[:MAX_DISPLAYED_ACTIONS]
         ]
