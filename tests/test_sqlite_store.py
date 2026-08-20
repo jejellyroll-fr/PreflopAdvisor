@@ -463,8 +463,8 @@ def tree_with_missing_ev(tmp_path):
     folder.mkdir()
     (folder / "0.rng").write_text(
         f"{REFERENCE_HAND_MONKER}\n0.25;-100.0\n"
-        "AAAA\n0.5\n"          # no separator at all
-        "AAA2\n0.75;\n"        # separator, empty EV
+        "AAAA\n0.5\n"  # no separator at all
+        "AAA2\n0.75;\n"  # separator, empty EV
         "AAA3\n1.0;4000.0\n"
     )
     return str(folder)

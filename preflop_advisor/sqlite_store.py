@@ -181,7 +181,7 @@ def tree_fingerprint(folder: str, ending: str) -> str:
     return f"{len(files)}:{digest.hexdigest()}"
 
 
-def parse_range_file(path: str) -> Iterator[tuple[str, float, float]]:
+def parse_range_file(path: str) -> Iterator[tuple[str, float, float | None]]:
     """Yield ``(hand, frequency, ev)`` from a range file; ``ev`` may be ``None``.
 
     Tolerant of a header and of stray lines: a line that does not read as values is a

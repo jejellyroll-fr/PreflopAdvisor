@@ -86,6 +86,27 @@ def test_an_action_the_node_does_not_have_is_refused():
         grade(MIXED, "All_In", CHIPS_PER_BB)
 
 
+def test_a_node_without_evs_cannot_be_graded():
+    """Monker omits the EV for a hand the board makes impossible.
+
+    Without an EV there is no best action to measure against, so the node is refused
+    rather than scored as though everything were worth nothing.
+    """
+    ungraded = [["Raise100", 0.5, None], ["Call", 0.5, None]]
+
+    with pytest.raises(ValueError):
+        grade(ungraded, "Call", CHIPS_PER_BB)
+
+
+def test_an_action_without_an_ev_cannot_be_scored():
+    """A mixed node where only one entry lost its EV: that answer has no cost."""
+    mixed = [["Raise100", 0.5, 500.0], ["Call", 0.5, None]]
+
+    with pytest.raises(ValueError):
+        grade(mixed, "Call", CHIPS_PER_BB)
+    assert grade(mixed, "Raise100", CHIPS_PER_BB).correct
+
+
 # --------------------------------------------------------------------------------------
 # Dealing and spots
 # --------------------------------------------------------------------------------------

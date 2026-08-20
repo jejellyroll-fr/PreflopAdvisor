@@ -58,7 +58,8 @@ def test_result_cells_carry_a_list_of_triples(hu_tree, tree_configs, position):
             action, frequency, ev = entry
             assert isinstance(action, str)
             assert isinstance(frequency, float)
-            assert isinstance(ev, float)
+            # EV may be None: Monker omits it for a hand the board makes impossible.
+            assert ev is None or isinstance(ev, float)
 
 
 @pytest.mark.parametrize("position", HU_VIEWS)
