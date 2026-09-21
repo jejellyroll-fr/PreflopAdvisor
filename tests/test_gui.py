@@ -5,6 +5,8 @@ exactly where the interesting regressions live. These tests click real buttons w
 ``qtbot`` and assert on emitted signals.
 """
 
+import json
+
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShowEvent
@@ -579,7 +581,7 @@ def test_showing_the_window_trims_it(qtbot, main_window):
 def test_the_window_offers_the_advisor_the_trainer_and_the_explorer(main_window):
     tabs = [main_window.tabs.tabText(index) for index in range(main_window.tabs.count())]
 
-    assert tabs == ["Advisor", "Trainer", "Explorer", "Configuration"]
+    assert tabs == ["Advisor", "Trainer", "Explorer", "Review Hands", "Configuration"]
 
 
 def test_dealing_asks_a_spot_the_selected_tree_can_answer(main_window):
@@ -1466,3 +1468,177 @@ def test_a_cancelled_import_changes_nothing(main_window, monkeypatch):
     main_window.import_simulation()
 
     assert main_window.tree_selector.get_tree_infos() == before
+
+
+# --------------------------------------------------------------------------------------
+# Review Hands
+
+
+#: A heads-up table the review can be matched against: the small blind's open, and the big
+#: blind's answer to it.
+REVIEW_TABLE = (
+    "Line,Hero,Hand,Action,Freq,EV (bb),Pot\n"
+    ",SB,AhKs4h3s,raise 75%,60,1.2,1.5\n"
+    ",SB,AhKs4h3s,call,30,1.1,1.5\n"
+    ",SB,AhKs4h3s,fold,10,-0.5,1.5\n"
+    "SB:raise 75%,BB,AhKs4h3s,raise 2.5bb,40,0.9,4.0\n"
+    "SB:raise 75%,BB,AhKs4h3s,call,60,0.8,4.0\n"
+)
+
+
+def reviewed_hand(**fields):
+    """One played hand, as the fpdb-3 side of the integration would hand it over."""
+    entry = {
+        "hand_id": "h1",
+        "played_at": "2024-05-01 20:15",
+        "hero": "SB",
+        "hero_cards": REFERENCE_HAND,
+        "game": "PLO",
+        "table_size": 2,
+        "effective_stack_bb": 100.0,
+        "seats": ["SB", "BB"],
+        "actions": [{"seat": "SB", "action": "Fold"}],
+    }
+    entry.update(fields)
+    return entry
+
+
+@pytest.fixture
+def review(main_window, tmp_path):
+    """The window's Review tab, over a simulation and a document of this test's own.
+
+    The tree source is replaced rather than configured: a review compares against every
+    configured simulation at once, and what this test is about is the loop from a loaded
+    document to a session -- not the configuration file's contents.
+    """
+    (tmp_path / "solution.csv").write_text(REVIEW_TABLE, encoding="utf-8")
+    path = tmp_path / "review.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "hands": [
+                    reviewed_hand(hand_id="folded"),
+                    reviewed_hand(
+                        hand_id="called",
+                        hero="BB",
+                        actions=[
+                            {"seat": "SB", "action": "Raise", "to_bb": 2.5},
+                            {"seat": "BB", "action": "Call"},
+                        ],
+                    ),
+                    reviewed_hand(
+                        hand_id="unsized",
+                        actions=[{"seat": "SB", "action": "Raise", "to_bb": 8.0}],
+                    ),
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    panel = main_window.review
+    panel.trees_source = lambda: [
+        {
+            "plrs": 2,
+            "bb": 100,
+            "game": "PLO",
+            "folder": str(tmp_path),
+            "infos": "a table",
+            "ante": 0.0,
+            "kind": "csv",
+            "columns": {},
+        }
+    ]
+    panel.load(str(path))
+    return panel
+
+
+def test_loading_a_review_lists_the_decisions_worst_first(review):
+    shown = review.shown()
+
+    assert [entry.decision.hand.hand_id for entry in shown] == ["folded", "called", "unsized"]
+    assert shown[0].ev_loss_bb == pytest.approx(1.7)
+    assert shown[2].ev_loss_bb is None, "an unsized raise is not priced, and is not ranked as if it were"
+    assert review.table.rowCount() == 3
+    assert review.table.isSortingEnabled() is False, "Qt must not reorder the rows behind shown()"
+
+
+def test_the_review_says_why_a_decision_did_not_match(review):
+    unsized = next(entry for entry in review.shown() if entry.decision.hand.hand_id == "unsized")
+
+    assert "no raise to 8bb" in unsized.match.note
+
+
+def test_the_review_filters_by_status_position_and_loss(review):
+    review.status_choice.setCurrentIndex(review.status_choice.findData("unsupported"))
+    assert [entry.decision.hand.hand_id for entry in review.shown()] == ["unsized"]
+
+    review.status_choice.setCurrentIndex(review.status_choice.findData("any"))
+    review.seat_choice.setCurrentIndex(review.seat_choice.findData("BB"))
+    assert [entry.decision.hand.hand_id for entry in review.shown()] == ["called"]
+
+    review.seat_choice.setCurrentIndex(0)
+    review.loss_filter.setValue(1.0)
+    assert [entry.decision.hand.hand_id for entry in review.shown()] == ["folded"]
+
+
+def test_the_review_offers_the_lines_and_simulations_it_holds(review):
+    families = [review.family_choice.itemText(index) for index in range(review.family_choice.count())]
+
+    assert "Any line" in families
+    assert "open" in families, "the root decision is an open, from the hero's side of it"
+    assert review.simulation_choice.count() == 2, "any simulation, and the one that matched"
+
+
+def test_training_a_selected_spot_sends_its_node_to_the_trainer(review):
+    review.table.selectRow(0)
+
+    review.train_selected()
+
+    trainer = review.window().trainer
+    assert review.window().tabs.currentWidget() is trainer
+    assert trainer.pinned_spot is not None
+    assert (trainer.pinned_spot.hero, list(trainer.pinned_spot.line)) == ("SB", []), "the root decision"
+    assert trainer.question is not None
+
+
+def test_train_my_mistakes_starts_one_session_over_the_worst_decisions(review):
+    review.train_mistakes()
+
+    trainer = review.window().trainer
+    assert review.window().tabs.currentWidget() is trainer
+    assert sorted(spot.hero for spot in trainer.session_spots) == ["BB", "SB"], "both mistakes are queued"
+    assert trainer.question is not None
+    assert trainer.question.spot.hero == "SB", "the 1.7bb mistake is asked before the 0.1bb one"
+    assert trainer.question.spot.line == [], "and it is the root node, not the real hand"
+
+
+def test_an_answer_drilled_for_a_reviewed_hand_keeps_the_link(review):
+    """The reviewed hand stays attached to what it produced, which is the traceability part."""
+    window = review.window()
+    review.table.selectRow(0)
+    review.train_selected()
+
+    question = window.trainer.question
+    window.trainer.answer(question.actions()[0])
+
+    stored = window.history.answers()
+    assert stored[-1].source == "folded", "the hand the session was started from"
+
+
+def test_a_review_with_nothing_worth_retraining_says_so(review):
+    review.loss_filter.setValue(5.0)
+
+    review.train_mistakes()
+
+    assert "nothing to retrain" in review.problems.text()
+
+
+def test_an_unreadable_document_is_reported_rather_than_raised(review, tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("{}", encoding="utf-8")
+
+    review.load(str(bad))
+
+    assert review.review is None
+    assert "could not be read" in review.heading.text()

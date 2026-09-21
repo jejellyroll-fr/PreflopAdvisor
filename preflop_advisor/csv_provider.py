@@ -48,10 +48,10 @@ from .csv_format import (
     CsvRow,
     RowProblem,
     detect_columns,
-    hand_key_of,
     read_rows,
 )
 from .errors import CsvImportError, RangeFolderNotFound
+from .hand_convert_helper import hand_key_of
 from .paths import resolve_range_folder
 from .settings import ConfigSource, normalize, seats_for
 from .sizings import Sizing
@@ -513,9 +513,13 @@ class CsvIndex:
         Read from the table of actions rather than from the names, because a table that
         declares its sizings in a column may name them anything: ``Open`` is a pot raise if
         its row said so, and a name alone would have made it unknown.
+
+        Keyed in lower case, which is the one spelling both sides of the model agree on: an
+        action keeps the case it was written in inside a line of play, and the table drawn
+        from that line looks its sizing up by the lower-cased name.
         """
         return {
-            row["name"]: Sizing(row["sizing_kind"], row["sizing_value"])
+            str(row["name"]).lower(): Sizing(row["sizing_kind"], row["sizing_value"])
             for row in self.connection.execute("SELECT name, sizing_kind, sizing_value FROM actions ORDER BY name")
         }
 

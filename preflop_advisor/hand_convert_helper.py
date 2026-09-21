@@ -272,6 +272,44 @@ def sort_omaha5_hand(hand: str) -> str:
     logger.error(f"convert error! {hand}")
 
 
+def looks_like_cards(text: str) -> bool:
+    """Whether a hand column holds dealt cards (``AhKs4h3s``) rather than a key (``(3K)(4A)``).
+
+    The two are told apart by shape and not by length: ``KA23`` is four ranks and no suits,
+    which is a hand *class*, while ``KhAh2s3s`` is the same class spelled as four cards.
+    Reading a class as cards would convert it into another class entirely -- ``KA23`` becomes
+    the hold'em hand ``K2o`` -- so the check is that every second character is a suit and
+    every other one a rank.
+    """
+    if len(text) not in (4, 8, 10) or len(text) % 2:
+        return False
+    return all(text[index] in RANKS for index in range(0, len(text), 2)) and all(
+        text[index] in SUITS for index in range(1, len(text), 2)
+    )
+
+
+def hand_key_of(text: object) -> str:
+    """The canonical key of a hand, whichever way a source spelled it.
+
+    ``AhKs4h3s`` and ``(3K)(4A)`` are one key, as they are to every reader. A source that
+    already holds keys is left alone -- including the ones that look like cards to a
+    converter -- and a hand nothing can read is kept as written, because a hand that cannot be
+    classified is still the hand the row was about.
+    """
+    hand = str(text).strip()
+    if not hand:
+        return hand
+    if looks_like_cards(hand):
+        try:
+            hand = convert_hand(hand)
+        except (AttributeError, IndexError, KeyError, ValueError):
+            logger.debug("Keeping %r as written: it cannot be read as cards", text)
+    try:
+        return normalize_monker_hand(hand)
+    except (AttributeError, IndexError, KeyError, ValueError):
+        return hand
+
+
 def normalize_monker_hand(hand: str) -> str:
     """
     Maps a stored hand string to the ordering ``convert_hand`` produces.

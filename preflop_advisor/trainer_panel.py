@@ -9,7 +9,7 @@ answer.
 import logging
 import random
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -105,6 +105,11 @@ class TrainerPanel(QWidget):
         self._filling_filters = False
         #: How the next question is chosen out of what the filters leave.
         self.sampling = sampler.MODES[0]
+        #: The reviewed hand this session was started from, when it was started from one.
+        self.source = ""
+        #: The decisions a session made of several nodes works through, in order. Empty for
+        #: every ordinary session, where the spots come from the catalogue and the filter.
+        self.session_spots: list[Spot] = []
 
         # What the table is worth, replaced by whichever tree the next hand comes from.
         # Held from the start rather than only once a hand has been dealt: a panel whose
@@ -261,16 +266,39 @@ class TrainerPanel(QWidget):
         """
         return 1 if self.sampling == "random" else sampler.DEFAULT_POOL
 
-    def train_spot(self, spot: Spot) -> None:
-        """Drill one exact decision, asked for from the node explorer.
+    def train_spot(self, spot: Spot, source: str = "") -> None:
+        """Drill one exact decision, asked for from the node explorer or a reviewed hand.
 
         The spot carries the node's own line of play, already explicit, so the provider
-        resolves it to the decision the explorer showed -- and dealing again asks that
-        node another hand, which is the point of drilling it. The filter records the same
+        resolves it to the decision that was shown -- and dealing again asks that node
+        another hand, which is the point of drilling it: the real hand the mistake was made
+        with is one instance of the decision, not the decision. The filter records the same
         line, so a session pinned to a node says so if it ever finds nothing.
+
+        :param source: The reviewed hand the session was started from, kept with every
+            answer it produces, so what a real mistake cost can be read back later.
         """
         self.pinned_spot = spot
+        self.session_spots = []
+        self.source = source
         self.filter = replace(self.filter, exact_line=tuple(spot.line))
+        self.next_hand()
+
+    def train_spots(self, spots: Sequence[Spot], source: str = "") -> None:
+        """Drill several decisions in turn -- what "train my mistakes" asks for.
+
+        Deliberately not a second trainer: the queue only decides *which* decision the next
+        hand is asked about, and every deal behind it is the pinned-spot path that already
+        exists. Each spot is asked once per pass and then put back at the end of the queue,
+        so a session of five mistakes keeps working on the five rather than exhausting them.
+
+        The filter keeps no exact line: the queue is what narrows the session, and a filter
+        pinned to one node would refuse the other four.
+        """
+        self.session_spots = list(spots)
+        self.pinned_spot = None
+        self.source = source
+        self.filter = replace(self.filter, exact_line=(), mixed_only=False, min_frequency=0.0)
         self.next_hand()
 
     # ------------------------------------------------------------------
@@ -337,6 +365,10 @@ class TrainerPanel(QWidget):
         if self._filling_choice or self.pinned_spot is None:
             return
         self.pinned_spot = None
+        self.session_spots = []
+        # Nothing is being drilled *for* any more: the session is the user's own choice, and
+        # a reviewed hand left attached would claim the answers came from it.
+        self.source = ""
         self.filter = replace(self.filter, exact_line=())
         self.show_filter()
 
@@ -402,6 +434,10 @@ class TrainerPanel(QWidget):
         if self.pinned_spot is not None:
             # One decision, asked for by name: there is nothing to shuffle it against.
             spots = [self.pinned_spot]
+        elif self.session_spots:
+            # The next decision of a session of several, rotated so the pass repeats.
+            spots = [self.session_spots.pop(0)]
+            self.session_spots.append(spots[0])
         else:
             spots = self.chosen_spots(list(metadata.seats))
             self.rng.shuffle(spots)
@@ -630,6 +666,7 @@ class TrainerPanel(QWidget):
                     pot=question.table.pot if question.table else None,
                     game=self.game,
                     chips_per_bb=self.chips_per_bb,
+                    source=self.source,
                 )
             )
         except (sqlite3.Error, ValueError) as error:

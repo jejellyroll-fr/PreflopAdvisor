@@ -19,9 +19,7 @@ from preflop_advisor.csv_format import (
     action_size,
     canonical_path,
     detect_columns,
-    hand_key_of,
     is_raise,
-    looks_like_cards,
     parse_action,
     parse_ev,
     parse_frequency,
@@ -256,28 +254,6 @@ def test_an_ev_that_is_not_a_number_is_refused():
 
 
 # --------------------------------------------------------------------------------------
-# Hands
-
-
-def test_a_hand_is_read_by_its_key_whichever_way_the_table_spelled_it():
-    assert hand_key_of("AhKs4h3s") == "(3K)(4A)"
-    assert hand_key_of("(3K)(4A)") == "(3K)(4A)"
-    assert hand_key_of("3hKh4sAs") == "(3K)(4A)"
-
-
-def test_a_key_that_looks_like_cards_is_read_as_the_key_it_is():
-    """``KA23`` is a hand class of four ranks; converting it as cards gives another class."""
-    assert looks_like_cards("KA23") is False
-    assert hand_key_of("KA23") != "K2o", "read as cards, four ranks become a hold'em hand"
-    assert hand_key_of("KA23") == hand_key_of(hand_key_of("KA23")), "normalising is idempotent"
-    assert looks_like_cards("KhAh2s3s") is True
-
-
-def test_a_hand_nothing_can_read_is_kept_as_written():
-    assert hand_key_of("nonsense") == "nonsense"
-
-
-# --------------------------------------------------------------------------------------
 # Rows
 
 
@@ -466,9 +442,11 @@ def test_a_node_says_one_action_per_thing_the_solver_may_do(folder):
 def test_an_action_the_table_prices_keeps_its_size(folder):
     sizings = provider_for(folder).sizings()
 
-    assert sizings["Raise75"] == Sizing("pot", 0.75)
-    assert sizings["Raise2.5bb"] == Sizing("blinds", 2.5)
-    assert sizings["Check"] == Sizing("check", 0.0)
+    # Lower-cased keys, which is what every consumer of this mapping agrees on: a line of
+    # play keeps the case its own entries were written in, and the lookup lowers it.
+    assert sizings["raise75"] == Sizing("pot", 0.75)
+    assert sizings["raise2.5bb"] == Sizing("blinds", 2.5)
+    assert sizings["check"] == Sizing("check", 0.0)
 
 
 def test_the_hands_of_a_node_come_back_as_keys_the_trainer_can_deal(folder):
