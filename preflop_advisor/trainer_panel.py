@@ -8,6 +8,7 @@ answer.
 
 import logging
 import random
+import sqlite3
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -29,12 +30,14 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .errors import PreflopAdvisorError
+from .history import TrainingAnswer, TrainingHistory
+from .history_dialog import HistoryDialog
 from .outputframe import CHIPS_PER_BB, ActionTile, short_action_label
 from .settings import ConfigSource, get
 from .sizings import Sizing
 from .strategy import StrategyProvider, StrategyResult, node_for, provider_for
 from .table_state import table_state
-from .trainer import Question, Session, Spot, deal, grade, hand_for_key
+from .trainer import Question, Session, Spot, Verdict, deal, grade, hand_for_key
 from .trainer_filters import FilterOptions, TrainerFilter, filtered_spots
 from .trainer_table import TrainerTable
 from .types import ActionSequence
@@ -69,6 +72,7 @@ class TrainerPanel(QWidget):
         tree_source: Callable[[], dict[str, Any] | None],
         tree_reader_configs: ConfigSource,
         output_configs: ConfigSource,
+        history: TrainingHistory | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -80,6 +84,14 @@ class TrainerPanel(QWidget):
         self.session = Session()
         self.question: Question | None = None
         self.rng = random.Random()
+        #: Where an answer is written down, when the application has somewhere to keep it.
+        #: ``None`` on a machine whose configuration directory is not writable, in which
+        #: case the trainer remembers nothing and behaves exactly as it did before.
+        self.history = history
+        #: Which simulation the last hand came from, as the history records it. Read off
+        #: the tree being drilled, so an answer is filed under what it was answered on.
+        self.simulation = ""
+        self.simulation_id = ""
         #: One decision to drill, when the Explorer asked for it. Set instead of the
         #: catalogue, and dropped as soon as the user picks a situation for themselves.
         self.pinned_spot: Spot | None = None
@@ -168,11 +180,19 @@ class TrainerPanel(QWidget):
         self.verdict_label.setFont(QFont(theme.FONT_FAMILY, 14, QFont.Weight.Bold))
         layout.addWidget(self.verdict_label)
 
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.history_button = QPushButton("History...")
+        self.history_button.setToolTip("What has been answered so far, and what it cost.")
+        self.history_button.setMinimumHeight(38)
+        self.history_button.clicked.connect(self.show_history)
+        actions.addWidget(self.history_button)
         self.next_button = QPushButton("Deal a hand")
         self.next_button.setStyleSheet(theme.position_button_qss(selected=True, font_size=14))
         self.next_button.setMinimumHeight(38)
         self.next_button.clicked.connect(self.next_hand)
-        layout.addWidget(self.next_button)
+        actions.addWidget(self.next_button, stretch=1)
+        layout.addLayout(actions)
 
         self.stats = QGridLayout()
         layout.addLayout(self.stats)
@@ -348,6 +368,7 @@ class TrainerPanel(QWidget):
         """
         provider = provider_for(tree, self.tree_reader_configs)
         metadata = provider.metadata()
+        self.note_simulation(tree)
         cards = CARDS_PER_GAME.get(metadata.game.upper(), 4)
         self.offer_spots(list(metadata.seats))
         self.game = metadata.game
@@ -522,6 +543,55 @@ class TrainerPanel(QWidget):
     # Answering
     # ------------------------------------------------------------------
 
+    def note_simulation(self, tree: dict[str, Any]) -> None:
+        """Remember what the hands being drilled come from, for the history to file them under.
+
+        Two names, because they answer two questions: the folder spells out what was read,
+        and the configuration key survives the folder moving elsewhere.
+        """
+        self.simulation = str(tree.get("folder") or tree.get("name") or "")
+        self.simulation_id = str(tree.get("table_key") or self.simulation)
+
+    def remember(self, question: Question, verdict: Verdict) -> None:
+        """Write an answer down, when the application has a history to write it in.
+
+        A failed write is logged and nothing more: the answer was graded before this was
+        attempted, and an unwritable history must not turn a graded hand into a crashed
+        one. Every field here is what the grader saw, so a report months later needs no
+        strategy payload kept beside it to say what the loss was.
+        """
+        if self.history is None:
+            return
+        evs = {result.action: result.ev for result in question.results}
+        try:
+            self.history.record(
+                TrainingAnswer(
+                    hero=question.spot.hero,
+                    line=list(question.spot.line),
+                    hand=question.hand,
+                    chosen=verdict.chosen,
+                    best=verdict.best,
+                    ev_loss=verdict.loss,
+                    verdict=verdict.label,
+                    simulation=self.simulation,
+                    simulation_id=self.simulation_id,
+                    chosen_ev=evs.get(verdict.chosen),
+                    best_ev=evs.get(verdict.best),
+                    pot=question.table.pot if question.table else None,
+                    game=self.game,
+                    chips_per_bb=self.chips_per_bb,
+                )
+            )
+        except (sqlite3.Error, ValueError) as error:
+            logger.warning("Could not remember the answer: %s", error)
+
+    def show_history(self) -> None:
+        """Open the review of what has been answered, if there is a history to review."""
+        if self.history is None:
+            self.verdict_label.setText("No training history is being kept.")
+            return
+        HistoryDialog(self.history, self).exec()
+
     def answer(self, action: str) -> None:
         """Grade the answer, show the whole strategy, and add it to the tally."""
         question = self.question
@@ -533,6 +603,7 @@ class TrainerPanel(QWidget):
         # from how many actions preceded, which made "EV lost / pot" a ratio of a real
         # number to an invented one.
         self.session.record(verdict, question.table.pot if question.table else None)
+        self.remember(question, verdict)
 
         for button in self.buttons:
             button.setEnabled(False)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
+import sqlite3
 from typing import Any
 
 from PySide6.QtCore import QByteArray, QRect, QSettings, Qt
@@ -24,9 +25,10 @@ from PySide6.QtWidgets import (
 
 from . import sqlite_store
 from .card_selector import CardSelector
-from .config_store import LayeredConfig
+from .config_store import LayeredConfig, user_config_path
 from .config_tab import ConfigTab
 from .errors import PreflopAdvisorError
+from .history import TrainingHistory, default_path
 from .import_dialog import ImportWizard
 from .node_explorer_panel import NodeExplorerPanel
 from .outputframe import OutputFrame
@@ -102,9 +104,19 @@ def build_progress(folder: str, total: int) -> DatabaseProgress:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, history_path: str | None = None) -> None:
+        """Build the window.
+
+        :param history_path: Where to keep the training history. Left out, it is opened
+            beside the user's configuration, which is where a history belongs to whoever
+            is training rather than to any one simulation. Given, it is used as it is --
+            which is how a test, or a second profile, keeps its answers to itself.
+        """
         super().__init__()
         self.configs = LayeredConfig(package_file("config.ini"))
+        #: What has been answered on this machine, or ``None`` when there is nowhere to
+        #: keep it. Opened before any tab exists, because the trainer is handed it.
+        self.history = self.open_history(history_path)
 
         self.setWindowTitle("Preflop Advisor based on Monker")
 
@@ -193,6 +205,7 @@ class MainWindow(QMainWindow):
             self.tree_selector.get_tree_infos,
             tree_reader_settings,
             output_settings,
+            history=self.history,
         )
 
         # The explorer walks the same tree the trainer drills: it reads a node, and asks
@@ -223,6 +236,23 @@ class MainWindow(QMainWindow):
         # Every component exists: allow refreshes and render the default selection.
         self._ready = True
         self.update_output_frame()
+
+    def open_history(self, path: str | None = None) -> TrainingHistory | None:
+        """Open the training history, or run without one.
+
+        A configuration directory that cannot be written, a database left by a newer
+        build: neither is a reason to refuse to start. The trainer then remembers nothing,
+        which is exactly what it did before there was a history at all, and nothing in the
+        session depends on it.
+        """
+        history = TrainingHistory(path or default_path(user_config_path().parent))
+        try:
+            history.open()
+        except (OSError, sqlite3.Error) as error:
+            logger.warning("No training history at %s (%s); answers will not be remembered", history.path, error)
+            return None
+        logger.info("Training history open: %s", history.path)
+        return history
 
     @staticmethod
     def section_label(text: str, size: int = 14, bold: bool = False) -> QLabel:
@@ -460,6 +490,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.save_layout()
+        # Closed rather than left to the process: an answer written as the window goes
+        # away would otherwise be lost with the interpreter, and the connection is ours.
+        if self.history is not None:
+            self.history.close()
         super().closeEvent(event)
 
     def report_error(self, message: str) -> None:
