@@ -506,6 +506,19 @@ class TrainingHistory:
         top every time. ``min_hands`` is the floor that says how many answers make a
         grouping worth ranking at all.
         """
+        ranked = [entry for entry in self.tally(by, filters).values() if entry.hands >= min_hands]
+        ranked.sort(key=lambda entry: (-entry.per_hand, entry.key))
+        return ranked[:limit]
+
+    def tally(self, by: str = "node", filters: HistoryFilter | None = None) -> dict[str, Weakness]:
+        """Every grouping's record, keyed by the grouping itself.
+
+        What :meth:`weaknesses` ranks the top of, returned whole and keyed, because the
+        sampler weighs *every* candidate against what its node cost before rather than
+        against the ten worst. Bounded by how many distinct groupings have been answered,
+        which is what the user's own history is. The one query both read, so a grouping
+        cannot mean one thing in the ranking and another in the weighting.
+        """
         if by not in GROUPINGS:
             raise ValueError(f"{by!r} is not one of {', '.join(GROUPINGS)}")
         grouping = GROUPINGS[by]
@@ -520,15 +533,13 @@ class TrainingHistory:
             FROM answers a {join}
             WHERE {where} AND {grouping} IS NOT NULL
             GROUP BY key
-            HAVING COUNT(*) >= ?
-            ORDER BY ev_loss / COUNT(*) DESC, key ASC
-            LIMIT ?
             """,
-            [*parameters, min_hands, limit],
+            parameters,
         )
-        return [
-            Weakness(key=row["key"], hands=row["hands"], ev_loss=row["ev_loss"], correct=row["correct"]) for row in rows
-        ]
+        return {
+            row["key"]: Weakness(key=row["key"], hands=row["hands"], ev_loss=row["ev_loss"], correct=row["correct"])
+            for row in rows
+        }
 
     def trend(
         self,

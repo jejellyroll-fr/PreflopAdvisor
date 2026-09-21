@@ -9,7 +9,7 @@ answer.
 import logging
 import random
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from typing import Any
 
@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import theme
+from . import sampler, theme
 from .errors import PreflopAdvisorError
 from .history import TrainingAnswer, TrainingHistory
 from .history_dialog import HistoryDialog
@@ -103,6 +103,8 @@ class TrainerPanel(QWidget):
         #: What the bar was last filled with, so it is only rebuilt when it changed.
         self._filter_options: FilterOptions | None = None
         self._filling_filters = False
+        #: How the next question is chosen out of what the filters leave.
+        self.sampling = sampler.MODES[0]
 
         # What the table is worth, replaced by whichever tree the next hand comes from.
         # Held from the start rather than only once a hand has been dealt: a panel whose
@@ -127,6 +129,16 @@ class TrainerPanel(QWidget):
         self.spot_choice.currentTextChanged.connect(self.on_spot_choice_changed)
         chooser.addWidget(self.spot_choice)
         chooser.addStretch(1)
+        chooser.addWidget(QLabel("Sampling:"))
+        self.sampling_choice = QComboBox()
+        for mode in sampler.MODES:
+            self.sampling_choice.addItem(sampler.MODE_LABELS[mode], mode)
+        self.sampling_choice.setToolTip(
+            "Random draws whatever comes; the other modes weigh the candidates by how close\n"
+            "the decision is, how mixed it is, or what the history says about it."
+        )
+        self.sampling_choice.currentIndexChanged.connect(self.on_sampling_changed)
+        chooser.addWidget(self.sampling_choice)
         layout.addLayout(chooser)
 
         filters = QHBoxLayout()
@@ -234,6 +246,20 @@ class TrainerPanel(QWidget):
             logger.debug("No situations to offer: %s", error)
             return
         self.offer_spots(list(provider.metadata().seats))
+
+    def on_sampling_changed(self, _index: int) -> None:
+        """Read the chosen mode. The next deal already uses it."""
+        self.sampling = self.sampling_choice.currentData() or sampler.MODES[0]
+
+    def pool_size(self) -> int:
+        """How many candidates to gather before choosing one.
+
+        The random mode takes the first question it finds -- exactly what the trainer
+        always did, and the cheapest thing to do. A mode that weighs candidates has to see
+        more than one, and the pool is what bounds that: one look per candidate, never one
+        per spot in the catalogue.
+        """
+        return 1 if self.sampling == "random" else sampler.DEFAULT_POOL
 
     def train_spot(self, spot: Spot) -> None:
         """Drill one exact decision, asked for from the node explorer.
@@ -385,12 +411,36 @@ class TrainerPanel(QWidget):
         self.game = metadata.game
         self.ante = metadata.ante_bb
         self.seats = list(metadata.seats)
+        pool = list(self.candidates(provider, spots, cards, self.pool_size()))
+        if not pool:
+            logger.warning("No spot of %s answered", tree.get("folder"))
+            return None
+        return sampler.pick(pool, self.sampling, self.chips_per_bb, self.track_record(), self.rng)
+
+    def candidates(self, provider: StrategyProvider, spots: list[Spot], cards: int, limit: int) -> Iterator[Question]:
+        """Up to ``limit`` questions this table can answer, every spot walked once.
+
+        A generator on purpose: the pool is filled as far as the mode needs and no further,
+        so a difficulty-aware mode costs a handful of node reads rather than one per spot
+        in the catalogue.
+        """
         for spot in spots:
             question = self.candidate(provider, spot, cards)
-            if question is not None:
-                return question
-        logger.warning("No spot of %s answered", tree.get("folder"))
-        return None
+            if question is None:
+                continue
+            yield question
+            limit -= 1
+            if limit <= 0:
+                return
+
+    def track_record(self) -> sampler.TrackRecord | None:
+        """What the history says about the spots being sampled.
+
+        Read once per deal rather than cached: the answer just given changes it, and the
+        query is one indexed GROUP BY. ``None`` when there is no history, which the modes
+        that weigh it read as "nothing known" and sample at random.
+        """
+        return sampler.TrackRecord.of(self.history)
 
     def candidate(self, provider: StrategyProvider, spot: Spot, cards: int) -> Question | None:
         """A question this spot can answer, or ``None`` when the filters leave it nothing.
