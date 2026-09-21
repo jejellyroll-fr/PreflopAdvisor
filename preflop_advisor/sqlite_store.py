@@ -181,13 +181,18 @@ def tree_fingerprint(folder: str, ending: str) -> str:
     return f"{len(files)}:{digest.hexdigest()}"
 
 
-def parse_range_file(path: str) -> Iterator[tuple[str, float, float | None]]:
+def parse_range_file(path: str, normalize: bool = True) -> Iterator[tuple[str, float, float | None]]:
     """Yield ``(hand, frequency, ev)`` from a range file; ``ev`` may be ``None``.
 
     Tolerant of a header and of stray lines: a line that does not read as values is a
     pending hand, the next one that does is its values, and anything that never pairs up
     is skipped. Hands are stored canonically, so a Monker 2 export is queried like any
     other.
+
+    :param normalize: ``True`` (the default) hands back the canonical key the reader
+        looks up. ``False`` hands back the key as the file spells it, which is the only
+        way to ask whether a file *needed* normalising -- telling a Monker 2 export from
+        a Monker 1 one is a question about exactly the spelling normalisation erases.
     """
     with open(path, "r", encoding="utf-8") as handle:
         pending = None
@@ -208,10 +213,13 @@ def parse_range_file(path: str) -> Iterator[tuple[str, float, float | None]]:
                 pending = line
                 continue
             frequency, ev = values
-            try:
-                yield normalize_monker_hand(pending), frequency, ev
-            except (AttributeError, IndexError, KeyError):
-                logger.debug("Skipping unreadable hand %r in %s", pending, path)
+            if not normalize:
+                yield pending, frequency, ev
+            else:
+                try:
+                    yield normalize_monker_hand(pending), frequency, ev
+                except (AttributeError, IndexError, KeyError):
+                    logger.debug("Skipping unreadable hand %r in %s", pending, path)
             pending = None
 
 

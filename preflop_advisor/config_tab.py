@@ -15,7 +15,6 @@ file, which is why the preset keeps its comments and its sample trees.
 """
 
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -45,26 +44,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .config_store import LayeredConfig
+from .config_store import LayeredConfig, next_table_key
 from .paths import inspect_range_folder, resolve_range_folder, validate_tree
 from .sizings import sizing_for_code
 from .theme import ACCENT, EV_NEGATIVE, EV_POSITIVE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY
 
 logger = logging.getLogger(__name__)
-
-
-def _generate_table_key(config: LayeredConfig) -> str:
-    """Generate the next unique Table<N> key for a new simulation."""
-    existing_keys = {k.lower() for k in config.tree_keys("TreeInfos")}
-    max_num = 0
-    for k in existing_keys:
-        match = re.search(r"table(\d+)", k)
-        if match:
-            max_num = max(max_num, int(match.group(1)))
-    new_num = max_num + 1 if max_num > 0 else 1
-    while f"table{new_num}" in existing_keys:
-        new_num += 1
-    return f"Table{new_num}"
 
 
 class _Field:
@@ -196,7 +181,7 @@ class SimEditDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.config = config
-        self.table_key = table_key or _generate_table_key(config)
+        self.table_key = table_key or next_table_key(config)
         self.is_new = not bool(table_key)
         self.setWindowTitle("Add Preflop Simulation" if self.is_new else f"Edit Simulation ({self.table_key})")
         self.setMinimumWidth(580)

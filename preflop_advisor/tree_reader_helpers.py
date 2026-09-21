@@ -48,6 +48,37 @@ DEFAULT_ENDING = ".rng"
 _META_KEYS = frozenset({"positions", "raisesizelist", "validactions", "cachesize", "ending", "gametype", "usedatabase"})
 
 
+def action_code_names(settings: ConfigSource) -> dict[str, str]:
+    """The configuration's action names, keyed by the code each one is written as.
+
+    The reverse of what the reader builds for itself, made public because the import
+    wizard has to answer the same question -- which code is which action -- for a folder
+    it has not built a processor for, and answering it a second way would let the two
+    disagree about a tree the application can read.
+    """
+    names: dict[str, str] = {}
+    for key, value in normalize(settings).items():
+        if key in _META_KEYS or key.startswith("positions"):
+            continue
+        names[str(value).strip()] = key
+    return names
+
+
+def is_action_name(name: str, settings: ConfigSource) -> bool:
+    """Whether a configuration key may name an action, rather than drive the reader.
+
+    Used on what a user types into the import wizard: a name that collides with
+    ``CacheSize`` or ``Positions`` would silently reconfigure the reader instead of
+    naming a code.
+    """
+    key = name.strip().lower()
+    if not key or key in _META_KEYS or key.startswith("positions"):
+        return False
+    if key in normalize(settings):
+        return True
+    return key.replace("_", "").isalnum()
+
+
 class ActionProcessor:
     """
     Class to process actions and interact with poker range files.

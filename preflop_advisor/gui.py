@@ -7,12 +7,14 @@ from PySide6.QtCore import QByteArray, QRect, QSettings, Qt
 from PySide6.QtGui import QCloseEvent, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QProgressDialog,
+    QPushButton,
     QSizePolicy,
     QSplitter,
     QTabWidget,
@@ -25,6 +27,7 @@ from .card_selector import CardSelector
 from .config_store import LayeredConfig
 from .config_tab import ConfigTab
 from .errors import PreflopAdvisorError
+from .import_dialog import ImportWizard
 from .outputframe import OutputFrame
 from .paths import package_file
 from .position_selector import PositionSelector
@@ -251,6 +254,13 @@ class MainWindow(QMainWindow):
         controls = QVBoxLayout()
         controls.setSpacing(4)
         controls.addLayout(self.section(self.section_label("Select a game tree:"), self.tree_selector))
+        self.import_button = QPushButton("Import a simulation...")
+        self.import_button.setToolTip(
+            "Add a simulation of your own. The folder is inspected first, and only what it\n"
+            "cannot say -- stack depth, ante, unrecognised action codes -- is asked for."
+        )
+        self.import_button.clicked.connect(self.import_simulation)
+        controls.addWidget(self.import_button)
         controls.addLayout(self.section(self.section_label("Randomize:"), self.rand_button))
         controls.addLayout(self.section(self.section_label("Choose your position:"), self.position_selector))
         controls.addStretch(1)
@@ -267,6 +277,32 @@ class MainWindow(QMainWindow):
     def on_selection_changed(self, _: object = None) -> None:
         """Slot for the component signals, which each carry a payload we do not need."""
         self.update_output_frame()
+
+    def import_simulation(self) -> None:
+        """Bring in a simulation of the user's own, then select it.
+
+        The wizard writes into the user's configuration layer, so the selector has to be
+        rebuilt from it -- and the new simulation selected, since an import that leaves
+        the previous tree on screen looks like it did nothing.
+        """
+        wizard = ImportWizard(self.configs, self)
+        if wizard.exec() != QDialog.DialogCode.Accepted or wizard.imported_key is None:
+            return
+        self.on_configuration_changed()
+        # Compared without case: the configuration is read through ConfigParser, which
+        # lower-cases every key, while the key the importer just minted is capitalised.
+        imported = str(wizard.imported_key).lower()
+        index = next(
+            (
+                position
+                for position, tree in enumerate(self.tree_selector.trees)
+                if str(tree["table_key"]).lower() == imported
+            ),
+            None,
+        )
+        if index is not None:
+            self.tree_selector.dropdown.setCurrentIndex(index)
+        self.statusBar().showMessage(f"Imported {wizard.imported_key}.", 10000)
 
     def on_configuration_changed(self) -> None:
         """A setting was saved in the Configuration tab.
