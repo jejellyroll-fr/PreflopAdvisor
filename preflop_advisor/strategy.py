@@ -207,10 +207,19 @@ class StrategyProvider(Protocol):
 def provider_for(tree: dict[str, Any], configs: ConfigSource) -> StrategyProvider:
     """The provider that reads one ``[TreeInfos]`` tree entry under one configuration.
 
-    The one place a consumer names a reader. It imports the Monker adapter lazily, so the
-    modules that only read strategy import this protocol and nothing else -- swapping in
-    another source is editing this function, not every call site.
+    The one place a consumer names a reader, and it names two: the Monker range folder, and
+    the folder of CSV tables a script or a converter wrote. Which one is the tree entry's own
+    declaration -- ``Table5.kind``, filled in by the import wizard and detected by
+    :func:`preflop_advisor.tree_selector.kind_of` -- so nothing downstream of this function
+    has to know that there is more than one source in the world. Both adapters are imported
+    lazily, so a module that only reads strategy imports this protocol and nothing else.
     """
+    from .paths import SOURCE_CSV
+
+    if str(tree.get("kind", "")).strip().lower() == SOURCE_CSV:
+        from .csv_provider import CsvStrategyProvider
+
+        return CsvStrategyProvider(tree, configs)
     from .monker_provider import MonkerRangeProvider
 
     return MonkerRangeProvider(tree, configs)

@@ -1397,6 +1397,43 @@ def test_an_answer_is_filed_under_the_simulation_it_was_answered_on(main_window)
     assert main_window.history.simulations() == [tree["folder"]]
 
 
+def test_the_trainer_deals_a_question_from_a_csv_simulation(main_window, tmp_path):
+    """An imported table is a simulation like any other: it can be trained on."""
+    table = tmp_path / "solution.csv"
+    table.write_text(
+        "Line,Hero,Hand,Action,Freq,EV (bb),Pot\n"
+        ",SB,AhKs4h3s,raise 75%,60,1.2,1.5\n"
+        ",SB,AhKs4h3s,call,30,1.1,1.5\n"
+        ",SB,AhKs4h3s,fold,10,-0.5,1.5\n"
+        "SB:raise 75%,BB,AhKs4h3s,raise 2.5bb,40,0.9,4.0\n"
+        "SB:raise 75%,BB,AhKs4h3s,call,60,0.8,4.0\n"
+    )
+    trainer = main_window.trainer
+    trainer.tree_source = lambda: {
+        "plrs": 2,
+        "bb": 100,
+        "game": "PLO",
+        "folder": str(tmp_path),
+        "infos": "a table",
+        "ante": 0.0,
+        "kind": "csv",
+        "columns": {},
+    }
+    trainer.rng.seed(11)
+
+    trainer.next_hand()
+
+    question = trainer.question
+    assert question is not None, "the table holds both seats' decisions"
+    assert question.spot.hero in ("SB", "BB")
+    assert {result.action for result in question.results} <= {"Raise75", "Raise2.5bb", "Call", "Fold"}
+    trainer.answer(question.actions()[0])
+
+    stored = main_window.history.answers()
+    assert stored[-1].simulation == str(tmp_path), "filed under the folder it was read from"
+    assert stored[-1].hero == question.spot.hero
+
+
 def test_a_window_without_a_history_still_trains(qtbot, tmp_path, monkeypatch):
     """A configuration directory that cannot be written is not a reason to refuse to start."""
     import sqlite3

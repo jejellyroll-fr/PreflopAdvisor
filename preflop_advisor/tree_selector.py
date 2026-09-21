@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .csv_format import ROLES
+from .paths import SOURCE_CSV, SOURCE_MONKER, holds_csv_files, holds_range_files, resolve_range_folder
 from .settings import ConfigSource, Settings, get
 from .tooltip import CreateToolTip
 
@@ -52,6 +54,47 @@ def ante_of(table: str, description: str, tree_infos: ConfigSource) -> float | N
     if DENIES_ANTE.search(description):
         return 0.0
     return None if MENTIONS_ANTE.search(description) else 0.0
+
+
+def kind_of(table: str, tree_infos: ConfigSource) -> str:
+    """Which reader can read this tree: ``Table5.kind``, or what the folder holds.
+
+    Declared beside the tree it belongs to, as its ante is, because only the user knows that
+    a folder of tables was written by a converter rather than by Monker -- but a declaration
+    that is absent is not an obstacle, since the folder answers it: the range-ending files of
+    a Monker export are not the ``*.csv`` files of a table. A declared kind that neither
+    adapter knows is logged and ignored rather than trusted, so a typo reads as the folder's
+    own answer instead of as a tree with no reader at all.
+    """
+    declared = str(get(tree_infos, f"{table}.kind") or "").strip().lower()
+    if declared in (SOURCE_MONKER, SOURCE_CSV):
+        return declared
+    if declared:
+        logger.warning("Ignoring %s.kind=%r: not a kind of simulation this reads", table, declared)
+    folder = resolve_range_folder(str(get(tree_infos, f"{table}.folder", "") or ""))
+    if folder and not holds_range_files(folder) and holds_csv_files(folder):
+        return SOURCE_CSV
+    return SOURCE_MONKER
+
+
+def columns_of(table: str, tree_infos: ConfigSource) -> dict[str, str]:
+    """The column mapping declared for a tree, as ``role -> header``.
+
+    Written as one line per role -- ``Table5.column.line=Line of play`` -- beside the tree it
+    belongs to, and read back here. Only roles a table can carry are kept: a typo such as
+    ``Table5.column.linee`` describes nothing, and passing it through would have the importer
+    look for a column no role can use. Namespaced under ``column`` so that a role and a
+    metadata key with the same name -- ``game``, say -- cannot be confused for one another.
+    """
+    columns: dict[str, str] = {}
+    for role in ROLES:
+        header = get(tree_infos, f"{table}.column.{role}")
+        if header is None:
+            continue
+        name = str(header).strip()
+        if name:
+            columns[role] = name
+    return columns
 
 
 class TreeSelector(QWidget):
@@ -142,6 +185,8 @@ class TreeSelector(QWidget):
                 "folder": infos[3],
                 "infos": infos[4].strip(),
                 "ante": ante_of(table, infos[4], tree_infos),
+                "kind": kind_of(table, tree_infos),
+                "columns": columns_of(table, tree_infos),
             }
             self.trees.append(table_dic)
         logger.debug("Processed tree information: %s", self.trees)

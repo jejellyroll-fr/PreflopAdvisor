@@ -25,15 +25,26 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
+from typing import Any
 
 from .config_store import LayeredConfig, next_table_key
-from .errors import SimulationScanError
+from .csv_format import ROLES, ColumnMapping
+from .errors import CsvImportError, SimulationScanError
+from .hand_classes import ranks_of
 from .hand_convert_helper import normalize_monker_hand
-from .paths import inspect_range_folder, resolve_range_folder, validate_tree
+from .paths import (
+    SOURCE_CSV,
+    SOURCE_MONKER,
+    holds_csv_files,
+    holds_range_files,
+    inspect_range_folder,
+    resolve_range_folder,
+    validate_tree,
+)
 from .settings import ConfigSource, normalize, seats_for
 from .sizings import Sizing, sizing_for_code
 from .sqlite_store import parse_range_file
@@ -81,6 +92,14 @@ class SimulationScan:
     #: Simulations already configured that this folder is, or resembles.
     duplicates: tuple[str, ...]
     notes: tuple[str, ...]
+    #: Which reader the folder needs: Monker range files, or a folder of strategy tables.
+    kind: str = SOURCE_MONKER
+    #: The column mapping a table was read with, as ``role -> header``. Empty for an export
+    #: whose storage already says what it holds.
+    columns: dict[str, str] = field(default_factory=dict)
+    #: Rows that could not be read, with their file and line. Empty for a range folder,
+    #: whose entries are read as a whole or not at all.
+    problems: tuple[str, ...] = ()
 
     @property
     def needs_conversion(self) -> bool:
@@ -91,6 +110,15 @@ class SimulationScan:
         and the wizard says so rather than quietly importing either.
         """
         return not self.has_ev or bool(self.unknown_codes)
+
+    def columns_described(self) -> tuple[str, ...]:
+        """The columns a table was read with, one ``role: header`` line each.
+
+        The confirmation page shows these to a user importing a table, which is the closest
+        thing a table has to the action codes a range folder declares: what was read, and
+        under which name.
+        """
+        return ColumnMapping(columns=dict(self.columns)).describe()
 
     def sizing_labels(self) -> tuple[str, ...]:
         """What the export's raises do to the money, as the confirmation page shows it."""
@@ -143,6 +171,12 @@ class ImportRequest:
     #: Names for the codes the scan could not place, as ``code -> action name``.
     code_names: dict[str, str] = field(default_factory=dict)
     table_key: str = ""
+    #: Which reader the folder needs, as the scan reported it.
+    kind: str = SOURCE_MONKER
+    #: The column mapping to store beside the tree, as ``role -> header``. A mapping the
+    #: user changed becomes part of the simulation, which is what makes a corrected column
+    #: survive a restart and a re-import.
+    columns: dict[str, str] = field(default_factory=dict)
 
 
 def _stems(folder: Path, ending: str) -> list[str]:
@@ -237,21 +271,227 @@ def _unknown_codes(codes: Iterable[str], names: dict[str, str]) -> tuple[str, ..
     return tuple(unknown)
 
 
+def _scan_kind(folder: str | None) -> str:
+    """Which reader a folder needs, judged by what it holds rather than by its name.
+
+    A Monker export is a folder of range files and a table export is a folder of ``*.csv``;
+    a folder holding both is read as the first, since that is the one whose files name every
+    decision rather than a subset of them.
+    """
+    if holds_range_files(folder):
+        return SOURCE_MONKER
+    if holds_csv_files(folder):
+        return SOURCE_CSV
+    return SOURCE_MONKER
+
+
+def _csv_game(hands: Iterable[str]) -> str:
+    """Which game a table is, read from how many ranks its hand keys carry.
+
+    The same reading the range scanner makes of its files, applied to the keys a table
+    holds: four ranks is PLO, five is PLO5, two is hold'em. A table whose keys cannot be
+    counted is PLO, which is what its own tree entry defaults to as well.
+    """
+    for hand in hands:
+        try:
+            ranks = len(ranks_of(str(hand)))
+        except (AttributeError, IndexError, KeyError, ValueError):
+            continue
+        if ranks == 5:
+            return "PLO5"
+        if ranks == 4:
+            return "PLO"
+        if ranks == 2:
+            return "NL"
+    return "PLO"
+
+
+def scan_csv_simulation(
+    folder: str | None,
+    tree_configs: ConfigSource,
+    tree_infos: ConfigSource | None = None,
+) -> SimulationScan:
+    """Read a folder of strategy tables, and report what it holds and what it does not say.
+
+    The counterpart of :func:`scan_simulation` for the other kind of simulation:
+    everything a table can answer about itself -- its columns, its rows, its seats, the hands
+    it holds -- is read from it, and everything it cannot -- the table size, the depth, the
+    ante -- is asked for, exactly as it is for a range folder.
+
+    :param folder: The folder as chosen, resolved against the usual search roots.
+    :param tree_configs: The ``[TreeReader]`` section, which names the seats of each table
+        size and the chips a big blind is counted in.
+    :param tree_infos: The ``[TreeInfos]`` section, read for simulations this folder would
+        duplicate.
+    :raises SimulationScanError: if the folder is not there, or holds no table that can be
+        read at all -- there is nothing to import and nowhere to say so but an error.
+    """
+    absolute = resolve_range_folder(folder)
+    if absolute is None:
+        raise SimulationScanError(f"Folder not found: {folder}")
+    if not holds_csv_files(absolute):
+        raise SimulationScanError(f"Folder holds no .csv files: {folder}")
+
+    from .csv_provider import CsvIndex, chips_per_bb_of
+
+    settings = normalize(tree_configs)
+    index = CsvIndex(absolute, {}, chips_per_bb_of(settings), str(settings.get("evunit", "auto")))
+    try:
+        report = index.ready()
+    except CsvImportError as error:
+        raise SimulationScanError(str(error)) from error
+
+    default_seats = [seat.strip() for seat in str(settings.get("positions", "")).split(",") if seat.strip()]
+    name = Path(absolute).name
+    players = _csv_players(name, report.seats, default_seats)
+    seats = _csv_seats(report.seats, players, settings, default_seats)
+    game = _csv_game(_sample_hands(index))
+    stack = _stack_of(name, 100)
+    ev_rows = index.connection.execute("SELECT COUNT(*) AS n FROM strategies WHERE ev IS NOT NULL").fetchone()["n"]
+    notes: list[str] = list(report.notes())
+    unnamed = [seat for seat in report.seats if seat not in seats]
+    if unnamed:
+        notes.append(
+            "Seats the configuration does not name, so they are not in the table size: "
+            + ", ".join(unnamed)
+            + ". Rename them in the file, or add them to Positions."
+        )
+    if not NAME_SEAT_SIGNAL.search(name):
+        notes.append(f"Players: {players} detected from the seats the table names. Check it before importing.")
+    if not NAME_STACK_SIGNAL.search(name):
+        notes.append(f"Stack depth: {stack}bb assumed, as the folder name declares none.")
+    if not ev_rows:
+        notes.append("No EV data in this table: the trainer can ask its nodes but cannot grade an answer.")
+    notes.append(
+        "Columns are read from each table's own header; a mapping confirmed here is stored with the"
+        " simulation and can be corrected later in the configuration."
+    )
+
+    same_folder, same_size = _duplicates(
+        absolute,
+        (str(players), str(stack), game),
+        tree_infos,
+    )
+    if same_folder:
+        notes.append(f"Already configured as {', '.join(same_folder)}: importing again adds a second entry.")
+    if same_size:
+        notes.append(f"Likely duplicates of a simulation you already have: {', '.join(same_size)}.")
+
+    scan = SimulationScan(
+        folder=str(folder),
+        absolute_folder=absolute,
+        name=name,
+        game=game,
+        players=players,
+        seats=seats,
+        stack_bb=stack,
+        ante_bb="",
+        range_files=len(report.files),
+        nodes=report.nodes,
+        action_codes=(),
+        names={},
+        sizings={},
+        unknown_codes=(),
+        has_ev=bool(ev_rows),
+        export="CSV strategy table",
+        duplicates=same_folder + same_size,
+        notes=tuple(notes),
+        kind=SOURCE_CSV,
+        columns=dict(report.columns.columns),
+        problems=tuple(str(problem) for problem in report.problems),
+    )
+    logger.debug("Scanned %s as a table: %s nodes, %s rows", absolute, scan.nodes, report.rows)
+    return scan
+
+
+def _sample_hands(index: Any, limit: int = 32) -> list[str]:
+    """A handful of the table's own hand keys, which is all a game needs telling from."""
+    return [
+        str(row["hand"])
+        for row in index.connection.execute("SELECT DISTINCT hand FROM strategies ORDER BY hand LIMIT ?", (limit,))
+    ]
+
+
+def _players_of(folder_name: str) -> int:
+    """How many players a folder name says, or ``0`` when it says nothing usable.
+
+    The same signals the range scanner reads out of a folder name -- ``HU``, ``6-max``,
+    ``9 players``, ``full ring`` -- because a table export is named by whoever wrote it and
+    not by a convention.
+    """
+    match = NAME_SEAT_SIGNAL.search(folder_name)
+    if match is None:
+        return 0
+    token = match.group(1).lower()
+    if token in ("hu", "heads-up", "headsup"):
+        return 2
+    if token.startswith("full"):
+        return 9
+    digits = re.search(r"\d+", token)
+    if digits is None:
+        return 0
+    players = int(digits.group())
+    return players if 2 <= players <= 9 else 0
+
+
+def _stack_of(folder_name: str, default: int) -> int:
+    """How deep a folder name says the table is, in big blinds."""
+    match = NAME_STACK_SIGNAL.search(folder_name)
+    if match is None:
+        return default
+    depth = int(match.group(1))
+    return depth if depth > 0 else default
+
+
+def _csv_players(folder_name: str, seats: Iterable[str], default_seats: list[str]) -> int:
+    """How many players a table has: what its name says, else how many seats it names."""
+    declared = _players_of(folder_name)
+    if declared:
+        return min(declared, len(default_seats))
+    return max(2, min(len(set(seats)), len(default_seats)))
+
+
+def _csv_seats(
+    named: Iterable[str],
+    players: int,
+    settings: dict[str, Any],
+    default_seats: list[str],
+) -> tuple[str, ...]:
+    """A table's seats, in acting order, from the names it declares.
+
+    The ones the configuration knows are ordered the way every other reader orders a table --
+    earliest seat to act first, blinds last -- and a name the configuration does not have
+    keeps its place at the end rather than being dropped: a table that seats ``BTN`` is still
+    a table, and hiding its seat would hide the nodes behind it.
+    """
+    configured = list(reversed(seats_for(settings, players, default_seats)[:players]))
+    spelling = {seat.lower(): seat for seat in configured}
+    canonical = [spelling.get(str(seat).lower(), str(seat)) for seat in named]
+    ordered = [seat for seat in configured if seat in canonical]
+    return tuple(ordered + [seat for seat in canonical if seat not in ordered])
+
+
 def scan_simulation(
     folder: str | None,
     tree_configs: ConfigSource,
     tree_infos: ConfigSource | None = None,
 ) -> SimulationScan:
-    """Read one range folder, and report what it holds and what it does not say.
+    """Read one simulation folder, and report what it holds and what it does not say.
+
+    Which of the two readers is used is decided by the folder's contents -- range files, or
+    strategy tables -- so the user chooses a folder and not a format.
 
     :param folder: The folder as chosen, resolved against the usual search roots.
     :param tree_configs: The ``[TreeReader]`` section, which names the action codes and
         the seat names of each table size.
     :param tree_infos: The ``[TreeInfos]`` section, read for simulations this folder
         would duplicate.
-    :raises SimulationScanError: if the folder holds no range files, or none that can be
-        read at all -- there is nothing to import and nowhere to say so but an error.
+    :raises SimulationScanError: if the folder holds nothing that can be read at all --
+        there is nothing to import and nowhere to say so but an error.
     """
+    if _scan_kind(folder) == SOURCE_CSV:
+        return scan_csv_simulation(folder, tree_configs, tree_infos)
+
     info = inspect_range_folder(folder, tree_configs)
     if not info.get("valid"):
         raise SimulationScanError(str(info.get("error", "This folder is not a simulation")))
@@ -325,6 +565,16 @@ def scan_simulation(
     return scan
 
 
+def inferred_mapping(scan: SimulationScan, overrides: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """The column mapping an import stores: what was detected, with what the user changed.
+
+    The detected mapping is the interesting half -- a table whose columns nobody had to name
+    still imports unasked -- and the overrides are what a table with unusual headers needs.
+    """
+    mapping = ColumnMapping(columns=dict(scan.columns)).overridden(overrides or {})
+    return dict(mapping.columns)
+
+
 def entry_value(request: ImportRequest) -> str:
     """The ``[TreeInfos]`` value a request corresponds to, as the configuration spells it."""
     return f"{request.players},{request.stack_bb},{request.game},{request.folder},{request.name}"
@@ -361,11 +611,24 @@ def register_simulation(config: LayeredConfig, request: ImportRequest) -> str:
         config.set("TreeReader", name, code)
 
     value = entry_value(request)
-    ok, reason = validate_tree(value, bool(request.ante_bb), config.section("TreeReader"))
+    ok, reason = validate_tree(value, bool(request.ante_bb), config.section("TreeReader"), request.kind)
     if not ok:
         raise SimulationScanError(f"Cannot import this simulation: {reason}")
 
     config.set("TreeInfos", key, value)
+    # Which reader the folder needs, and which column of its tables carries what. Declared
+    # beside the tree rather than guessed at every read, so a corrected column survives both
+    # a restart and a re-import. A range folder declares neither, and is left as it was.
+    if request.kind == SOURCE_CSV:
+        config.set("TreeInfos", f"{key}.kind", SOURCE_CSV)
+    else:
+        config.reset("TreeInfos", f"{key}.kind")
+    for role in ROLES:
+        header = request.columns.get(role)
+        if request.kind == SOURCE_CSV and header:
+            config.set("TreeInfos", f"{key}.column.{role}", header)
+        else:
+            config.reset("TreeInfos", f"{key}.column.{role}")
     if request.ante_bb:
         config.set("TreeInfos", f"{key}.ante", request.ante_bb)
     else:

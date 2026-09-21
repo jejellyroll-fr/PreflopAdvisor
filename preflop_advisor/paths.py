@@ -24,6 +24,22 @@ PROJECT_ROOT = os.path.dirname(PACKAGE_ROOT)
 #: Name of the directory holding range trees, relative to a search root.
 RANGES_DIRNAME = "ranges"
 
+#: The two kinds of simulation a tree entry can point at: a folder of Monker range files,
+#: and a folder of strategy tables in CSV. Written in the configuration as ``Table5.kind``,
+#: filled in by the import wizard and detected from the folder's contents when it is absent.
+SOURCE_MONKER = "monker"
+SOURCE_CSV = "csv"
+#: What the ``*.csv`` files of a CSV simulation are called. Simpler than the range ending,
+#: which is a configuration setting because Monker exports have more than one spelling.
+CSV_ENDING = ".csv"
+
+
+def holds_csv_files(folder: str | os.PathLike[str] | None) -> bool:
+    """Whether a folder holds any ``*.csv`` file, at its top level."""
+    if not folder or not os.path.isdir(folder):
+        return False
+    return any(entry.is_file() and entry.name.lower().endswith(CSV_ENDING) for entry in os.scandir(folder))
+
 
 def search_roots() -> list[str]:
     """Directories a relative range folder may be resolved against.
@@ -88,7 +104,12 @@ def holds_range_files(folder: str | None) -> bool:
     return any(Path(resolved).glob("*.rng"))
 
 
-def validate_tree(value: str, ante_declared: bool, config: ConfigSource | None = None) -> tuple[bool, str]:
+def validate_tree(
+    value: str,
+    ante_declared: bool,
+    config: ConfigSource | None = None,
+    kind: str = SOURCE_MONKER,
+) -> tuple[bool, str]:
     """Whether a ``[TreeInfos]`` entry is fit to be saved.
 
     Covers the checks from the plan's section 5.2 that the application can make on
@@ -96,6 +117,11 @@ def validate_tree(value: str, ante_declared: bool, config: ConfigSource | None =
     an ante also declares its size (otherwise the trainer draws with no pot and no
     stacks, silently), and the declared player count matches the seats the range
     files actually imply.
+
+    :param kind: Which reader the entry declares. A folder of strategy tables is held to
+        the one check that can be made about it -- that it holds tables -- and is not asked
+        for range files it will never have, nor for a seat count that only a Monker export's
+        file names can corroborate.
 
     The seat check builds a :class:`~preflop_advisor.tree_reader.TreeReader` for the
     declared player count and confirms at least one cell resolves. Using the reader
@@ -115,13 +141,16 @@ def validate_tree(value: str, ante_declared: bool, config: ConfigSource | None =
     if resolve_range_folder(folder) is None:
         return False, f"folder not found: {folder}"
     if not holds_range_files(folder):
-        return False, f"folder holds no .rng files: {folder}"
+        if kind != SOURCE_CSV:
+            return False, f"folder holds no .rng files: {folder}"
+        if not holds_csv_files(folder):
+            return False, f"folder holds no .csv files: {folder}"
     description = ",".join(parts[4:]).strip()
     mentions_ante = bool(re.search(r"\bantes?\b", description, re.IGNORECASE))
     denies_ante = bool(re.search(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", description, re.IGNORECASE))
     if mentions_ante and not denies_ante and not ante_declared:
         return False, "description mentions an ante but TableN.ante is not declared"
-    if not _tree_seats_match_files(parts, config):
+    if kind != SOURCE_CSV and not _tree_seats_match_files(parts, config):
         return False, "declared player count does not match the range files"
     return True, ""
 
