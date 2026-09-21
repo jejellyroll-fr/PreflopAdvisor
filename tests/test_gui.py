@@ -7,6 +7,7 @@ exactly where the interesting regressions live. These tests click real buttons w
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import QApplication, QDialog
 
 from preflop_advisor import gui as gui_module
@@ -14,9 +15,10 @@ from preflop_advisor.card_selector import CardSelector
 from preflop_advisor.config_store import LayeredConfig
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
 from preflop_advisor.hand_convert_helper import convert_hand
+from preflop_advisor.node_explorer_panel import EMPTY_STATE
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
-from preflop_advisor.strategy import provider_for
+from preflop_advisor.strategy import Node, provider_for
 from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector, ante_of
@@ -566,10 +568,10 @@ def test_showing_the_window_trims_it(qtbot, main_window):
 # --------------------------------------------------------------------------------------
 
 
-def test_the_window_offers_both_the_advisor_and_the_trainer(main_window):
+def test_the_window_offers_the_advisor_the_trainer_and_the_explorer(main_window):
     tabs = [main_window.tabs.tabText(index) for index in range(main_window.tabs.count())]
 
-    assert tabs == ["Advisor", "Trainer", "Configuration"]
+    assert tabs == ["Advisor", "Trainer", "Explorer", "Configuration"]
 
 
 def test_dealing_asks_a_spot_the_selected_tree_can_answer(main_window):
@@ -1077,6 +1079,143 @@ def test_an_import_the_selector_does_not_know_leaves_the_selection_alone(main_wi
     main_window.import_simulation()
 
     assert main_window.tree_selector.get_tree_infos() == before
+
+
+# --------------------------------------------------------------------------------------
+# The node explorer
+# --------------------------------------------------------------------------------------
+
+
+def open_explorer(main_window):
+    """The explorer, walked from the selected tree, as opening its tab does."""
+    main_window.tabs.setCurrentWidget(main_window.explorer)
+    main_window.explorer.refresh()
+    return main_window.explorer
+
+
+def test_opening_the_explorer_tab_walks_the_selected_tree(main_window):
+    """Opening the tab is what reads the tree -- one decision of it, to start with."""
+    explorer = main_window.explorer
+    explorer.tree.clear()
+
+    explorer.showEvent(QShowEvent())
+
+    assert explorer.tree.topLevelItemCount() == 1, "the root waits to be expanded, and nothing else"
+    assert explorer.tree.topLevelItem(0).text(0) == "SB to act"
+    assert "100bb" in explorer.heading.text()
+
+
+def test_expanding_a_node_reads_the_decisions_behind_it(main_window):
+    explorer = open_explorer(main_window)
+    root = explorer.tree.topLevelItem(0)
+
+    root.setExpanded(True)
+
+    assert [root.child(index).text(0) for index in range(root.childCount())] == ["Call", "raise 100%"]
+
+
+def test_expanding_a_later_decision_keeps_walking(main_window):
+    """Two levels in: the branch the small blind called is the big blind's answer."""
+    explorer = open_explorer(main_window)
+    root = explorer.tree.topLevelItem(0)
+    root.setExpanded(True)
+
+    limp_branch = root.child(0)
+    limp_branch.setExpanded(True)
+
+    assert [limp_branch.child(index).text(0) for index in range(limp_branch.childCount())] == ["raise 100%"]
+    assert limp_branch.child(0).data(0, Qt.ItemDataRole.UserRole) == Node(
+        hero="SB", path=(("SB", "Call"), ("BB", "Raise100"))
+    )
+
+
+def test_a_node_with_nothing_behind_it_says_so(main_window):
+    """A call that closes the preflop betting ends the line: no decision follows it."""
+    explorer = open_explorer(main_window)
+    closing = explorer.add_item(Node(hero="SB", path=(("SB", "Call"), ("BB", "Call"))), None)
+
+    closing.setExpanded(True)
+
+    assert closing.childCount() == 1
+    assert closing.child(0).text(0) == "no decision follows"
+
+
+def test_selecting_a_node_shows_what_it_is(main_window):
+    explorer = open_explorer(main_window)
+    root = explorer.tree.topLevelItem(0)
+    root.setExpanded(True)
+
+    explorer.tree.setCurrentItem(root.child(1))
+
+    assert explorer.current == Node(hero="BB", path=(("SB", "Raise100"),))
+    assert explorer.detail_labels["To act"].text() == "To act: BB"
+    assert "SB raise 100%" in explorer.detail_labels["Line"].text()
+    assert explorer.detail_labels["Node"].text() == "Node: BB:SB Raise100"
+    assert "raise 100%" in explorer.actions_label.text()
+    assert "bb" in explorer.detail_labels["Pot"].text()
+    assert explorer.train_button.isEnabled()
+
+
+def test_train_this_node_sends_that_decision_to_the_trainer(qtbot, main_window):
+    explorer = open_explorer(main_window)
+    root = explorer.tree.topLevelItem(0)
+    root.setExpanded(True)
+    explorer.tree.setCurrentItem(root.child(1))
+
+    qtbot.mouseClick(explorer.train_button, Qt.LeftButton)
+
+    trainer = main_window.trainer
+    assert main_window.tabs.currentWidget() is trainer
+    assert trainer.pinned_spot is not None
+    assert trainer.pinned_spot.line == [("SB", "Raise100")], "the node's own line, not a family"
+    assert trainer.question is not None
+    assert trainer.question.spot.hero == "BB"
+
+
+def test_drilling_a_pinned_node_deals_it_another_hand(main_window):
+    """Retraining the node is the point: another hand of the same decision."""
+    trainer = main_window.trainer
+    trainer.train_spot(Spot("BB: SB raise 100%", "BB", [("SB", "Raise100")]))
+    first = trainer.question
+    assert first is not None
+
+    trainer.next_hand()
+
+    assert trainer.pinned_spot is not None
+    assert trainer.question is not None
+    assert trainer.question.spot.label == first.spot.label
+    assert trainer.question.spot.line == first.spot.line
+
+
+def test_choosing_a_situation_yourself_drops_the_pinned_node(main_window):
+    trainer = main_window.trainer
+    trainer.train_spot(Spot("BB: SB raise 100%", "BB", [("SB", "Raise100")]))
+    assert trainer.pinned_spot is not None
+
+    trainer.spot_choice.setCurrentText("SB first in")
+
+    assert trainer.pinned_spot is None
+
+
+def test_the_explorer_says_so_when_there_is_nothing_to_walk(main_window):
+    explorer = main_window.explorer
+    explorer.tree_source = lambda: None
+
+    explorer.refresh()
+
+    assert explorer.heading.text() == EMPTY_STATE
+    assert explorer.tree.topLevelItemCount() == 0
+    assert explorer.train_button.isEnabled() is False
+
+
+def test_the_explorer_reports_a_tree_it_cannot_read(main_window):
+    explorer = main_window.explorer
+    explorer.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "PLO", "folder": "no/such/tree"}
+
+    explorer.refresh()
+
+    assert "not found" in explorer.heading.text()
+    assert explorer.tree.topLevelItemCount() == 0
 
 
 def test_a_cancelled_import_changes_nothing(main_window, monkeypatch):

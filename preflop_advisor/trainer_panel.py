@@ -71,6 +71,12 @@ class TrainerPanel(QWidget):
         self.session = Session()
         self.question: Question | None = None
         self.rng = random.Random()
+        #: One decision to drill, when the Explorer asked for it. Set instead of the
+        #: catalogue, and dropped as soon as the user picks a situation for themselves.
+        self.pinned_spot: Spot | None = None
+        #: True while the chooser is being rebuilt, so its own rebuild does not look like
+        #: the user choosing something.
+        self._filling_choice = False
 
         # What the table is worth, replaced by whichever tree the next hand comes from.
         # Held from the start rather than only once a hand has been dealt: a panel whose
@@ -92,6 +98,7 @@ class TrainerPanel(QWidget):
         self.spot_choice = QComboBox()
         self.spot_choice.setMinimumWidth(220)
         self.spot_choice.addItem(ANY_SPOT)
+        self.spot_choice.currentTextChanged.connect(self.on_spot_choice_changed)
         chooser.addWidget(self.spot_choice)
         chooser.addStretch(1)
         layout.addLayout(chooser)
@@ -164,6 +171,26 @@ class TrainerPanel(QWidget):
             return
         self.offer_spots(list(provider.metadata().seats))
 
+    def train_spot(self, spot: Spot) -> None:
+        """Drill one exact decision, asked for from the node explorer.
+
+        The spot carries the node's own line of play, already explicit, so the provider
+        resolves it to the decision the explorer showed -- and dealing again asks that
+        node another hand, which is the point of drilling it.
+        """
+        self.pinned_spot = spot
+        self.next_hand()
+
+    def on_spot_choice_changed(self, _label: str) -> None:
+        """A situation the user chose for themselves abandons a pinned node.
+
+        Left pinned, the trainer would go on asking the node while the chooser said
+        something else -- and the chooser is how a user says they are done with it.
+        """
+        if self._filling_choice:
+            return
+        self.pinned_spot = None
+
     def next_hand(self) -> None:
         """Deal a new spot and hand, or say why it could not be done."""
         self.clear_answer()
@@ -216,8 +243,12 @@ class TrainerPanel(QWidget):
         metadata = provider.metadata()
         cards = CARDS_PER_GAME.get(metadata.game.upper(), 4)
         self.offer_spots(list(metadata.seats))
-        spots = self.chosen_spots(list(metadata.seats))
-        self.rng.shuffle(spots)
+        if self.pinned_spot is not None:
+            # One decision, asked for by name: there is nothing to shuffle it against.
+            spots = [self.pinned_spot]
+        else:
+            spots = self.chosen_spots(list(metadata.seats))
+            self.rng.shuffle(spots)
 
         self.sizings = provider.sizings()
         self.stack = metadata.stack_bb
@@ -300,10 +331,14 @@ class TrainerPanel(QWidget):
         if labels == [self.spot_choice.itemText(index) for index in range(self.spot_choice.count())]:
             return
         chosen = self.spot_choice.currentText()
-        self.spot_choice.clear()
-        self.spot_choice.addItems(labels)
-        if chosen in labels:
-            self.spot_choice.setCurrentText(chosen)
+        self._filling_choice = True
+        try:
+            self.spot_choice.clear()
+            self.spot_choice.addItems(labels)
+            if chosen in labels:
+                self.spot_choice.setCurrentText(chosen)
+        finally:
+            self._filling_choice = False
 
     def chosen_spots(self, seats: list[str]) -> list[Spot]:
         """The catalogue, or the one situation asked for."""
