@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
+"""The Advisor's grid: one screen of decisions, read through the strategy model.
+
+Every number here comes from a :class:`~preflop_advisor.strategy.StrategyProvider`, so a
+spot is named by its line of play rather than by the file it happens to live in. The grid
+this class fills is its own shape -- rows of ``[action, frequency, ev]`` triples, which is
+what :mod:`preflop_advisor.outputframe` draws -- and :meth:`TreeReader.node_results` is the
+only place the two shapes meet.
+"""
 
 import logging
 from typing import Any
 
-from .errors import RangeFolderNotFound
-from .paths import resolve_range_folder
-from .settings import ConfigSource, normalize
-from .tree_reader_helpers import ActionProcessor
-from .types import Grid, Result, Row
+from .settings import ConfigSource, normalize, seats_for
+from .strategy import StrategyProvider, StrategyResult, node_for, provider_for
+from .types import ActionSequence, Grid, Result, Row
 
 logger = logging.getLogger(__name__)
 
@@ -43,33 +49,31 @@ class TreeReader:
         self.configs = configs
         self.tree_infos = tree_infos
 
-        configured_folder = self.tree_infos.get("folder", "")
-        tree_folder = resolve_range_folder(configured_folder)
-        if tree_folder is None:
-            raise RangeFolderNotFound(f"Tree folder not found: {configured_folder}")
-        self.tree_infos["folder"] = tree_folder
-
-        self.action_processor = ActionProcessor(self.position_list, self.tree_infos, configs)
+        # The provider owns the folder, the action codes and the reader itself, so a tree
+        # that cannot be read still fails here and nowhere else.
+        self.provider: StrategyProvider = provider_for(self.tree_infos, configs)
         self.results: Grid = []
         logger.debug("TreeReader initialized successfully.")
 
     @staticmethod
     def seats_for(settings: dict[str, Any], num_players: int, default_seats: list[str]) -> list[str]:
-        """The seat names of a table that size, honouring a ``Positions<N>`` override.
+        """The seat names of a table that size, honouring a ``Positions<N>`` override."""
+        return seats_for(settings, num_players, default_seats)
 
-        Trimming one list cannot name every table correctly: six-handed the earliest seat
-        is UTG, seven-handed there is a hijack between it and the cutoff, so cutting a
-        seven-name list down to six drops UTG and keeps HJ. A size that needs its own
-        names says so, and the rest go on being trimmed as before.
+    def node_results(self, line: ActionSequence, hero: str) -> list[Result]:
+        """One node's strategy, in the row shape the grid draws.
 
-        :return: Seat names for that table, shortest stack first.
+        The solver-agnostic answer is a tuple of
+        :class:`~preflop_advisor.strategy.StrategyResult`; the grid is a table of
+        ``[action, frequency, ev]`` triples because that is what the display layer knows
+        how to render. The conversion belongs here, at the one boundary between the model
+        and this class's own shape, rather than in every scenario method above.
+
+        :param line: The line of play before the hero acts, as the scenarios speak it.
+        :param hero: The seat whose decision is read.
         """
-        override = settings.get(f"positions{num_players}")
-        if override is None:
-            return default_seats
-        seats = [seat.strip() for seat in override.split(",") if seat.strip()]
-        logger.debug("Using the %d-handed seat names: %s", num_players, seats)
-        return seats
+        entries: tuple[StrategyResult, ...] = self.provider.strategy(node_for(hero, line), self.hand)
+        return [[entry.action, entry.frequency, entry.ev] for entry in entries]
 
     def init_position_list(self, num_players: int, positions: list[str]) -> None:
         """
@@ -102,12 +106,12 @@ class TreeReader:
         for row_pos in self.position_list:
             row = [{"isInfo": True, "Text": row_pos}]
             if row_pos != "BB":
-                row.append({"isInfo": False, "Results": self.action_processor.get_results(self.hand, [], row_pos)})
+                row.append({"isInfo": False, "Results": self.node_results([], row_pos)})
             else:
                 row.append(
                     {
                         "isInfo": False,
-                        "Results": self.action_processor.get_results(self.hand, [("SB", "Call")], row_pos),
+                        "Results": self.node_results([("SB", "Call")], row_pos),
                     }
                 )
 
@@ -153,9 +157,9 @@ class TreeReader:
         self.results.append(row)
 
         if pos != "BB":
-            row = [{"isInfo": False, "Results": self.action_processor.get_results(self.hand, [], pos)}]
+            row = [{"isInfo": False, "Results": self.node_results([], pos)}]
         else:
-            row = [{"isInfo": False, "Results": self.action_processor.get_results(self.hand, [("SB", "Call")], pos)}]
+            row = [{"isInfo": False, "Results": self.node_results([("SB", "Call")], pos)}]
 
         row.extend(
             {"isInfo": False, "Results": self.get_vs_first_in(pos, column_pos)} for column_pos in self.position_list
@@ -170,7 +174,7 @@ class TreeReader:
             row = [{"isInfo": True, "Text": "after Limp"}]
             for column_pos in self.position_list:
                 if column_pos == "BB":
-                    results = self.action_processor.get_results(self.hand, [("SB", "Call"), ("BB", "Raise")], pos)
+                    results = self.node_results([("SB", "Call"), ("BB", "Raise")], pos)
                 else:
                     results = []
                 row.append({"isInfo": False, "Results": results})
@@ -235,8 +239,8 @@ class TreeReader:
         if position == fi_position:
             return []
         if indices[0] > indices[1]:
-            return self.action_processor.get_results(self.hand, [(fi_position, "Raise")], position)
-        return self.action_processor.get_results(self.hand, [(position, "Raise"), (fi_position, "Raise")], position)
+            return self.node_results([(fi_position, "Raise")], position)
+        return self.node_results([(position, "Raise"), (fi_position, "Raise")], position)
 
     def get_vs_4bet(self, position: str, reraise_position: str) -> list[Result]:
         """
@@ -255,16 +259,14 @@ class TreeReader:
             return []
         if pos_index > self.position_list.index(reraise_position):
             # We made a 3bet and are facing a 4bet from the opener
-            results = self.action_processor.get_results(
-                self.hand,
+            results = self.node_results(
                 [(reraise_position, "Raise"), (position, "Raise"), (reraise_position, "Raise")],
                 position,
             )
         else:
             # We are facing a 4bet after an open and a 3bet
             opener = self.position_list[pos_index - 1]
-            results = self.action_processor.get_results(
-                self.hand,
+            results = self.node_results(
                 [(opener, "Raise"), (position, "Raise"), (reraise_position, "Raise")],
                 position,
             )
@@ -289,8 +291,7 @@ class TreeReader:
             if threebet_pos_index == 0:  # vs UTG there is no cold 4bet
                 return []
             else:
-                results = self.action_processor.get_results(
-                    self.hand,
+                results = self.node_results(
                     [
                         (self.position_list[threebet_pos_index - 1], "Raise"),
                         (threebet_position, "Raise"),
@@ -298,8 +299,7 @@ class TreeReader:
                     position,
                 )
         else:  # std face 3bet spot after open
-            results = self.action_processor.get_results(
-                self.hand,
+            results = self.node_results(
                 [
                     (position, "Raise"),
                     (threebet_position, "Raise"),
@@ -324,8 +324,7 @@ class TreeReader:
         if pos_index <= rfi_index + 1:  # there must be at least one player between rfi and caller
             return []
 
-        results = self.action_processor.get_results(
-            self.hand,
+        results = self.node_results(
             [
                 (rfi_position, "Raise"),
                 (self.position_list[rfi_index + 1], "Call"),
@@ -353,8 +352,7 @@ class TreeReader:
         # We opened, a seat behind us called, and the squeezer 3bet on top. The
         # squeezer's raise is what we are facing, so it has to close the sequence --
         # mirroring get_vs_4bet, which ends with the 4bettor's raise.
-        results = self.action_processor.get_results(
-            self.hand,
+        results = self.node_results(
             [
                 (position, "Raise"),
                 (self.position_list[pos_index + 1], "Call"),

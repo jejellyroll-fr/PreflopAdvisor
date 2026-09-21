@@ -5,12 +5,13 @@ to the range reader is the one a poker player would expect for each scenario, an
 impossible scenarios come back empty instead of raising.
 
 A 6-max tree is used throughout because heads-up collapses most of these cases. The
-range folder does not need to contain the corresponding files: the sequences are
-inspected through a recording double.
+range folder does not need to contain the corresponding files: the lines of play are
+inspected through a recording provider.
 """
 
 import pytest
 
+from preflop_advisor.strategy import StrategyResult
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_reader_helpers import ActionProcessor
 
@@ -20,30 +21,29 @@ from .conftest import REFERENCE_HAND
 SIX_MAX = ["UTG", "MP", "CO", "BU", "SB", "BB"]
 
 
-class RecordingProcessor:
-    """Stands in for ``ActionProcessor`` and records the sequences it is asked about."""
+class RecordingProvider:
+    """Stands in for a strategy provider and records the nodes it is asked about."""
 
-    def __init__(self, position_list):
-        self.position_list = position_list
+    def __init__(self):
         self.calls = []
 
-    def get_results(self, hand, action_before_list, position):
-        self.calls.append((tuple(action_before_list), position))
-        return [["Call", 1.0, 0.0]]
+    def strategy(self, node, hand):
+        self.calls.append((tuple(node.path), node.hero))
+        return (StrategyResult("Call", 1.0, 0.0),)
 
 
 @pytest.fixture
 def reader(hu_tree, tree_configs):
-    """A 6-max reader whose range lookups are recorded rather than performed."""
+    """A 6-max reader whose strategy reads are recorded rather than performed."""
     tree = dict(hu_tree, plrs=6)
     reader = TreeReader(REFERENCE_HAND, "X", tree, tree_configs)
     reader.position_list = list(SIX_MAX)
-    reader.action_processor = RecordingProcessor(reader.position_list)
+    reader.provider = RecordingProvider()
     return reader
 
 
 def last_sequence(reader):
-    return reader.action_processor.calls[-1][0]
+    return reader.provider.calls[-1][0]
 
 
 # --------------------------------------------------------------------------------------
@@ -220,7 +220,7 @@ def test_big_blind_first_in_row_models_a_limp_from_the_small_blind(reader):
     reader.position = None
     reader.get_results()
 
-    bb_first_in = [call for call in reader.action_processor.calls if call[1] == "BB"]
+    bb_first_in = [call for call in reader.provider.calls if call[1] == "BB"]
     assert (("SB", "Call"),) == bb_first_in[0][0]
 
 

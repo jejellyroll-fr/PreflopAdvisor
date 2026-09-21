@@ -14,10 +14,9 @@ from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindo
 from preflop_advisor.hand_convert_helper import convert_hand
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
-from preflop_advisor.sizings import sizings_for
+from preflop_advisor.strategy import provider_for
 from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
-from preflop_advisor.tree_reader_helpers import ActionProcessor
 from preflop_advisor.tree_selector import TreeSelector, ante_of
 
 from .conftest import REFERENCE_HAND
@@ -681,11 +680,12 @@ def test_a_tree_with_nothing_to_drill_says_so(main_window, monkeypatch):
 
 
 def test_a_question_never_carries_a_nameless_action(main_window, tmp_path):
-    """A node that lacks the hand dealt answers ["", 0.0, 0.0] -- a placeholder.
+    """The storage answers ["", 0.0, 0.0] for a node that lacks the hand dealt.
 
-    Asked as it stands, it renders a nameless button and grades whatever is pressed as
-    costing nothing. The sparse tree here holds one hand, so the question that comes back
-    is about that hand, and every action in it is named.
+    Passed through as it stands, it renders a nameless button and grades whatever is
+    pressed as costing nothing. The provider drops it, so a node the dealt hand is not in
+    is passed over rather than asked about -- and the sparse tree here, which holds one
+    hand, ends up asking about that hand.
     """
     folder = tmp_path / "sparse"
     folder.mkdir()
@@ -753,8 +753,13 @@ def test_a_node_holding_one_hand_is_still_asked(main_window, tmp_path, monkeypat
     assert convert_hand(question.hand) == "(3K)(4A)"
 
 
-def test_a_line_with_no_file_is_not_dealt_again(main_window, tmp_path, monkeypatch):
-    """Another hand cannot conjure a file, so it is looked at once and left."""
+def test_a_line_with_no_file_is_left_without_dealing_for_it(main_window, tmp_path, monkeypatch):
+    """Another hand cannot conjure a file: a spot no node holds is not dealt for at all.
+
+    The provider is asked whether the tree holds the decision before anything is dealt,
+    which is the one question that tells "this tree skipped the line" from "this node does
+    not hold the hand".
+    """
     from preflop_advisor import trainer_panel
     from preflop_advisor.trainer import Spot
 
@@ -767,7 +772,32 @@ def test_a_line_with_no_file_is_not_dealt_again(main_window, tmp_path, monkeypat
     monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: deals.append(1) or "AhKs4h3s")
     main_window.trainer.next_hand()
 
-    assert deals == [1], "one look at a line that has no ranges behind it"
+    assert deals == [], "a line the tree does not hold costs no deal"
+
+
+def test_a_node_whose_files_are_empty_is_left_after_one_look(main_window, tmp_path, monkeypatch):
+    """A truncated export can leave a file that exists and holds nothing.
+
+    The node is held -- a file is there -- so one hand is dealt for it, and then the node
+    is asked which hands it has. Having none, dealing again is only a slower way of
+    finding that out.
+    """
+    from preflop_advisor import trainer_panel
+    from preflop_advisor.trainer import Spot
+
+    folder = tmp_path / "empty-file"
+    folder.mkdir()
+    (folder / "0.rng").write_text("")
+    main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
+    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "SB", [])])
+
+    deals = []
+    monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: deals.append(1) or "AhKs4h3s")
+    main_window.trainer.next_hand()
+
+    assert deals == [1], "the node is held, so it is dealt for once"
+    assert main_window.trainer.question is None
+    assert "No situation" in main_window.trainer.spot_label.text()
 
 
 def test_a_sparse_monker_2_node_is_asked(main_window, tmp_path, monkeypatch):
@@ -958,17 +988,20 @@ def test_an_ante_declaration_is_not_read_as_a_tree(qtbot, raw_config):
 
 
 def test_the_table_shows_the_folds_that_had_to_happen(main_window, raw_config):
-    """The reader fills those in only when told who acts next.
+    """The provider fills those in only when told who acts next.
 
     Left out, a cutoff opening first in was drawn with everyone before it still to act.
+    Six seats are declared here, whatever the selected tree holds: the folds to fill are a
+    property of the seating, not of the ranges.
     """
     seats = ["UTG", "MP", "CO", "BU", "SB", "BB"]
-    processor = ActionProcessor(seats, main_window.tree_selector.get_tree_infos(), raw_config["TreeReader"])
+    tree = dict(main_window.tree_selector.get_tree_infos(), plrs=6)
+    provider = provider_for(tree, raw_config["TreeReader"])
 
     trainer = main_window.trainer
     trainer.seats = seats
-    trainer.sizings = sizings_for(processor.action_codes, dict(raw_config["TreeReader"]))
-    question = trainer.question_for(processor, Spot("CO first in", "CO", []), "AhKs4h3s", [])
+    trainer.sizings = provider.sizings()
+    question = trainer.question_for(provider, Spot("CO first in", "CO", []), "AhKs4h3s", ())
 
     assert question.table.seat("UTG").folded
     assert question.table.seat("MP").folded

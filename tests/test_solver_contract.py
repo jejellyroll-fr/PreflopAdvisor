@@ -8,6 +8,7 @@ list)`` stays green on an application that returns nothing.
 
 import pytest
 
+from preflop_advisor.strategy import node_for
 from preflop_advisor.tree_reader import TreeReader
 
 from .conftest import REFERENCE_HAND
@@ -91,12 +92,18 @@ def test_hu_tree_coverage_is_non_trivial(hu_tree, tree_configs):
     assert ratio > 0.30, f"only {filled}/{total} cells populated ({ratio:.0%})"
 
 
+def _defending_node(tree, configs):
+    """BB facing an SB open, as the provider names it."""
+    provider = TreeReader(REFERENCE_HAND, "BB", tree, configs).provider
+    node = provider.resolve(node_for("BB", [("SB", "Raise")]))
+    assert node is not None
+    return provider.strategy(node, REFERENCE_HAND)
+
+
 def test_facing_an_open_returns_actions(hu_tree, tree_configs):
     """BB facing an SB open must have Fold, Call and a raise available."""
-    processor = TreeReader(REFERENCE_HAND, "BB", hu_tree, tree_configs).action_processor
-    results = processor.get_results(REFERENCE_HAND, [("SB", "Raise")], "BB")
+    actions = {result.action for result in _defending_node(hu_tree, tree_configs)}
 
-    actions = {entry[0] for entry in results}
     assert "Fold" in actions
     assert "Call" in actions
     assert any(action.startswith("Raise") or action == "All_In" for action in actions)
@@ -104,7 +111,6 @@ def test_facing_an_open_returns_actions(hu_tree, tree_configs):
 
 def test_frequencies_of_an_action_node_sum_to_one(hu_tree, tree_configs):
     """The frequencies at a decision node form a strategy, so they sum to 1."""
-    processor = TreeReader(REFERENCE_HAND, "BB", hu_tree, tree_configs).action_processor
-    results = processor.get_results(REFERENCE_HAND, [("SB", "Raise")], "BB")
+    results = _defending_node(hu_tree, tree_configs)
 
-    assert sum(entry[1] for entry in results) == pytest.approx(1.0, abs=0.01)
+    assert sum(result.frequency for result in results) == pytest.approx(1.0, abs=0.01)
