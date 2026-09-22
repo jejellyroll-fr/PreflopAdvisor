@@ -33,9 +33,10 @@ from typing import Any
 
 from .config_store import LayeredConfig, next_table_key
 from .csv_format import ROLES, ColumnMapping
-from .errors import CsvImportError, SimulationScanError
+from .errors import CsvImportError, NativeFormatError, SimulationScanError
 from .hand_classes import ranks_of
 from .hand_convert_helper import normalize_monker_hand
+from .native_format import describe_refusal, native_count, native_files, probe
 from .paths import (
     SOURCE_CSV,
     SOURCE_MONKER,
@@ -276,6 +277,40 @@ def _unknown_codes(codes: Iterable[str], names: dict[str, str]) -> tuple[str, ..
     return tuple(code for code in codes if code not in names)
 
 
+def native_refusal(folder: str | None) -> str | None:
+    """Why a folder of the solver's own simulation files cannot be imported, or ``None``.
+
+    A folder of ``.mkr`` files is the one import this application cannot make, and the
+    difference between saying so and saying "this folder is not a simulation" is the whole
+    of issue #24's Phase 1: the user has pointed the wizard at a real simulation, and being
+    told what the file is -- an archive, a database, a stream nothing recognises -- is how
+    they learn that importing it would need an export instead. See
+    ``docs/native-import.md`` for what is known about the format and what would have to be.
+
+    Read-only, and never fatal in itself: the first native file is probed so the message can
+    name what it actually is, and a file that cannot even be opened still leaves the user
+    with the thing to do rather than with a traceback.
+    """
+    absolute = resolve_range_folder(folder)
+    if absolute is None:
+        return None
+    natives = native_files(absolute)
+    if not natives:
+        return None
+    # Counted whole rather than from the names: the names are capped at a readable handful,
+    # so "and 19 more" would be said about a folder of two files and understate a folder of
+    # four hundred -- the one number in this message that is a fact about the folder.
+    total = native_count(absolute)
+    count = f", and {total - 1} more" if total > 1 else ""
+    try:
+        detail = describe_refusal(probe(str(Path(absolute) / natives[0])))
+    except NativeFormatError as error:
+        detail = (
+            f"{natives[0]} could not be read: {error} This application reads exported range folders and CSV tables."
+        )
+    return f"{natives[0]}{count}: {detail}"
+
+
 def _scan_kind(folder: str | None) -> str:
     """Which reader a folder needs, judged by what it holds rather than by its name.
 
@@ -365,6 +400,12 @@ def scan_csv_simulation(
         notes.append(f"Players: {players} detected from the seats the table names. Check it before importing.")
     if not NAME_STACK_SIGNAL.search(name):
         notes.append(f"Stack depth: {stack}bb assumed, as the folder name declares none.")
+    ignored = native_count(absolute)
+    if ignored:
+        notes.append(
+            f"{ignored} solver simulation file(s) here are ignored: this folder is read from its"
+            " CSV tables. See docs/native-import.md for why they cannot be read directly."
+        )
     if not ev_rows:
         notes.append("No EV data in this table: the trainer can ask its nodes but cannot grade an answer.")
     notes.append(
@@ -497,6 +538,13 @@ def scan_simulation(
     if _scan_kind(folder) == SOURCE_CSV:
         return scan_csv_simulation(folder, tree_configs, tree_infos)
 
+    # Asked before the range files are, so a folder of the solver's own simulations gets the
+    # answer that names them: without this, the scan reports "not a simulation" about a file
+    # that is exactly a simulation, just not one this application can read.
+    refusal = native_refusal(folder)
+    if refusal is not None and not holds_range_files(folder):
+        raise SimulationScanError(refusal)
+
     info = inspect_range_folder(folder, tree_configs)
     if not info.get("valid"):
         raise SimulationScanError(str(info.get("error", "This folder is not a simulation")))
@@ -517,6 +565,12 @@ def scan_simulation(
     folder_name = absolute.name
 
     notes: list[str] = []
+    ignored = native_count(absolute)
+    if ignored:
+        notes.append(
+            f"{ignored} solver simulation file(s) here are ignored: this folder is read from its"
+            " range files. See docs/native-import.md for why they cannot be read directly."
+        )
     if not hands:
         notes.append("This export holds no readable entries: there is no strategy to import yet.")
     if not NAME_SEAT_SIGNAL.search(folder_name):
