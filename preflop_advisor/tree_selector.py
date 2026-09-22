@@ -298,6 +298,21 @@ class TreeSelector(QWidget):
         self.dropdown.setCurrentIndex(index)
         self.on_tree_selected(index)
 
+    def select(self, table_key: str) -> bool:
+        """Select one configured simulation by key, and say whether it was there.
+
+        The hand review needs this: a decision that matched a simulation other than the one
+        on screen has to be drilled on the simulation it matched, and the rest of the window
+        has to move to it too -- a grid drawn from one tree beside a trainer reading another
+        is a screen that disagrees with itself.
+        """
+        for index, tree in enumerate(self.trees):
+            if tree.get("table_key") == table_key:
+                self.dropdown.setCurrentIndex(index)
+                self.on_tree_selected(index)
+                return True
+        return False
+
     def get_tree_infos(self) -> dict[str, Any] | None:
         """
         Retrieves information of the selected tree.

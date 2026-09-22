@@ -264,3 +264,37 @@ def test_a_bigger_table_trims_the_seat_list_to_its_own_size(hu_tree, tree_config
 
     assert metadata.seats == ("UTG", "MP", "CO", "BU", "SB", "BB")
     assert metadata.num_players == 6
+
+
+# --------------------------------------------------------------------------------------
+# A node offering more than one bet size
+# --------------------------------------------------------------------------------------
+
+
+def test_a_node_is_answered_once_per_bet_size_it_offers(two_size_tree, tree_configs):
+    """The whole node, not the first sizing that exists: two raises are two actions.
+
+    A provider that reported one of them would have the trainer offer a choice the solver
+    does not make -- and never grade the raise the player actually chose.
+    """
+    results = provider_for(two_size_tree, tree_configs).strategy(node_for("SB", []), REFERENCE_HAND)
+
+    assert [result.action for result in results] == ["Fold", "Call", "RaisePot", "Raise100"]
+
+
+def test_every_bet_size_is_a_branch_of_its_own(two_size_tree, tree_configs):
+    """What is behind each raise is behind *that* raise: the tree is walked whole."""
+    children = provider_for(two_size_tree, tree_configs).children(node_for("SB", []))
+
+    assert [(child.hero, child.path) for child in children] == [
+        ("BB", (("SB", "Call"),)),
+        ("BB", (("SB", "RaisePot"),)),
+        ("BB", (("SB", "Raise100"),)),
+    ]
+
+
+def test_the_hands_of_a_node_are_gathered_from_every_bet_size(two_size_tree, tree_configs):
+    """A union over the node's files, so a sizing whose file is sparse adds nothing."""
+    keys = provider_for(two_size_tree, tree_configs).hands_at(node_for("SB", []))
+
+    assert keys == [REFERENCE_HAND_MONKER]

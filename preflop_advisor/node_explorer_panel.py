@@ -307,7 +307,10 @@ class NodeExplorerPanel(QWidget):
         hand = f"Example hand {view.hand}; " if view.hand else ""
         self.notes.setText(f"{hand}{' '.join(view.notes)}".strip())
         self.table.show_state(view.table, view.hand or "")
-        if self.explorer is not None and view.actions:
+        # Only where the trainer could actually ask: an enabled button on a node with no
+        # priced hand deals nothing and reports that nothing answered, which reads as the
+        # application failing rather than the decision being unaskable.
+        if self.explorer is not None and view.gradable:
             self.current_spot = self.explorer.spot_for(self.current or Node(hero=view.hero, path=view.path))
             self.train_button.setEnabled(True)
 

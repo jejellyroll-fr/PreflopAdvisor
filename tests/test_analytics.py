@@ -204,12 +204,19 @@ def test_a_survey_counts_the_decisions_the_solver_straddles(survey):
     assert survey.mixed_density == pytest.approx(0.5)
 
 
-def test_the_gap_summary_is_read_over_the_graded_decisions_only(survey):
+def test_the_gap_summary_is_read_over_the_decisions_that_have_one(survey):
+    """Two decisions have a distance to report; the two forced moves have none.
+
+    All four are graded -- the source prices every action of every one -- but a decision the
+    solver had no choice about has no second action to be compared against. Counted as a
+    zero it would be averaged in as the closest decision of the tree, and reported as a
+    measure of the strategy where it is in fact a shape of the tree.
+    """
     assert survey.graded == 4
-    assert survey.gaps == pytest.approx((1.00, 0.01, 0.0, 0.0))
-    assert survey.close_share == pytest.approx(0.75)
-    assert survey.mean_gap == pytest.approx(0.2525)
-    assert survey.median_gap == pytest.approx(0.005)
+    assert survey.gaps == pytest.approx((1.00, 0.01))
+    assert survey.close_share == pytest.approx(0.5)
+    assert survey.mean_gap == pytest.approx(0.505)
+    assert survey.median_gap == pytest.approx(0.505)
 
 
 def test_a_source_that_publishes_no_ev_has_ungraded_decisions_not_free_ones(tmp_path):
@@ -257,9 +264,11 @@ def test_the_filters_narrow_by_seat_and_by_line_of_play(survey):
 
 
 def test_a_filter_can_ask_for_the_decisions_that_are_genuinely_close(survey):
+    """A forced move is not close: it has no second action for the gap to be small against."""
     close = select(survey.readings, NodeFilter(max_gap=VIABLE_GAP_BB))
 
-    assert [reading.identity for reading in close] == [DEFEND, AFTER_CALL, AFTER_RAISE]
+    assert [reading.identity for reading in close] == [DEFEND]
+    assert [reading.identity for reading in select(survey.readings, NodeFilter(max_gap=1.0))] == [OPEN, DEFEND]
 
 
 def test_mixed_only_leaves_the_decisions_with_two_actions_really_played(survey):
@@ -282,9 +291,14 @@ def test_the_filter_says_what_it_is(survey):
 
 
 def test_the_rankings_put_the_decision_being_asked_about_first(survey):
-    """The coin toss leads the closest list; the decisions with nothing to decide follow it."""
+    """The coin toss leads the closest list, and everything with a distance follows it.
+
+    By measured gap, so the wide open decision comes before the two forced moves: those have
+    no distance at all, and a list of what is close is not the place to put what is not a
+    decision.
+    """
     assert rank(survey.readings, "closest")[0].identity == DEFEND
-    assert [reading.identity for reading in rank(survey.readings, "closest")[1:]] == [AFTER_CALL, AFTER_RAISE, OPEN]
+    assert [reading.identity for reading in rank(survey.readings, "closest")[1:]] == [OPEN, AFTER_CALL, AFTER_RAISE]
     assert [reading.identity for reading in rank(survey.readings, "mixed")] == [DEFEND, OPEN, AFTER_CALL, AFTER_RAISE]
     assert [reading.identity for reading in rank(survey.readings, "widest")] == [DEFEND, OPEN, AFTER_CALL, AFTER_RAISE]
     assert rank(survey.readings, "widest")[0].difficulty.spread == pytest.approx(0.45), "45/55 beats 60/40"
