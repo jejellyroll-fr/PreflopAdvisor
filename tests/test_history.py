@@ -443,6 +443,25 @@ def test_a_deleted_simulation_still_has_its_history(history):
     assert history.snapshot(HistoryFilter(simulation="/gone/HU-100bb")).hands == 1
 
 
+def test_a_session_drilled_for_a_reviewed_hand_keeps_the_link(history):
+    """What a real mistake produced is readable back: the answers it was drilled for."""
+    history.record(answer(source="2024-05-01 #1234", ev_loss=1.20))
+    history.record(answer(source="", ev_loss=0.10))
+
+    linked = history.snapshot(HistoryFilter(source="2024-05-01 #1234"))
+
+    assert linked.hands == 1
+    assert linked.ev_loss == pytest.approx(1.20)
+    assert history.answers(HistoryFilter(source="2024-05-01 #1234"))[0].source == "2024-05-01 #1234"
+
+
+def test_an_answer_the_trainer_drew_itself_has_no_source(history):
+    """Empty rather than a word: the ordinary case is that nothing asked for it."""
+    history.record(answer())
+
+    assert history.answers()[0].source is None
+
+
 # --------------------------------------------------------------------------------------
 # Clearing it
 

@@ -45,7 +45,7 @@ from .types import ActionSequence
 logger = logging.getLogger(__name__)
 
 #: Bumped for every migration below. Stored in ``PRAGMA user_version``.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: One entry per version, applied in order to a database that is behind. Append-only:
 #: an existing file is upgraded in place, never dropped and rebuilt, because the rows in
@@ -91,6 +91,14 @@ MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX idx_answers_family   ON answers(family);
     CREATE INDEX idx_answers_verdict  ON answers(verdict);
     CREATE INDEX idx_classes_name     ON answer_classes(name);
+    """,
+    # -- 2 ------------------------------------------------------------------------
+    # Where an answer came from, when it came from somewhere other than the trainer's own
+    # draw: a reviewed real hand, whose mistake the session was started from. Empty for the
+    # ordinary case, which is why it is nullable rather than defaulted to a word.
+    """
+    ALTER TABLE answers ADD COLUMN source TEXT;
+    CREATE INDEX idx_answers_source ON answers(source);
     """,
 )
 
@@ -149,6 +157,9 @@ class TrainingAnswer:
     simulation_id: str | None = None
     session_id: str = ""
     answered_at: str | None = None
+    #: What this answer was drilled *for*, when it was: the reviewed hand a "train my
+    #: mistakes" session was started from. Empty for an answer the trainer drew itself.
+    source: str = ""
 
     # ------------------------------------------------------------------
     # What follows from the above
@@ -197,6 +208,9 @@ class HistoryFilter:
     since: str | None = None
     until: str | None = None
     verdict: str | None = None
+    #: The reviewed hand the answers were drilled for, which is how a session started from a
+    #: real mistake is read back later: what it cost, and whether it stuck.
+    source: str | None = None
 
     def where(self) -> tuple[str, list[object]]:
         """The SQL predicate and its parameters, which is also where injection cannot happen."""
@@ -217,6 +231,9 @@ class HistoryFilter:
         if self.verdict:
             clauses.append("a.verdict = ?")
             parameters.append(self.verdict)
+        if self.source:
+            clauses.append("a.source = ?")
+            parameters.append(self.source)
         return (" AND ".join(clauses) if clauses else "1 = 1"), parameters
 
 
@@ -302,6 +319,8 @@ class StoredAnswer:
     ev_loss: float
     pot: float | None
     verdict: str
+    #: The reviewed hand this answer was drilled for, when a session was started from one.
+    source: str | None = None
 
 
 def default_path(directory: str | os.PathLike[str]) -> str:
@@ -399,8 +418,8 @@ class TrainingHistory:
                 INSERT INTO answers(
                     answered_at, session_id, simulation, simulation_id, node_id, line, hero,
                     family, hand, hand_key, chosen, best, chosen_ev, best_ev, ev_loss, pot,
-                    verdict, chips_per_bb
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    verdict, chips_per_bb, source
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     answer.answered_at or now(),
@@ -421,6 +440,7 @@ class TrainingHistory:
                     answer.pot,
                     answer.verdict,
                     answer.chips_per_bb,
+                    answer.source or None,
                 ),
             )
             rowid = int(cursor.lastrowid or 0)
@@ -621,6 +641,7 @@ class TrainingHistory:
                 ev_loss=row["ev_loss"],
                 pot=row["pot"],
                 verdict=row["verdict"],
+                source=row["source"],
             )
             for row in rows
         ]

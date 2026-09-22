@@ -28,6 +28,7 @@ from .card_selector import CardSelector
 from .config_store import LayeredConfig, user_config_path
 from .config_tab import ConfigTab
 from .errors import PreflopAdvisorError
+from .hand_review_panel import HandReviewPanel
 from .history import TrainingHistory, default_path
 from .import_dialog import ImportWizard
 from .node_explorer_panel import NodeExplorerPanel
@@ -214,6 +215,12 @@ class MainWindow(QMainWindow):
         self.explorer = NodeExplorerPanel(self.tree_selector.get_tree_infos, tree_reader_settings)
         self.explorer.trainRequested.connect(self.train_node)
 
+        # The review reads every configured simulation at once rather than the selected one:
+        # a real hand played six-handed has to be compared against the six-handed tree, and
+        # the one on screen may be another game entirely.
+        self.review = HandReviewPanel(lambda: self.tree_selector.trees, tree_reader_settings)
+        self.review.trainRequested.connect(self.train_spots)
+
         # The configuration tab edits the user layer of the config and, on save, asks the
         # window to redraw with the new values and rebuild the sim list if it changed.
         self.config_tab = ConfigTab(self.configs)
@@ -223,6 +230,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.advisor, "Advisor")
         self.tabs.addTab(self.trainer, "Trainer")
         self.tabs.addTab(self.explorer, "Explorer")
+        self.tabs.addTab(self.review, "Review Hands")
         self.tabs.addTab(self.config_tab, "Configuration")
         main_layout.addWidget(self.tabs, 0, 0)
 
@@ -317,11 +325,43 @@ class MainWindow(QMainWindow):
         """Slot for the component signals, which each carry a payload we do not need."""
         self.update_output_frame()
 
-    def train_node(self, spot: object) -> None:
-        """Drill one decision the Explorer asked for, and show the Trainer doing it."""
+    def train_node(self, spot: object, source: str = "") -> None:
+        """Drill one decision the Explorer or the hand review asked for.
+
+        :param source: The reviewed hand it came from, kept with the answers the session
+            produces, so a real mistake and what was drilled for it stay linked.
+        """
         if not isinstance(spot, Spot):  # pragma: no cover - the signal only ever carries one
             return
-        self.trainer.train_spot(spot)
+        self.trainer.train_spot(spot, source=source)
+        self.tabs.setCurrentWidget(self.trainer)
+
+    def train_spots(self, spots: object, simulation: str = "", source: str = "") -> None:
+        """Drill one decision the review asked for, or several in turn.
+
+        One spot is pinned to its node -- the session then says which decision it is drilling
+        -- and several become one session over all of them, which is what "train my mistakes"
+        is: the worst decisions in turn, each asked with whatever hands its node holds, so
+        the real hand is one instance of the decision rather than the question repeated.
+
+        :param simulation: The simulation the decisions were matched against, which the
+            window moves to before drilling. A spot resolved against whichever tree happened
+            to be selected would be read from a solution that never played this hand.
+        """
+        if not isinstance(spots, list) or not all(isinstance(spot, Spot) for spot in spots):
+            return  # pragma: no cover - the signal only ever carries the panel's own spots
+        if simulation and not self.tree_selector.select(simulation):
+            # It was configured when the document was read and is not now: drilling these
+            # nodes against the tree on screen would report another solution's strategy.
+            self.trainer.spot_label.setText(
+                f"{simulation} is not configured any more, so these nodes cannot be drilled."
+            )
+            self.tabs.setCurrentWidget(self.trainer)
+            return
+        if len(spots) == 1:
+            self.trainer.train_spot(spots[0], source=source)
+        else:
+            self.trainer.train_spots(spots, source=source)
         self.tabs.setCurrentWidget(self.trainer)
 
     def import_simulation(self) -> None:
