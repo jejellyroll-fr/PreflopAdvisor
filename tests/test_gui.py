@@ -20,6 +20,7 @@ from preflop_advisor.history import default_path
 from preflop_advisor.node_explorer_panel import EMPTY_STATE
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
+from preflop_advisor.sampler import DEFAULT_POOL, MODES
 from preflop_advisor.strategy import Node, node_for, node_identity, provider_for
 from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
@@ -1403,6 +1404,86 @@ def test_the_chooser_only_offers_what_the_filter_leaves(main_window):
     offered = [trainer.spot_choice.itemText(index) for index in range(trainer.spot_choice.count())]
     assert "SB first in" not in offered
     assert any("BB" in label for label in offered)
+
+
+def test_the_sampling_mode_is_read_off_the_bar(main_window):
+    """Random is what the trainer always did, so it stays what the bar opens on."""
+    trainer = main_window.trainer
+
+    assert trainer.sampling == "random"
+
+    trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData("close"))
+
+    assert trainer.sampling == "close"
+
+
+def test_a_difficulty_aware_mode_looks_past_the_first_spot(main_window):
+    """A mode that weighs candidates has to be shown more than one to weigh."""
+    trainer = main_window.trainer
+    trainer.next_hand()
+
+    assert trainer.pool_size() == 1
+
+    trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData("weakness"))
+
+    assert trainer.pool_size() == DEFAULT_POOL
+
+
+def test_the_plain_draw_reads_no_history(main_window, monkeypatch):
+    """The record is a GROUP BY over every answer ever given; a plain session pays none.
+
+    The argument used to be built on every deal whatever the mode, so the draw the trainer
+    has always done -- the cheapest one -- got slower with every answer in the file.
+    """
+    from preflop_advisor.history import TrainingHistory
+
+    reads: list[str] = []
+    original = TrainingHistory.tally
+
+    def counted(self, by: str = "node", filters=None):
+        reads.append(by)
+        return original(self, by, filters)
+
+    monkeypatch.setattr(TrainingHistory, "tally", counted)
+    trainer = main_window.trainer
+    trainer.rng.seed(5)
+    trainer.next_hand()
+
+    for mode in ("random", "frequency", "close", "mixed"):
+        trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData(mode))
+        trainer.next_hand()
+    assert reads == [], "a mode that weighs only the strategy pays no query"
+
+    trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData("weakness"))
+    trainer.next_hand()
+
+    assert reads == ["node"], "weighed against the history only where the mode reads it"
+
+
+def test_every_mode_still_deals_a_question_it_can_grade(main_window):
+    """A preference over what to ask must never leave the session with nothing to answer."""
+    trainer = main_window.trainer
+    trainer.rng.seed(3)
+    trainer.next_hand()
+
+    for mode in MODES:
+        trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData(mode))
+        trainer.next_hand()
+        question = trainer.question
+        assert question is not None, mode
+        assert question.results, mode
+        trainer.answer(question.actions()[0])
+
+
+def test_a_weakness_session_can_be_answered_before_it_has_a_history(main_window):
+    """A mode that reads the history has to work for a user who has none yet."""
+    trainer = main_window.trainer
+    trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData("weakness"))
+
+    trainer.next_hand()
+
+    assert trainer.track_record() is not None
+    assert trainer.question is not None
 
 
 def test_the_chooser_itself_shows_the_pinned_node(main_window):

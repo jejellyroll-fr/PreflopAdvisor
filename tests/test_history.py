@@ -261,6 +261,49 @@ def test_a_grouping_that_does_not_exist_is_refused(history):
         history.weaknesses("astrology")
 
 
+def test_every_grouping_can_be_tallied_at_once(history):
+    """The sampler weighs every node it may ask, not the ten worst, so it reads them all."""
+    history.record(answer(hero="BB", ev_loss=0.60))
+    history.record(answer(hero="BB", ev_loss=0.20, verdict="Correct"))
+    history.record(answer(hero="SB", line=[], ev_loss=0.10))
+
+    by_position = history.tally("position")
+
+    assert set(by_position) == {"BB", "SB"}
+    assert by_position["BB"].hands == 2
+    assert by_position["BB"].ev_loss == pytest.approx(0.80)
+    assert by_position["BB"].per_hand == pytest.approx(0.40)
+    assert by_position["BB"].correct == 1
+    assert by_position["SB"].hands == 1
+
+
+def test_the_ranking_is_the_tally_ordered_worst_first(history):
+    """One query behind both readings, so a grouping cannot mean two things."""
+    history.record(answer(hero="BB", ev_loss=0.60))
+    history.record(answer(hero="BB", ev_loss=0.20))
+    history.record(answer(hero="SB", line=[], ev_loss=0.05))
+
+    ranked = sorted(history.tally("position").values(), key=lambda entry: (-entry.per_hand, entry.key))
+
+    assert history.weaknesses("position") == ranked
+    assert [entry.key for entry in ranked] == ["BB", "SB"]
+
+
+def test_the_ranking_still_honours_its_filters_and_its_floor(history):
+    history.record(answer(hero="BB", ev_loss=0.60, simulation="HU-100bb"))
+    history.record(answer(hero="SB", line=[], ev_loss=0.90, simulation="6max-100bb"))
+
+    only_one = history.weaknesses("position", HistoryFilter(simulation="HU-100bb"))
+
+    assert [entry.key for entry in only_one] == ["BB"]
+    assert history.weaknesses("position", min_hands=2) == []
+
+
+def test_a_tally_by_a_grouping_that_does_not_exist_is_refused(history):
+    with pytest.raises(ValueError, match="not one of"):
+        history.tally("astrology")
+
+
 def test_the_trend_runs_from_the_oldest_sitting_to_the_newest(tmp_path):
     path = default_path(tmp_path)
     for session, loss in (("first", 0.50), ("second", 0.20)):
