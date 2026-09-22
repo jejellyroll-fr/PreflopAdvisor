@@ -28,11 +28,13 @@ from .config_store import LayeredConfig
 from .config_tab import ConfigTab
 from .errors import PreflopAdvisorError
 from .import_dialog import ImportWizard
+from .node_explorer_panel import NodeExplorerPanel
 from .outputframe import OutputFrame
 from .paths import package_file
 from .position_selector import PositionSelector
 from .randomizer import RandomButton
 from .settings import ConfigSource, Settings, normalize
+from .trainer import Spot
 from .trainer_panel import TrainerPanel
 from .tree_reader import TreeReader
 from .tree_selector import TreeSelector
@@ -193,6 +195,12 @@ class MainWindow(QMainWindow):
             output_settings,
         )
 
+        # The explorer walks the same tree the trainer drills: it reads a node, and asks
+        # the trainer for that exact decision, which is the one way to reach the lines the
+        # spot catalogue cannot name.
+        self.explorer = NodeExplorerPanel(self.tree_selector.get_tree_infos, tree_reader_settings)
+        self.explorer.trainRequested.connect(self.train_node)
+
         # The configuration tab edits the user layer of the config and, on save, asks the
         # window to redraw with the new values and rebuild the sim list if it changed.
         self.config_tab = ConfigTab(self.configs)
@@ -201,6 +209,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self.advisor, "Advisor")
         self.tabs.addTab(self.trainer, "Trainer")
+        self.tabs.addTab(self.explorer, "Explorer")
         self.tabs.addTab(self.config_tab, "Configuration")
         main_layout.addWidget(self.tabs, 0, 0)
 
@@ -277,6 +286,13 @@ class MainWindow(QMainWindow):
     def on_selection_changed(self, _: object = None) -> None:
         """Slot for the component signals, which each carry a payload we do not need."""
         self.update_output_frame()
+
+    def train_node(self, spot: object) -> None:
+        """Drill one decision the Explorer asked for, and show the Trainer doing it."""
+        if not isinstance(spot, Spot):  # pragma: no cover - the signal only ever carries one
+            return
+        self.trainer.train_spot(spot)
+        self.tabs.setCurrentWidget(self.trainer)
 
     def import_simulation(self) -> None:
         """Bring in a simulation of the user's own, then select it.
