@@ -363,8 +363,8 @@ def scan_csv_simulation(
     if not ev_rows:
         notes.append("No EV data in this table: the trainer can ask its nodes but cannot grade an answer.")
     notes.append(
-        "Columns are read from each table's own header; a mapping confirmed here is stored with the"
-        " simulation and can be corrected later in the configuration."
+        "Columns are read from each table's own header, every time the folder is read. A column read"
+        " wrongly is corrected in the configuration, under this simulation's own name."
     )
 
     same_folder, same_size = _duplicates(
@@ -565,14 +565,20 @@ def scan_simulation(
     return scan
 
 
-def inferred_mapping(scan: SimulationScan, overrides: Mapping[str, Any] | None = None) -> dict[str, str]:
-    """The column mapping an import stores: what was detected, with what the user changed.
+def inferred_mapping(overrides: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """The column mapping an import stores: what the user changed, and nothing else.
 
-    The detected mapping is the interesting half -- a table whose columns nobody had to name
-    still imports unasked -- and the overrides are what a table with unusual headers needs.
+    Detection is a per-table reading: every file is matched against its *own* header each
+    time the folder is read, and a folder whose tables name their columns differently reads
+    because of that. What is stored beside the tree is applied to every table instead, so
+    storing a detection would turn one table's reading into a folder-wide override -- a
+    file whose header says ``Action`` would then be read looking for the ``Move`` the other
+    file used, find nothing, and have its rows silently left out.
+
+    A mapping the user corrected is a different thing and is kept: it is an instruction
+    about the folder, which is what a declaration has to be.
     """
-    mapping = ColumnMapping(columns=dict(scan.columns)).overridden(overrides or {})
-    return dict(mapping.columns)
+    return {str(role): str(header).strip() for role, header in (overrides or {}).items() if str(header).strip()}
 
 
 def entry_value(request: ImportRequest) -> str:

@@ -28,9 +28,15 @@ from preflop_advisor.csv_format import (
     parse_line,
     read_rows,
 )
-from preflop_advisor.csv_provider import CsvIndex, CsvStrategyProvider, csv_files
+from preflop_advisor.csv_provider import CsvIndex, CsvStrategyProvider, csv_files, fingerprint
 from preflop_advisor.errors import CsvImportError, RangeFolderNotFound, SimulationScanError
-from preflop_advisor.import_wizard import ImportRequest, entry_value, register_simulation, scan_csv_simulation
+from preflop_advisor.import_wizard import (
+    ImportRequest,
+    entry_value,
+    inferred_mapping,
+    register_simulation,
+    scan_csv_simulation,
+)
 from preflop_advisor.paths import PACKAGE_ROOT
 from preflop_advisor.settings import ConfigSource
 from preflop_advisor.sizings import Sizing
@@ -53,6 +59,14 @@ TABLE = [
     ("SB:call", "BB", "AhKs4h3s", "check", "100", "0.4", "2.0"),
 ]
 HEADER = ["Line", "Hero", "Hand", "Action", "Freq", "EV (bb)", "Pot"]
+#: The other layout a converter emits: every raise is named ``Raise``, and its size is a
+#: column of its own. Two raises of one node are then two rows under one name.
+SIZING_HEADER = [*HEADER, "Sizing"]
+SIZING_TABLE = [
+    ("", "SB", "AhKs4h3s", "Raise", "60", "1.2", "1.5", "2.5bb"),
+    ("", "SB", "AhKs4h3s", "Raise", "30", "1.1", "1.5", "8bb"),
+    ("", "SB", "AhKs4h3s", "Call", "10", "0.5", "1.5", ""),
+]
 
 
 def write_table(folder, rows=TABLE, header=None, name="solution.csv", encoding="utf-8"):
@@ -281,9 +295,38 @@ def test_a_hand_nothing_can_read_is_kept_as_written():
 # Rows
 
 
-def rows_of(rows, mapping=None, **kwargs):
-    mapping = mapping or detect_columns(HEADER)
-    return read_rows((dict(zip(HEADER, row)) for row in rows), mapping, chips_per_bb=100.0, **kwargs)
+def rows_of(rows, mapping=None, header=None, **kwargs):
+    header = HEADER if header is None else header
+    mapping = mapping or detect_columns(header)
+    return read_rows((dict(zip(header, row)) for row in rows), mapping, chips_per_bb=100.0, **kwargs)
+
+
+def test_a_raise_sized_by_a_column_of_its_own_is_named_by_that_size():
+    """The action column says ``Raise`` on every row, so the size column is the difference.
+
+    A name that kept the bare word would make one node's two raises a single action, and
+    the index -- which keys actions by name -- would keep whichever it read first and price
+    the other one by it.
+    """
+    accepted, problems = rows_of(SIZING_TABLE, header=SIZING_HEADER)
+
+    assert problems == []
+    assert [row.action for row in accepted] == ["Raise2.5bb", "Raise8bb", "Call"]
+    assert [row.sizing for row in accepted] == [Sizing("blinds", 2.5), Sizing("blinds", 8.0), Sizing("call")]
+
+
+def test_a_raise_the_export_names_itself_keeps_that_name_beside_a_size_column():
+    """``Open`` is a word the table chose; only its size is taken from the other column.
+
+    Its lines of play are written in that vocabulary, so renaming it would leave every line
+    naming an action the node no longer offers.
+    """
+    rows = [("", "SB", "AhKs4h3s", "Open", "100", "1.2", "1.5", "2.5bb")]
+
+    accepted, _ = rows_of(rows, header=SIZING_HEADER)
+
+    assert accepted[0].action == "Open"
+    assert accepted[0].sizing == Sizing("blinds", 2.5)
 
 
 def test_a_row_is_read_into_one_action_of_one_node():
@@ -420,11 +463,58 @@ def test_the_index_keeps_the_problems_it_found(folder):
     assert "solution.csv:9: no acting position" in report.diagnostics()
 
 
+def test_a_table_is_fingerprinted_to_the_nanosecond(tmp_path):
+    """A same-size rewrite inside one second is still a rewrite.
+
+    Read to the whole second, the fingerprint of an edited file is the fingerprint of the
+    one before it -- same size, same second -- and the index goes on answering with the
+    numbers the table no longer holds.
+    """
+    path = write_table(tmp_path, rows=TABLE[:1])
+    files = csv_files(str(tmp_path))
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    first = fingerprint(files, {}, 100.0, "auto")
+
+    os.utime(path, ns=(1_000_000_001, 1_000_000_001))
+
+    assert fingerprint(files, {}, 100.0, "auto") != first
+
+
 def test_the_files_of_a_folder_are_read_in_a_reproducible_order(tmp_path):
     write_table(tmp_path, rows=TABLE[:1], name="b.csv")
     write_table(tmp_path, rows=TABLE[:1], name="a.csv")
 
     assert [os.path.basename(path) for path in csv_files(str(tmp_path))] == ["a.csv", "b.csv"]
+
+
+def test_two_tables_of_one_folder_may_name_the_action_column_differently(tmp_path):
+    """Each table is read against its own header, whole, in one folder.
+
+    Nothing a detection found is stored as a declaration: a folder whose files were written
+    by different tools reads because every table is asked what its own columns say.
+    """
+    write_table(tmp_path, rows=TABLE, name="a.csv")
+    write_table(tmp_path, rows=TABLE, header=["Move" if name == "Action" else name for name in HEADER], name="b.csv")
+
+    report = provider_for(tmp_path).report
+
+    assert report.rows == 2 * len(TABLE)
+    assert report.problem_total == 0, "no table is read looking for another table's header"
+
+
+def test_the_report_says_which_table_the_folder_was_read_with(tmp_path):
+    """What the wizard shows as "columns read from this table" has to be one of them.
+
+    The first table of the folder, since the files are listed in a reproducible order --
+    which of them had the last word would otherwise be an accident of listing.
+    """
+    write_table(tmp_path, rows=TABLE, name="a.csv")
+    write_table(tmp_path, rows=TABLE, header=["Move" if name == "Action" else name for name in HEADER], name="b.csv")
+
+    report = provider_for(tmp_path).report
+
+    assert report.columns.column_of("action") == "Action"
+    assert report.columns.complete
 
 
 # --------------------------------------------------------------------------------------
@@ -637,7 +727,12 @@ def test_a_folder_that_is_not_a_table_is_refused_rather_than_imported(tmp_path):
         scan_csv_simulation(str(tmp_path), READER)
 
 
-def test_importing_a_table_writes_the_reader_and_the_columns_beside_it(folder, tmp_path):
+def test_importing_a_table_writes_the_reader_beside_it_and_no_columns_of_its_own(folder, tmp_path):
+    """What the wizard read is shown and not declared: a detection belongs to one table.
+
+    A mapping written beside the tree is applied to every table of the folder, so storing
+    one table's reading would have the others looked at for columns they do not have.
+    """
     scan = scan_csv_simulation(str(folder), READER)
     config = LayeredConfig(PACKAGE_CONFIG, user_path=tmp_path / "config.ini")
     request = ImportRequest(
@@ -647,15 +742,35 @@ def test_importing_a_table_writes_the_reader_and_the_columns_beside_it(folder, t
         players=scan.players,
         stack_bb=str(scan.stack_bb),
         kind=scan.kind,
-        columns=dict(scan.columns),
+        columns=inferred_mapping(),
     )
 
     key = register_simulation(config, request)
 
     assert config.get("TreeInfos", key) == entry_value(request)
     assert config.get("TreeInfos", f"{key}.kind") == "csv"
-    assert config.get("TreeInfos", f"{key}.column.action") == "Action"
-    assert config.get("TreeInfos", f"{key}.column.hero") == "Hero"
+    assert config.get("TreeInfos", f"{key}.column.action") in (None, "")
+    assert scan.columns["action"] == "Action", "the wizard still says what it read"
+
+
+def test_a_mapping_the_user_corrects_is_still_written_beside_the_tree(tmp_path):
+    """A correction is an instruction about the folder, which is what a declaration is."""
+    write_table(tmp_path, rows=TABLE, header=["Move" if name == "Action" else name for name in HEADER])
+    config = LayeredConfig(PACKAGE_CONFIG, user_path=tmp_path / "config.ini")
+    request = ImportRequest(
+        folder=str(tmp_path),
+        name="corrected",
+        game="PLO",
+        players=2,
+        stack_bb="100",
+        kind="csv",
+        columns=inferred_mapping({"action": "Move"}),
+    )
+
+    key = register_simulation(config, request)
+
+    assert config.get("TreeInfos", f"{key}.column.action") == "Move"
+    assert config.get("TreeInfos", f"{key}.column.hero") in (None, "")
 
 
 def test_importing_a_range_folder_declares_no_kind_and_no_columns(tmp_path):

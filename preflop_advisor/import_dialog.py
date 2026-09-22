@@ -221,7 +221,10 @@ class MetadataPage(QWizardPage):
             tooltip=self.tooltip_edit.text().strip(),
             code_names=names,
             kind=scan.kind,
-            columns=inferred_mapping(scan),
+            # Nothing is declared about the columns: the wizard has no field for them, and a
+            # table read from its own header needs no declaration. A mapping can still be
+            # written by hand under the simulation's own name in the configuration.
+            columns=inferred_mapping(),
         )
 
     def nextId(self) -> int:
@@ -261,8 +264,12 @@ class SummaryPage(QWizardPage):
             *(
                 [
                     "Columns: "
-                    + (", ".join(f"{role}={header}" for role, header in request.columns.items()) or "none")
-                    + " (read from each table's own header)"
+                    + (
+                        ", ".join(f"{role}={header}" for role, header in request.columns.items())
+                        + " (you corrected these)"
+                        if request.columns
+                        else "each table is read from its own header"
+                    )
                 ]
                 if request.kind == SOURCE_CSV
                 else [

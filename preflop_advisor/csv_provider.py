@@ -192,6 +192,10 @@ def csv_files(folder: str | os.PathLike[str]) -> list[str]:
 def fingerprint(files: Iterable[str], mapping: Mapping[str, str], chips_per_bb: float, ev_unit: str) -> str:
     """What an index was built from: the tables, their sizes and mtimes, and how they are read.
 
+    The mtime is read in nanoseconds, as the range-file index reads it: a same-size rewrite
+    within one second is otherwise indistinguishable from no change at all, and the index
+    would go on answering with the numbers the file no longer holds.
+
     A corrected column mapping or another EV unit changes what every stored row means, so
     both are part of the fingerprint: an index built under one reading must not answer
     questions asked under another.
@@ -204,7 +208,7 @@ def fingerprint(files: Iterable[str], mapping: Mapping[str, str], chips_per_bb: 
         except OSError:  # pragma: no cover - a file that vanished between listing and stat
             parts.append(f"{path}:gone")
             continue
-        parts.append(f"{os.path.basename(path)}:{stat.st_size}:{int(stat.st_mtime)}")
+        parts.append(f"{os.path.basename(path)}:{stat.st_size}:{stat.st_mtime_ns}")
     return "|".join(parts)
 
 
@@ -261,6 +265,10 @@ class CsvIndex:
         self.nodes: list[StoredNode] = []
         self._connection: sqlite3.Connection | None = None
         self._node_ids: dict[str, int] = {}
+        #: How the *first* readable table of the folder was read, which is what the report
+        #: says the folder was read with. Set while building, and ``None`` on an index read
+        #: without a build -- the mapping is not stored in the index.
+        self._used_mapping: ColumnMapping | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -398,7 +406,11 @@ class CsvIndex:
                 self._store_problem(connection, problem)
                 problems.append(problem)
                 return 0
-            self._used_mapping = mapping
+            # The *first* readable table's mapping, not the last: the report says what a
+            # table of this folder was read with, and which table said so must not depend
+            # on the order the folder happened to be listed in.
+            if self._used_mapping is None:
+                self._used_mapping = mapping
             accepted, found = read_rows(
                 (dict(row) for row in reader),
                 mapping,
@@ -472,10 +484,10 @@ class CsvIndex:
                 "SELECT file, line, message, fatal FROM problems LIMIT ?", (MAX_PROBLEMS,)
             )
         ]
-        columns = getattr(self, "_used_mapping", None)
+        columns = self._used_mapping
         if columns is None:
-            # Read from an index built by an earlier run: what its first table was read with
-            # is not in the index, so the declaration stands in for it.
+            # Read from an index built by an earlier run: how the first table was read is
+            # not in the index, so the declaration stands in for it.
             columns = ColumnMapping(columns=dict(self.declared))
         return ImportReport(
             folder=self.folder,
