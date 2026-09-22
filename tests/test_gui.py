@@ -16,10 +16,11 @@ from preflop_advisor.config_store import LayeredConfig
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
 from preflop_advisor.hand_classes import classify
 from preflop_advisor.hand_convert_helper import convert_hand
+from preflop_advisor.history import default_path
 from preflop_advisor.node_explorer_panel import EMPTY_STATE
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
-from preflop_advisor.strategy import Node, provider_for
+from preflop_advisor.strategy import Node, node_for, node_identity, provider_for
 from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector, ante_of
@@ -229,8 +230,13 @@ def test_tree_selector_exposes_the_default_tree(qtbot, raw_config):
 
 
 @pytest.fixture
-def main_window(qtbot):
-    window = MainWindow()
+def main_window(qtbot, tmp_path):
+    """A window whose training history is a file of this test's own.
+
+    Not the user's: a test that answers a hand must not add to the history of whoever
+    runs the suite, and a history left behind by one test must not be read by the next.
+    """
+    window = MainWindow(history_path=default_path(tmp_path))
     qtbot.addWidget(window)
     return window
 
@@ -313,7 +319,7 @@ def test_the_window_registers_a_progress_dialog_for_database_builds(main_window)
         progress.close()
 
 
-def test_the_progress_factory_outlives_the_window_that_registered_it(qtbot):
+def test_the_progress_factory_outlives_the_window_that_registered_it(qtbot, tmp_path):
     """The store keeps the factory for the whole process; a window does not last that long.
 
     Closing over the window meant every later build reached a MainWindow Qt had already
@@ -325,7 +331,7 @@ def test_the_progress_factory_outlives_the_window_that_registered_it(qtbot):
 
     # Deliberately not handed to qtbot: the point is to let Qt destroy it while the store
     # still holds whatever the window registered, which is what qtbot's teardown prevents.
-    window = MainWindow()
+    window = MainWindow(history_path=default_path(tmp_path))
     window.deleteLater()
     del window
     gc.collect()
@@ -413,7 +419,7 @@ def test_the_card_grid_stops_growing_before_its_buttons_become_slabs(main_window
     assert button.height() < button.width() * 2
 
 
-def test_the_divider_position_survives_a_restart(qtbot, main_window):
+def test_the_divider_position_survives_a_restart(qtbot, main_window, tmp_path):
     """It is what makes the layout fit a screen this code cannot see.
 
     Both windows are shown: a divider is only placed once its page has a real size, and
@@ -425,7 +431,7 @@ def test_the_divider_position_survives_a_restart(qtbot, main_window):
     moved = main_window.splitter.sizes()
     main_window.save_layout()
 
-    reopened = MainWindow()
+    reopened = MainWindow(history_path=default_path(tmp_path))
     qtbot.addWidget(reopened)
     reopened.show()
     qtbot.wait(20)
@@ -675,7 +681,7 @@ def test_the_trainer_grades_in_the_unit_the_tree_declares(qtbot, two_size_tree, 
     ]
 
 
-def test_a_window_that_was_never_shown_saves_no_layout(qtbot):
+def test_a_window_that_was_never_shown_saves_no_layout(qtbot, tmp_path):
     """Its divider holds the proportions of a page that was never laid out.
 
     Saved, they are what the next launch opens on.
@@ -685,7 +691,7 @@ def test_a_window_that_was_never_shown_saves_no_layout(qtbot):
     from preflop_advisor.gui import SPLITTER_KEY
 
     QSettings().remove(SPLITTER_KEY)
-    window = MainWindow()
+    window = MainWindow(history_path=default_path(tmp_path))
     qtbot.addWidget(window)
 
     window.save_layout()
@@ -1477,6 +1483,77 @@ def test_the_explorer_reports_a_tree_it_cannot_read(main_window):
 
     assert "not found" in explorer.heading.text()
     assert explorer.tree.topLevelItemCount() == 0
+
+
+def test_answering_a_hand_writes_it_to_the_history(main_window):
+    """The tally dies with the process; the answer is what has to outlive it."""
+    trainer = main_window.trainer
+    trainer.rng.seed(7)
+    trainer.next_hand()
+    question = trainer.question
+    assert question is not None
+
+    # The action with the highest EV is the one the solver would have taken itself.
+    best = max(question.results, key=lambda result: result.ev if result.ev is not None else float("-inf"))
+    trainer.answer(best.action)
+
+    stored = main_window.history.answers()
+    assert len(stored) == 1
+    assert stored[0].hand == question.hand
+    assert stored[0].hero == question.spot.hero
+    assert stored[0].verdict == "Correct", "the best action costs nothing"
+    assert stored[0].chosen == stored[0].best
+
+
+def test_an_answer_is_filed_under_the_line_the_provider_resolved(main_window):
+    """A decision is one row of the report whichever screen it was reached from.
+
+    A spot's line is implicit -- the folds in between are left out and a raise is named
+    generically -- while what the provider hands back is the explicit line the strategy was
+    read by. Recording the implicit one would file one decision under two identities, and
+    two concrete nodes that only look alike could share one.
+    """
+    trainer = main_window.trainer
+    trainer.rng.seed(42)
+    trainer.next_hand()
+    question = trainer.question
+    assert question is not None and question.node is not None
+    implicit = node_for(question.spot.hero, list(question.spot.line))
+    assert question.node.path != implicit.path, "this spot must hold a concrete sizing, not a generic raise"
+
+    trainer.answer(question.actions()[0])
+
+    stored = main_window.history.answers()[0]
+    assert stored.node_id == node_identity(question.node)
+    assert stored.node_id != node_identity(implicit)
+
+
+def test_an_answer_is_filed_under_the_simulation_it_was_answered_on(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.answer(trainer.question.actions()[0])
+
+    tree = main_window.tree_selector.get_tree_infos()
+
+    assert main_window.history.simulations() == [tree["folder"]]
+
+
+def test_a_window_without_a_history_still_trains(qtbot, tmp_path, monkeypatch):
+    """A configuration directory that cannot be written is not a reason to refuse to start."""
+    import sqlite3
+
+    from preflop_advisor.history import TrainingHistory
+
+    def refuse(self) -> None:
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(TrainingHistory, "open", refuse)
+    window = MainWindow(history_path=default_path(tmp_path))
+    qtbot.addWidget(window)
+    window.trainer.next_hand()
+
+    assert window.history is None
+    assert window.trainer.question is not None
 
 
 def test_a_cancelled_import_changes_nothing(main_window, monkeypatch):

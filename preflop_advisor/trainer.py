@@ -18,7 +18,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from .strategy import StrategyResult
+from .strategy import Node, StrategyResult
 from .table_state import TableState
 from .types import ActionSequence
 
@@ -64,6 +64,12 @@ class Question:
     hand: str
     results: tuple[StrategyResult, ...]
     table: TableState | None = None
+    #: The decision as the provider resolved it: every implied fold written out, every
+    #: generic raise replaced by the sizing the source holds. The spot's own line is
+    #: implicit, and a node is identified by its explicit one -- recording the implicit
+    #: line would key the same decision two ways depending on which screen asked for it,
+    #: splitting one leak into two rows or merging two nodes that only look alike.
+    node: Node | None = None
 
     def actions(self) -> list[str]:
         """The actions this node offers, which are the only answers to allow."""
