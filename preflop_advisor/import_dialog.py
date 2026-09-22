@@ -36,10 +36,11 @@ from .import_wizard import (
     ImportRequest,
     SimulationScan,
     description_of,
+    inferred_mapping,
     register_simulation,
     scan_simulation,
 )
-from .paths import resolve_range_folder
+from .paths import SOURCE_CSV, resolve_range_folder
 from .theme import EV_NEGATIVE, EV_POSITIVE, TEXT_MUTED, TEXT_SECONDARY
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class FolderPage(QWizardPage):
         layout = QVBoxLayout(self)
         row = QHBoxLayout()
         self.folder_edit = QLineEdit()
-        self.folder_edit.setPlaceholderText("Path to a folder of .rng range files...")
+        self.folder_edit.setPlaceholderText("Path to a folder of .rng range files, or of .csv strategy tables...")
         self.folder_edit.textChanged.connect(self.rescan)
         browse = QPushButton("Browse...")
         browse.clicked.connect(self.browse)
@@ -198,14 +199,26 @@ class MetadataPage(QWizardPage):
         self.ante_edit.setText(scan.ante_bb)
         self.rake_edit.setText("no Rake" if not scan.ante_bb else "")
         self.codes = list(scan.unknown_codes)
-        self.mapping_label.setText(
-            "Action codes this export uses that nothing in your configuration names. Type a name "
-            "to declare one (in the [TreeReader] section of your own configuration), or leave it "
-            "blank to import anyway with those branches unreadable."
-            if self.codes
-            else "Every action code of this export is already named."
-        )
+        if scan.kind == SOURCE_CSV:
+            # A table is named by its columns, not by codes: there is nothing to declare about
+            # its actions, and everything to say about which of its columns was read as what.
+            self.mapping_label.setText(
+                "Columns read from this table:\n"
+                + "\n".join(f"• {line}" for line in scan.columns_described())
+                + "\nA column read wrongly is corrected in the configuration, under this "
+                "simulation's own name.\n"
+                + (("\n".join(f"! {problem}" for problem in scan.problems)) if scan.problems else "")
+            )
+        else:
+            self.mapping_label.setText(
+                "Action codes this export uses that nothing in your configuration names. Type a name "
+                "to declare one (in the [TreeReader] section of your own configuration), or leave it "
+                "blank to import anyway with those branches unreadable."
+                if self.codes
+                else "Every action code of this export is already named."
+            )
         self.mapping.setRowCount(0)
+        self.mapping.setVisible(scan.kind != SOURCE_CSV)
         for code in self.codes:
             row = self.mapping.rowCount()
             self.mapping.insertRow(row)
@@ -231,6 +244,11 @@ class MetadataPage(QWizardPage):
             rake=self.rake_edit.text().strip(),
             tooltip=self.tooltip_edit.text().strip(),
             code_names=names,
+            kind=scan.kind,
+            # Nothing is declared about the columns: the wizard has no field for them, and a
+            # table read from its own header needs no declaration. A mapping can still be
+            # written by hand under the simulation's own name in the configuration.
+            columns=inferred_mapping(),
         )
 
     def nextId(self) -> int:
@@ -268,7 +286,22 @@ class SummaryPage(QWizardPage):
             f"Game: {request.game}",
             f"Stack: {request.stack_bb}bb",
             f"Ante: {request.ante_bb or '0'}",
-            f"Codes declared: {', '.join(f'{name}={code}' for code, name in request.code_names.items()) or 'none'}",
+            *(
+                [
+                    "Columns: "
+                    + (
+                        ", ".join(f"{role}={header}" for role, header in request.columns.items())
+                        + " (you corrected these)"
+                        if request.columns
+                        else "each table is read from its own header"
+                    )
+                ]
+                if request.kind == SOURCE_CSV
+                else [
+                    "Codes declared: "
+                    + (", ".join(f"{name}={code}" for code, name in request.code_names.items()) or "none")
+                ]
+            ),
             "Stored in your own configuration; the shipped preset is never written.",
         ]
         scan = self.metadata_page.folder_page.scan

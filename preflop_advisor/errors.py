@@ -18,6 +18,10 @@ class SimulationScanError(PreflopAdvisorError):
     """A folder could not be read as a simulation, or cannot be imported as one."""
 
 
+class CsvImportError(PreflopAdvisorError):
+    """A folder of strategy tables cannot be read as a simulation."""
+
+
 class InvalidRaiseSizing(PreflopAdvisorError):
     """A ``RaiseSizeList`` entry does not map to any known action code."""
 

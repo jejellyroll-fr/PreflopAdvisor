@@ -163,6 +163,63 @@ def test_sims_panel_refuses_a_sim_without_range_files(tmp_path, qtbot):
     assert config.user.has_option("TreeInfos", "table98")
 
 
+def test_sims_panel_accepts_a_table_whose_folder_holds_no_range_files(tmp_path, qtbot):
+    """A CSV simulation is a simulation: asking it for .rng files is asking for nothing.
+
+    The panel validated every entry as a range folder, so saving the tab -- or merely
+    editing a table's description -- refused the folder the table is actually read from.
+    """
+    import csv
+
+    config = _temp_config(tmp_path)
+    table_folder = tmp_path / "tables"
+    table_folder.mkdir()
+    with open(table_folder / "solution.csv", "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["Hero", "Hand", "Action", "Freq", "EV", "Line"])
+        writer.writerow(["SB", "AhKs4h3s", "raise 75%", "100", "1.0", ""])
+    config.set("TreeInfos", "Table96", f"2,100,PLO,{table_folder},a table")
+    config.set("TreeInfos", "Table96.kind", "csv")
+    config.save()
+
+    tab = ConfigTab(config)
+    sims = tab.panels["Sims"]
+    sims.populate()
+
+    sims.collect(config)
+
+    assert config.get("TreeInfos", "Table96") == f"2,100,PLO,{table_folder},a table"
+
+
+def test_the_sim_editor_saves_a_table_it_can_read(tmp_path, qtbot):
+    """The editor's own Save goes through the same reader check as the panel's."""
+    import csv
+    from unittest.mock import patch
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from preflop_advisor.config_tab import SimEditDialog
+
+    config = _temp_config(tmp_path)
+    table_folder = tmp_path / "tables"
+    table_folder.mkdir()
+    with open(table_folder / "solution.csv", "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["Hero", "Hand", "Action", "Freq", "EV", "Line"])
+        writer.writerow(["SB", "AhKs4h3s", "raise 75%", "100", "1.0", ""])
+    config.set("TreeInfos", "Table95", f"2,100,PLO,{table_folder},a table")
+    config.set("TreeInfos", "Table95.kind", "csv")
+
+    dialog = SimEditDialog(config, table_key="Table95")
+    dialog.folder_edit.setText(str(table_folder))
+
+    with patch.object(QMessageBox, "warning") as spy:
+        dialog._validate_and_accept()
+
+    assert not spy.called
+    assert dialog.result() == dialog.DialogCode.Accepted
+
+
 def test_save_shows_a_message_box_and_emits_nothing_for_an_invalid_sim(tmp_path, qtbot):
     """Saving a sim without range files surfaces a QMessageBox and writes nothing."""
     from unittest.mock import patch
