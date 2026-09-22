@@ -53,6 +53,15 @@ PARTLY_GRADED = [
     *[(line, hero, hand, action, share, "", pot) for line, hero, hand, action, share, _, pot in TABLE[2:]],
 ]
 
+#: The open, and the answer to it with only one of its two actions priced: a source that
+#: publishes an EV for the raise and not for the call.
+HALF_PRICED = [
+    TABLE[0],
+    TABLE[1],
+    TABLE[2],
+    ("SB:raise 75%", "BB", "AhKs4h3s", "call", "55", "", "4.0"),
+]
+
 #: The four decisions of :data:`TABLE`, spelled the way the history keys them.
 OPEN = "SB:"
 DEFEND = "BB:SB Raise75"
@@ -195,12 +204,19 @@ def test_a_survey_counts_the_decisions_the_solver_straddles(survey):
     assert survey.mixed_density == pytest.approx(0.5)
 
 
-def test_the_gap_summary_is_read_over_the_graded_decisions_only(survey):
+def test_the_gap_summary_is_read_over_the_decisions_that_have_one(survey):
+    """Two decisions have a distance to report; the two forced moves have none.
+
+    All four are graded -- the source prices every action of every one -- but a decision the
+    solver had no choice about has no second action to be compared against. Counted as a
+    zero it would be averaged in as the closest decision of the tree, and reported as a
+    measure of the strategy where it is in fact a shape of the tree.
+    """
     assert survey.graded == 4
-    assert survey.gaps == pytest.approx((1.00, 0.01, 0.0, 0.0))
-    assert survey.close_share == pytest.approx(0.75)
-    assert survey.mean_gap == pytest.approx(0.2525)
-    assert survey.median_gap == pytest.approx(0.005)
+    assert survey.gaps == pytest.approx((1.00, 0.01))
+    assert survey.close_share == pytest.approx(0.5)
+    assert survey.mean_gap == pytest.approx(0.505)
+    assert survey.median_gap == pytest.approx(0.505)
 
 
 def test_a_source_that_publishes_no_ev_has_ungraded_decisions_not_free_ones(tmp_path):
@@ -248,9 +264,11 @@ def test_the_filters_narrow_by_seat_and_by_line_of_play(survey):
 
 
 def test_a_filter_can_ask_for_the_decisions_that_are_genuinely_close(survey):
+    """A forced move is not close: it has no second action for the gap to be small against."""
     close = select(survey.readings, NodeFilter(max_gap=VIABLE_GAP_BB))
 
-    assert [reading.identity for reading in close] == [DEFEND, AFTER_CALL, AFTER_RAISE]
+    assert [reading.identity for reading in close] == [DEFEND]
+    assert [reading.identity for reading in select(survey.readings, NodeFilter(max_gap=1.0))] == [OPEN, DEFEND]
 
 
 def test_mixed_only_leaves_the_decisions_with_two_actions_really_played(survey):
@@ -273,14 +291,57 @@ def test_the_filter_says_what_it_is(survey):
 
 
 def test_the_rankings_put_the_decision_being_asked_about_first(survey):
-    """The coin toss leads the closest list; the decisions with nothing to decide follow it."""
+    """The coin toss leads the closest list, and everything with a distance follows it.
+
+    By measured gap, so the wide open decision comes before the two forced moves: those have
+    no distance at all, and a list of what is close is not the place to put what is not a
+    decision.
+    """
     assert rank(survey.readings, "closest")[0].identity == DEFEND
-    assert [reading.identity for reading in rank(survey.readings, "closest")[1:]] == [AFTER_CALL, AFTER_RAISE, OPEN]
+    assert [reading.identity for reading in rank(survey.readings, "closest")[1:]] == [OPEN, AFTER_CALL, AFTER_RAISE]
     assert [reading.identity for reading in rank(survey.readings, "mixed")] == [DEFEND, OPEN, AFTER_CALL, AFTER_RAISE]
     assert [reading.identity for reading in rank(survey.readings, "widest")] == [DEFEND, OPEN, AFTER_CALL, AFTER_RAISE]
     assert rank(survey.readings, "widest")[0].difficulty.spread == pytest.approx(0.45), "45/55 beats 60/40"
     assert [reading.identity for reading in rank(survey.readings, "line")] == [OPEN, DEFEND, AFTER_CALL, AFTER_RAISE]
     assert rank(survey.readings, "closest", limit=1)[0].identity == DEFEND
+
+
+def test_a_node_with_one_unpriced_action_is_not_graded(tmp_path):
+    """An action whose EV the source does not publish could be the best one.
+
+    Marked graded, the node's gap is a distance to whichever action happened to be priced --
+    often zero, measured around a single action -- and it would take its place among the
+    closest decisions, and inside a max-gap filter, on a number that measures nothing.
+    """
+    write_table(tmp_path, HALF_PRICED)
+    survey = StrategySurvey(NodeExplorer(csv_provider(tmp_path))).run()
+
+    reading = reading_of(survey, DEFEND)
+
+    assert reading.mix == (("Raise2.5bb", 0.45), ("Call", 0.55)), "the node still reads"
+    assert reading.graded is False
+    assert reading.gap_bb is None
+    assert survey.graded == 1, "the open is the only decision this source prices whole"
+    assert DEFEND not in [entry.identity for entry in rank(survey.readings, "closest")[:1]]
+    assert [entry.identity for entry in select(survey.readings, NodeFilter(graded_only=True))] == [OPEN]
+
+
+def test_a_decision_the_solver_had_no_choice_about_is_not_a_close_one(tmp_path):
+    """Graded and close are two questions: a forced move has no gap to sort by.
+
+    Every action priced and still nothing to decide is a decision the trainer can drill and
+    the dashboard cannot rank by distance -- and a key that put its missing gap in the same
+    slot as a number would raise on the first pair of them it met.
+    """
+    write_table(tmp_path, [("", "SB", "AhKs4h3s", "raise 75%", "100", "3.00", "1.5")])
+    survey = StrategySurvey(NodeExplorer(csv_provider(tmp_path))).run()
+
+    forced = [entry for entry in survey.readings if len(entry.actions) == 1]
+
+    assert forced, "this table's open holds one action"
+    assert all(entry.graded for entry in forced), "priced, so gradable"
+    assert all(entry.gap_bb is None for entry in forced)
+    assert [entry.gap_bb for entry in rank(survey.readings, "closest") if entry.gap_bb is not None] == []
 
 
 def test_an_unmeasured_decision_is_ranked_behind_every_graded_one(tmp_path):
@@ -301,6 +362,27 @@ def test_a_ranking_nobody_offers_is_refused(survey):
     with pytest.raises(ValueError, match="not one of"):
         rank(survey.readings, "prettiest")
     assert "closest" in ranking_names()
+
+
+def test_a_survey_reread_from_the_record_shows_what_was_answered_since(explorer):
+    """Reopening the tab over the same tree costs two lookups per decision, not a walk."""
+    survey = StrategySurvey(explorer).run()
+    assert reading_of(survey, OPEN).answered == 0
+
+    refreshed = survey.with_record(TrackRecord(losses={OPEN: 0.25}, hands={OPEN: 4}, by="node"))
+
+    assert reading_of(refreshed, OPEN).answered == 4
+    assert reading_of(refreshed, OPEN).cost == pytest.approx(0.25)
+    assert reading_of(refreshed, DEFEND).answered == 0
+    assert reading_of(survey, OPEN).answered == 0, "the survey read stays as it was read"
+    assert refreshed.gaps == survey.gaps, "the strategy is not re-read for a history column"
+    assert refreshed.metadata == survey.metadata
+
+
+def test_a_survey_reread_without_a_history_is_left_alone(explorer):
+    survey = StrategySurvey(explorer).run()
+
+    assert survey.with_record(None) is survey
 
 
 def test_the_training_columns_are_read_from_the_record(explorer):

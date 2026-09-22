@@ -46,7 +46,7 @@ import logging
 import statistics
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .history import HistoryFilter, Snapshot, TrendPoint, Weakness
@@ -121,9 +121,11 @@ class NodeReading:
     answered, and what it has cost -- are filled in from a
     :class:`~preflop_advisor.sampler.TrackRecord`, and stay at zero without one.
 
-    ``graded`` is the one derived flag worth carrying: it says whether the source publishes
-    an EV here at all, which decides whether the difficulty is measurable or unknown. A node
-    that can be shown but not graded is not a hard decision and not an easy one.
+    ``graded`` is the one derived flag worth carrying: it says whether the source prices
+    every action here, which decides whether the difficulty is measurable or unknown. A node
+    that can be shown but not graded is not a hard decision and not an easy one -- and it is
+    graded on the trainer's own terms, so a decision this tab calls graded is one a session
+    can actually drill.
     """
 
     node: Node
@@ -146,7 +148,13 @@ class NodeReading:
 
     @property
     def gap_bb(self) -> float | None:
-        """What the best action is worth over the second best, or ``None`` when not graded."""
+        """What the best action is worth over the second best, in big blinds.
+
+        ``None`` in two cases that mean the same thing to a ranking: the source does not price
+        this decision, or it leaves the solver nothing to choose between. A forced move has
+        no distance to the best action, and reading that as zero would file it among the
+        closest decisions of the tree -- an ordering over decisions that are not decisions.
+        """
         return self.difficulty.gap if self.graded else None
 
     @property
@@ -191,6 +199,33 @@ class Survey:
     def hands(self) -> int:
         """How many hands the surveyed decisions hold between them, as the sources count them."""
         return sum(reading.hands for reading in self.readings)
+
+    def with_record(self, record: TrackRecord | None) -> Survey:
+        """This survey with each decision's history columns read again.
+
+        The walk is what a survey costs; how often a node has been answered and what it has
+        cost are two lookups per decision, and they change with every answer given. Re-read
+        on their own -- which is what the tab does when it is reopened over the same tree --
+        a session answered a moment ago shows up in the columns and rankings it belongs to,
+        without walking the tree again to learn nothing new about the strategy.
+
+        The strategy itself is deliberately left as it was: a difficulty is a reading of the
+        solver's mix, and re-reading one node of a survey would put a number beside the rest
+        that came from another moment's read.
+        """
+        if record is None:
+            return self
+        return replace(
+            self,
+            readings=tuple(
+                replace(
+                    reading,
+                    answered=record.hands.get(reading.identity, 0),
+                    cost=record.losses.get(reading.identity, 0.0),
+                )
+                for reading in self.readings
+            ),
+        )
 
     @property
     def title(self) -> str:
@@ -265,7 +300,11 @@ def summarize(
             mixed += 1
         if reading.graded:
             graded += 1
-            gaps.append(reading.difficulty.gap)
+            # Only the measured gaps: a graded decision the solver had no choice about has no
+            # distance to report, and a zero in this list would be averaged into the summary
+            # as a perfectly close decision.
+            if reading.gap_bb is not None:
+                gaps.append(reading.gap_bb)
     for action, count in actions.items():
         shares[action] = totals[action] / count
     return Survey(
@@ -345,7 +384,12 @@ class StrategySurvey:
         results = self.explorer.strategy(resolved, hand) if hand is not None else ()
         chips_per_bb = self.explorer.metadata.chips_per_bb
         mix = tuple((result.action, result.frequency) for result in results)
-        graded = any(result.ev is not None for result in results)
+        # Every action priced, not merely one of them: an action whose EV the source does not
+        # publish could be the best one, and a gap measured around it is a distance to
+        # whichever action happened to be priced. The trainer grades a node on the same terms
+        # -- see :meth:`~preflop_advisor.trainer_panel.TrainerPanel.gradable` -- so a decision
+        # called graded here is one a session can actually ask and score.
+        graded = bool(results) and all(result.ev is not None for result in results)
         record = self.record
         answered = 0 if record is None else record.hands.get(node_identity(resolved), 0)
         cost = 0.0 if record is None else record.losses.get(node_identity(resolved), 0.0)
@@ -412,7 +456,8 @@ class NodeFilter:
         if self.mixed_only and reading.difficulty.played < 2:
             return False
         if self.max_gap is not None:
-            return reading.gap_bb is not None and reading.difficulty.gap <= self.max_gap
+            gap = reading.gap_bb
+            return gap is not None and gap <= self.max_gap
         return True
 
     def describe(self) -> str:
@@ -479,10 +524,16 @@ def rank(
 def _key_of(ranking: str) -> Callable[[NodeReading], tuple[Any, ...]]:
     """The sort key behind one ranking, as a callable."""
     if ranking == "closest":
+        # Graded decisions first, then those the solver actually had a choice about, then the
+        # measured gap. A forced move has no gap, and it goes behind every decision that has
+        # one -- it is not the closest decision of a tree, it is not a decision. Said as its
+        # own component because ``None`` cannot be compared to a number, and a key that put
+        # it in the same slot would raise on the first pair it met.
         return lambda reading: (
             0 if reading.graded else 1,
+            0 if reading.gap_bb is not None else 1,
             -reading.difficulty.viable,
-            reading.difficulty.gap,
+            reading.gap_bb if reading.gap_bb is not None else 0.0,
             reading.identity,
         )
     if ranking == "mixed":

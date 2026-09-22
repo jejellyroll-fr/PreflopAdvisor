@@ -115,6 +115,27 @@ def test_a_hand_that_is_not_a_hand_is_classified_as_nothing():
     assert classify("nonsense") == ()
 
 
+def test_a_key_of_four_ranks_is_not_read_as_a_holdem_hand():
+    """``JT98`` is four ranks: as a hold'em hand it became ``J9o``, keeping two of them.
+
+    Four characters is a hold'em hand (``AhKs``) and a key of four ranks, and the
+    converter only has the length to go on. A key is what the taxonomy reads, so the
+    second must not be taken for the first -- which dropped the rundown and the
+    connection it is, and classified a hand nobody asked about.
+    """
+    assert classify("JT98", "PLO") == classify("JhTd9s8c", "PLO")
+    assert "rundown" in classify("JT98", "PLO")
+    assert "rainbow" in classify("JT98", "PLO")
+
+
+def test_a_concrete_holdem_hand_is_still_converted():
+    """The four-character rule is about ranks and suits, not about length alone."""
+    assert classify("AhKh", "NL") == classify("AKs", "NL")
+    assert classify("AhKs", "NL") == classify("AKo", "NL")
+    assert "suited" in classify("AhKh", "NL")
+    assert "rainbow" not in classify("AhKh", "NL"), "a two-card hand is not a rainbow"
+
+
 # --------------------------------------------------------------------------------------
 # The line families
 # --------------------------------------------------------------------------------------
@@ -255,9 +276,24 @@ def test_the_options_offered_follow_the_table_and_the_game():
     options = FilterOptions.of(["SB", "BB"], "NL")
 
     assert options.seats == ("SB", "BB")
-    assert options.families == FAMILIES
+    assert options.families == ("open", "defend", "vs 3bet", "limp"), "in the vocabulary's order"
     assert "suited" in options.classes
     assert "double-suited" not in options.classes
+
+
+@pytest.mark.parametrize("seats", [("SB", "BB"), SIX_MAX])
+def test_every_family_offered_can_be_matched(seats):
+    """A family no catalogue spot has would offer an empty session and nothing else.
+
+    ``vs 4bet`` and ``squeeze`` are real families -- :func:`family_of` reads them off the
+    shape of a line the Explorer can reach -- and the catalogue builds neither, so they
+    were offered in every menu and could never match.
+    """
+    options = FilterOptions.of(list(seats), "PLO")
+
+    assert set(options.families) == set(spot_families(list(seats)).values())
+    assert "squeeze" not in options.families
+    assert "vs 4bet" not in options.families
 
 
 def test_a_spot_is_matched_by_the_filter_the_trainer_would_apply():

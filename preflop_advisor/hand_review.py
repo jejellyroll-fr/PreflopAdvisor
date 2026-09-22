@@ -497,6 +497,9 @@ class Tolerance:
 
     blinds: float = SIZING_TOLERANCE_BLINDS
     stack_bb: float = STACK_TOLERANCE_BB
+    #: Antes are in big blinds and are declared exactly, or not at all: this is not a
+    #: tolerance so much as a rounding allowance for a configuration that wrote ``0.125``.
+    ante_bb: float = 1e-9
 
     def within(self, real: float, stored: float) -> bool:
         """Whether a real raise and a stored one are the same raise, in this tolerance."""
@@ -534,14 +537,30 @@ class NodeMatcher:
     # Which simulation is this hand even in
 
     def compatible(self, hand: RealHand) -> list[Candidate]:
-        """The candidates that are this game, this table size and this depth.
+        """The candidates that are this game, this table size, this depth and this ante.
 
         A three-handed 100bb tree is not a six-handed 40bb hand, and comparing the two would
         produce numbers about a game nobody played. What is checked is exactly what the
-        model states: the game, the number of seats, and the depth within
-        :attr:`Tolerance.stack_bb`.
+        model states: the game, the number of seats, the depth within
+        :attr:`Tolerance.stack_bb`, and the ante.
+
+        The ante is compared like the rest and not approximated: it is dead money in every
+        pot, so two trees that differ only by it are two different games -- their pot-sized
+        raises come to different amounts and their strategies were solved for different
+        incentives. A tree whose ante is not declared at all is left out rather than
+        assumed to have none, since a pot built on a guess is a guess all the way down.
         """
-        fitting = []
+        return self._fitting(hand)[0]
+
+    def _fitting(self, hand: RealHand) -> tuple[list[Candidate], str]:
+        """The candidates that are this hand's game, and why the others are not.
+
+        :return: ``(fitting, note)``. The note is about a simulation that *is* this game but
+            cannot be priced -- an ante it does not size -- because "no configured simulation
+            is a 100bb heads-up game" would be an untrue thing to say about one that is.
+        """
+        fitting: list[Candidate] = []
+        unpriced = ""
         for candidate in self.candidates:
             metadata = candidate.provider.metadata()
             if str(metadata.game).upper() != hand.game.upper():
@@ -550,8 +569,13 @@ class NodeMatcher:
                 continue
             if abs(float(metadata.stack_bb) - hand.stack_bb) > self.tolerance.stack_bb:
                 continue
+            if metadata.ante_bb is None:
+                unpriced = unpriced or UNPRICED_ANTE
+                continue
+            if abs(float(metadata.ante_bb) - float(hand.ante_bb)) > self.tolerance.ante_bb:
+                continue
             fitting.append(candidate)
-        return fitting
+        return fitting, unpriced
 
     def match(self, decision: RealDecision) -> Match:
         """The node this decision is, or the reason there is none."""
@@ -560,15 +584,30 @@ class NodeMatcher:
         if key is None:
             return Match("unsupported", note=f"{hand.hero_cards} cannot be read as a hand of {hand.game}")
 
-        fitting = self.compatible(hand)
+        fitting, unpriced = self._fitting(hand)
         if not fitting:
+            if unpriced:
+                # This *is* the game, it just cannot price a raise. Saying no simulation is a
+                # 100bb heads-up game about a tree that is one would send the reader looking
+                # for a simulation to configure rather than an ante to size.
+                return Match("unsupported", note=unpriced)
             return Match(
                 "no simulation",
-                note=(f"no configured simulation is {hand.game} {hand.table_size}-handed at {hand.stack_bb:g}bb"),
+                note=(
+                    f"no configured simulation is {hand.game} {hand.table_size}-handed at "
+                    f"{hand.stack_bb:g}bb with an ante of {hand.ante_bb:g}bb"
+                ),
             )
 
+        # Closest depth first. Several configured trees sit inside the stack tolerance -- a
+        # 90bb tree beside the 100bb one -- and a hand is reviewed against the solution it
+        # was played in, not against whichever of them the configuration listed first.
+        ordered = sorted(
+            fitting,
+            key=lambda candidate: abs(float(candidate.provider.metadata().stack_bb) - hand.stack_bb),
+        )
         best: Match | None = None
-        for candidate in fitting:
+        for candidate in ordered:
             found = self._match_in(candidate, decision)
             if found.status == "exact":
                 return found
@@ -626,10 +665,7 @@ class NodeMatcher:
         if metadata.ante_bb is None:
             # Every amount on this table is built on the ante: with its size undeclared, no
             # raise can be priced, and a node named without pricing it would be a guess.
-            return Reading(
-                status="unsupported",
-                note="this tree has an ante it does not size, so its raises cannot be compared",
-            )
+            return Reading(status="unsupported", note=UNPRICED_ANTE)
         line: ActionSequence = []
         status = "exact"
         for action in hand.actions[: decision.index]:
@@ -792,7 +828,12 @@ class NodeMatcher:
         seat = state.seat(actor)
         if seat is None or seat.committed is None:
             return None
-        return float(seat.committed)
+        # The betting commitment, not what the seat has put in: the table counts the ante it
+        # posted among that, and a history records what a raise came *to* in the betting. Read
+        # as they stand, a raise to three in a half-blind-ante game looks like a raise to
+        # three and a half, and a history that really did raise to three and a half looks like
+        # a raise to four.
+        return float(seat.committed) - float(metadata.ante_bb or 0.0)
 
 
 def _kind_of(action: str) -> str:
@@ -808,6 +849,10 @@ def _kind_of(action: str) -> str:
 #: is the whole stack. Compared together, because a tree whose deepest raise is all-in and a
 #: history that calls the same move a shove are describing one action.
 _RAISE_KINDS = ("Raise", "AllIn")
+
+#: What is said about a tree whose ante is undeclared. One sentence, said in the two places it
+#: is the answer: when such a tree is the only one of this game, and when its raise is priced.
+UNPRICED_ANTE = "this tree has an ante it does not size, so its raises cannot be compared"
 
 
 def _reading_rank(status: str) -> int:
@@ -908,6 +953,26 @@ def mistakes_of_one_node(reviewed: Iterable[ReviewedDecision]) -> list[ReviewedD
         seen.add(identity)
         worst.append(entry)
     return worst
+
+
+def one_simulation(reviewed: Sequence[ReviewedDecision]) -> tuple[list[ReviewedDecision], str, int]:
+    """The decisions of one session, the simulation they were matched against, and the rest.
+
+    A session is drilled on one simulation, because the trainer draws from one tree: reading
+    a node of one solution against another would report a strategy nobody played. The first
+    decision names the simulation -- worst first for a set of mistakes, the first row the
+    user selected for a selection -- and the decisions matched elsewhere are left for another
+    session rather than quietly counted as part of this one.
+
+    :return: ``(kept, simulation, left_out)``: the decisions, the name of the simulation they
+        share, and how many were left out because they matched a different one.
+    """
+    entries = [entry for entry in reviewed if entry.match.node is not None]
+    if not entries:
+        return [], "", 0
+    simulation = entries[0].match.simulation
+    kept = [entry for entry in entries if entry.match.simulation == simulation]
+    return kept, simulation, len(entries) - len(kept)
 
 
 def session_spots(reviewed: Iterable[ReviewedDecision], limit: int = MISTAKE_LIMIT) -> list[Spot]:

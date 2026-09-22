@@ -18,7 +18,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from .strategy import StrategyResult
+from .strategy import Node, StrategyResult
 from .table_state import TableState
 from .types import ActionSequence
 
@@ -64,6 +64,12 @@ class Question:
     hand: str
     results: tuple[StrategyResult, ...]
     table: TableState | None = None
+    #: The decision as the provider resolved it: every implied fold written out, every
+    #: generic raise replaced by the sizing the source holds. The spot's own line is
+    #: implicit, and a node is identified by its explicit one -- recording the implicit
+    #: line would key the same decision two ways depending on which screen asked for it,
+    #: splitting one leak into two rows or merging two nodes that only look alike.
+    node: Node | None = None
 
     def actions(self) -> list[str]:
         """The actions this node offers, which are the only answers to allow."""
@@ -224,6 +230,21 @@ def holdem_hand_for_key(key: str, source: random.Random) -> str | None:
         first, second = source.sample(SUITS, 2)
         hand = f"{high}{first}{low}{second}"
     return hand if convert_hand(hand) == key else None
+
+
+def gradable(results: Sequence[StrategyResult]) -> bool:
+    """Whether a node's entries can be scored against one another.
+
+    Monker omits the EV for a hand the board makes impossible -- for the hand, so across
+    the node -- and a node with an unknown EV has nothing to grade the answer by: the
+    best action is unknown, and an action whose EV is missing has no cost to measure.
+
+    Stated once, here, because two screens have to agree on it: the trainer passes such a
+    spot over rather than asking and then refusing, and the node explorer offers to drill
+    a decision only where this holds. A button that drills a node the trainer will not
+    ask about is a button that reports there was nothing to answer.
+    """
+    return bool(results) and all(result.ev is not None for result in results)
 
 
 def grade(results: Sequence[StrategyResult], chosen: str, chips_per_bb: float) -> Verdict:

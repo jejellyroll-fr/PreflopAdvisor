@@ -13,7 +13,8 @@ node's own strategy -- the EV of each action and how often the solver takes it:
 * ``gap`` -- what the best action is worth over the second best, in big blinds. The
   distance between two good answers is the difficulty of the question: ``Raise +0.331``
   against ``Call +0.326`` is a decision; ``Raise +1.270`` against the same call is a
-  lecture.
+  lecture. ``None`` when the source values fewer than two actions, which is the absence of
+  a second opinion and not a tie -- the same reading an absent EV gets everywhere else.
 * ``viable`` -- how many actions are within :data:`VIABLE_GAP_BB` of the best. One is a
   forced move, three is a real choice.
 * ``spread`` -- one minus the frequency of the most played action. What the solver is
@@ -31,7 +32,8 @@ The modes, and exactly what they weigh:
 ``frequency``   ``1 + entropy``: what the solver straddles across several actions is what
                 it has no single answer for.
 ``close``       ``1 / (EPSILON + gap)``: a small gap weighs heavily, a large one almost
-                nothing.
+                nothing. A candidate with no measurable gap weighs the floor -- a
+                decision that cannot be got wrong is not a close decision.
 ``mixed``       ``spread + 1`` when the solver really plays two ways or more, ``spread``
                 alone when it does not -- so a 98% action is not called a mix by a
                 rounding error.
@@ -74,6 +76,11 @@ MODE_LABELS: dict[str, str] = {
     "weakness": "Weakest spots",
     "rare": "Least trained",
 }
+#: The modes that read the history at all. The rest weigh candidates from the strategy
+#: alone, which is what lets a caller skip reading the record for them -- the trainer does,
+#: because the record is a GROUP BY over every answer ever given and the default mode has
+#: never needed one.
+HISTORY_MODES = ("weakness", "rare")
 #: How much EV a second action may give up and still be worth considering, in big blinds.
 VIABLE_GAP_BB = 0.10
 #: What share of the time the solver has to take an action for it to count as played.
@@ -82,8 +89,8 @@ MATERIAL_SHARE = 0.10
 #: weighs heavily instead of being divided by zero.
 EPSILON = 0.05
 #: What a candidate weighs when a mode has nothing good to say about it -- a forced move
-#: under the mixed mode, say. Never zero: the draw refuses a pool that sums to nothing, and
-#: "not what this mode is about" is not the same as "never ask it".
+#: under the mixed or the close mode, say. Never zero: the draw refuses a pool that sums to
+#: nothing, and "not what this mode is about" is not the same as "never ask it".
 FLOOR = 0.01
 #: What an untrained grouping weighs in the weakness mode, against the ``1 + loss`` of a
 #: known one. A node never answered is unknown, not clean -- and a session that only ever
@@ -98,7 +105,10 @@ DEFAULT_POOL = 12
 class Difficulty:
     """What makes a decision hard, read off the node's own strategy."""
 
-    gap: float
+    #: Best action over second best, in big blinds, or ``None`` when fewer than two
+    #: actions carry a value. A forced move has no gap, and defaulting it to zero would
+    #: make it indistinguishable from a real tie.
+    gap: float | None
     viable: int
     spread: float
     played: int
@@ -116,7 +126,10 @@ def difficulty(results: Sequence[StrategyResult], chips_per_bb: float = 1.0) -> 
         the same unit the trainer grades in.
     """
     evs = sorted((result.ev / chips_per_bb for result in results if result.ev is not None), reverse=True)
-    gap = evs[0] - evs[1] if len(evs) > 1 else 0.0
+    # A gap is the distance between two actions. One action carrying a value is one
+    # action to compare against, so there is no distance to report -- and writing zero
+    # here would say the solver is indifferent when it simply had no alternative.
+    gap = evs[0] - evs[1] if len(evs) > 1 else None
     frequencies = sorted((result.frequency for result in results), reverse=True)
     spread = 1.0 - frequencies[0] if frequencies else 0.0
     played = len([share for share in frequencies if share >= MATERIAL_SHARE])
@@ -197,6 +210,16 @@ class TrackRecord:
         raise ValueError(f"{self.by!r} is not a grouping a track record knows")
 
 
+def reads_history(mode: str) -> bool:
+    """Whether this mode weighs anything the history says.
+
+    Stated here rather than inferred by the caller: the modes that ignore the record are
+    the ones whose weight is a pure function of the strategy, and a caller that rebuilt a
+    record for them would pay the whole query for a number it never looks at.
+    """
+    return mode in HISTORY_MODES
+
+
 def weight_of(mode: str, question: Question, chips_per_bb: float = 1.0, record: TrackRecord | None = None) -> float:
     """How much this candidate deserves to come up, under this mode.
 
@@ -217,7 +240,10 @@ def _weight_of(mode: str, question: Question, chips_per_bb: float, record: Track
     if mode == "frequency":
         return 1.0 + measured.entropy
     if mode == "close":
-        return 1.0 / (EPSILON + measured.gap)
+        # Zero, for the floor to keep drawable: a node the solver was given no choice
+        # about is not a close decision, and ``1 / (EPSILON + 0)`` would weigh it the
+        # heaviest of all -- exactly what this mode is meant to find the opposite of.
+        return 0.0 if measured.gap is None else 1.0 / (EPSILON + measured.gap)
     if mode == "mixed":
         # The spread alone, plus a whole extra point when it is a real mix: an action at
         # 2% is not a second opinion, it is the tail of a rounding error.
