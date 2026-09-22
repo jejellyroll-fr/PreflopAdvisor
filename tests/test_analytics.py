@@ -53,6 +53,15 @@ PARTLY_GRADED = [
     *[(line, hero, hand, action, share, "", pot) for line, hero, hand, action, share, _, pot in TABLE[2:]],
 ]
 
+#: The open, and the answer to it with only one of its two actions priced: a source that
+#: publishes an EV for the raise and not for the call.
+HALF_PRICED = [
+    TABLE[0],
+    TABLE[1],
+    TABLE[2],
+    ("SB:raise 75%", "BB", "AhKs4h3s", "call", "55", "", "4.0"),
+]
+
 #: The four decisions of :data:`TABLE`, spelled the way the history keys them.
 OPEN = "SB:"
 DEFEND = "BB:SB Raise75"
@@ -283,6 +292,44 @@ def test_the_rankings_put_the_decision_being_asked_about_first(survey):
     assert rank(survey.readings, "closest", limit=1)[0].identity == DEFEND
 
 
+def test_a_node_with_one_unpriced_action_is_not_graded(tmp_path):
+    """An action whose EV the source does not publish could be the best one.
+
+    Marked graded, the node's gap is a distance to whichever action happened to be priced --
+    often zero, measured around a single action -- and it would take its place among the
+    closest decisions, and inside a max-gap filter, on a number that measures nothing.
+    """
+    write_table(tmp_path, HALF_PRICED)
+    survey = StrategySurvey(NodeExplorer(csv_provider(tmp_path))).run()
+
+    reading = reading_of(survey, DEFEND)
+
+    assert reading.mix == (("Raise2.5bb", 0.45), ("Call", 0.55)), "the node still reads"
+    assert reading.graded is False
+    assert reading.gap_bb is None
+    assert survey.graded == 1, "the open is the only decision this source prices whole"
+    assert DEFEND not in [entry.identity for entry in rank(survey.readings, "closest")[:1]]
+    assert [entry.identity for entry in select(survey.readings, NodeFilter(graded_only=True))] == [OPEN]
+
+
+def test_a_decision_the_solver_had_no_choice_about_is_not_a_close_one(tmp_path):
+    """Graded and close are two questions: a forced move has no gap to sort by.
+
+    Every action priced and still nothing to decide is a decision the trainer can drill and
+    the dashboard cannot rank by distance -- and a key that put its missing gap in the same
+    slot as a number would raise on the first pair of them it met.
+    """
+    write_table(tmp_path, [("", "SB", "AhKs4h3s", "raise 75%", "100", "3.00", "1.5")])
+    survey = StrategySurvey(NodeExplorer(csv_provider(tmp_path))).run()
+
+    forced = [entry for entry in survey.readings if len(entry.actions) == 1]
+
+    assert forced, "this table's open holds one action"
+    assert all(entry.graded for entry in forced), "priced, so gradable"
+    assert all(entry.gap_bb is None for entry in forced)
+    assert [entry.gap_bb for entry in rank(survey.readings, "closest") if entry.gap_bb is not None] == []
+
+
 def test_an_unmeasured_decision_is_ranked_behind_every_graded_one(tmp_path):
     """A gap nobody can measure is not a small gap, and must not lead a study list."""
     write_table(tmp_path, PARTLY_GRADED)
@@ -301,6 +348,27 @@ def test_a_ranking_nobody_offers_is_refused(survey):
     with pytest.raises(ValueError, match="not one of"):
         rank(survey.readings, "prettiest")
     assert "closest" in ranking_names()
+
+
+def test_a_survey_reread_from_the_record_shows_what_was_answered_since(explorer):
+    """Reopening the tab over the same tree costs two lookups per decision, not a walk."""
+    survey = StrategySurvey(explorer).run()
+    assert reading_of(survey, OPEN).answered == 0
+
+    refreshed = survey.with_record(TrackRecord(losses={OPEN: 0.25}, hands={OPEN: 4}, by="node"))
+
+    assert reading_of(refreshed, OPEN).answered == 4
+    assert reading_of(refreshed, OPEN).cost == pytest.approx(0.25)
+    assert reading_of(refreshed, DEFEND).answered == 0
+    assert reading_of(survey, OPEN).answered == 0, "the survey read stays as it was read"
+    assert refreshed.gaps == survey.gaps, "the strategy is not re-read for a history column"
+    assert refreshed.metadata == survey.metadata
+
+
+def test_a_survey_reread_without_a_history_is_left_alone(explorer):
+    survey = StrategySurvey(explorer).run()
+
+    assert survey.with_record(None) is survey
 
 
 def test_the_training_columns_are_read_from_the_record(explorer):

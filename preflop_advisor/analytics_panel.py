@@ -302,6 +302,11 @@ class AnalyticsPanel(QWidget):
         time the tab is opened, which is what makes a session answered a moment ago show up.
         The survey is not: it stays until the selected simulation changes, or the user asks
         for it again, because it costs a walk.
+
+        Both halves of the record are re-read, and that is the point of doing this here: a
+        session drilled from this tab and the tab reopened without changing trees answers the
+        cheapest question first -- which nodes have I asked, and what have they cost -- and
+        those are columns of the survey, so the survey is told what the history says now.
         """
         super().showEvent(event)
         tree = self.tree_source()
@@ -309,6 +314,9 @@ class AnalyticsPanel(QWidget):
             self.clear(EMPTY_STATE)
         elif str(tree.get("folder", "")) != self._surveyed:
             self.survey_tree()
+        elif self.survey is not None:
+            self.survey = self.survey.with_record(TrackRecord.of(self.history, "node"))
+            self.refill()
         self.refresh_performance()
 
     def survey_tree(self) -> None:
