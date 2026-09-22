@@ -52,7 +52,7 @@ from preflop_advisor.mkr_format import (
     read_structure,
     read_tree,
 )
-from preflop_advisor.mkr_provider import MkrStrategyProvider
+from preflop_advisor.mkr_provider import MkrStrategyProvider, version_name
 from preflop_advisor.native_format import probe
 from preflop_advisor.strategy import Node, StrategyProvider, node_identity
 
@@ -611,9 +611,10 @@ def test_a_saved_run_is_read_and_agrees_with_itself(run_path):
         "slot lengths",
         "frequency sums",
         "big blind",
+        "format version",
         "action codes",
     }
-    assert "5/5 checks passed" in structure.summary()
+    assert "6/6 checks passed" in structure.summary()
 
 
 def test_the_infoset_count_relates_two_numbers_from_opposite_ends_of_the_archive(tmp_path):
@@ -1054,11 +1055,35 @@ def test_a_node_this_tree_does_not_hold_answers_with_nothing(provider):
     assert provider.raw_frequencies(absent, "AsAd") == ()
 
 
-def test_a_save_that_does_not_state_its_version_is_described_without_one(tmp_path):
+def test_a_save_from_a_build_nothing_has_read_end_to_end_is_refused(tmp_path):
+    """Two builds can share a tree signature and still disagree about an entry.
+
+    The signature is the coarse guard; the producer build is the fine one. A save written
+    by a build nothing has read through is *detected* rather than read as though it were
+    one that has been, which is the issue's "version detection is reliable" made into a
+    condition that can fail.
+    """
+    path = write_mkr(tmp_path / "newer.mkr", saved_run(version=java_long(20310)))
+    structure = read_structure(path)
+    assert {check.name for check in structure.failures} == {"format version"}
+    with pytest.raises(NativeFormatError, match="build 20310 is not one this reader has read"):
+        MkrStrategyProvider(path, SEATS)
+
+
+def test_a_save_that_does_not_state_its_build_at_all_is_refused(tmp_path):
     entries = saved_run()
     del entries["version"]
     path = write_mkr(tmp_path / "unversioned.mkr", entries)
-    assert "of an unstated version" in MkrStrategyProvider(path, SEATS).metadata().infos
+    with pytest.raises(NativeFormatError, match="build None is not one this reader has read"):
+        MkrStrategyProvider(path, SEATS)
+
+
+def test_a_build_number_is_named_by_the_shape_the_one_observed_build_has():
+    """20109 reads as 2.1.9. A number that does not fit the shape is shown as itself."""
+    assert version_name(20109) == "2.1.9"
+    assert version_name(20310) == "2.3.10"
+    assert version_name(None) == "of an unstated version"
+    assert version_name(7) == "7"
 
 
 def test_a_preflop_save_with_no_identifiable_blind_is_refused(tmp_path):

@@ -178,7 +178,7 @@ class MkrStrategyProvider:
             ante_bb=self._ante_bb(),
             chips_per_bb=unit,
             infos=(
-                f"MonkerSolver {_version_name(structure.version)}, {len(tree.decisions)} decisions, "
+                f"MonkerSolver {version_name(structure.version)}, {len(tree.decisions)} decisions, "
                 f"{structure.class_count} hand classes{spread}"
             ),
         )
@@ -396,7 +396,7 @@ def _key(node: Node) -> str:
     return f"{node.hero}:{line}".lower()
 
 
-def _version_name(version: int | None) -> str:
+def version_name(version: int | None) -> str:
     """A packed build number as a version string: 20109 reads as ``2.1.9``.
 
     Stated as a reading of the one value observed, not as a documented encoding: the save

@@ -6,14 +6,24 @@ reader, which is the whole point of a format nobody published. Run it as::
 
     python scripts/mkr_report.py ~/MonkerSolver/savedRuns/my-run.mkr
     python scripts/mkr_report.py my-run.mkr AsAhKsKh 2h3d4c5s
+    python scripts/mkr_report.py my-run.mkr --export ~/monker-exports/my-run
 
 With no hands it prints the archive, the tree, the scalars the file states about itself and
 the cross-checks between them. With hands it also prints each node's strategy for those
 hands -- the stored bytes beside the frequencies they mean, so a number can be compared
 against another reader's without this script's arithmetic in the way.
 
-The exit status is what a check script wants: ``0`` when every cross-check passed, ``1``
-when one failed, ``2`` when the file could not be read as a saved simulation at all.
+``--export`` names a folder MonkerSolver exported the *same simulation* to, and is the one
+thing that checks this reader against the solver rather than against itself: it compares
+the tree the save describes with the tree the export's file names describe, the hand axis
+of both, and then every hand of every action. See
+:mod:`preflop_advisor.mkr_crosscheck`. An export of the same tree solved on another board
+agrees on the first two and differs on the third, which the report says in those words
+rather than as one verdict.
+
+The exit status is what a check script wants: ``0`` when everything asked for agreed,
+``1`` when something differed, ``2`` when the file could not be read as a saved simulation
+at all.
 """
 
 import os
@@ -24,6 +34,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
 from preflop_advisor.errors import NativeFormatError
+from preflop_advisor.mkr_crosscheck import crosscheck
 from preflop_advisor.mkr_format import MkrStructure, action_name, read_structure
 from preflop_advisor.mkr_provider import MkrStrategyProvider
 from preflop_advisor.strategy import node_identity
@@ -82,12 +93,47 @@ def describe_model(provider: MkrStrategyProvider, hands: list[str]) -> None:
             print(f"            {hand:<10} bytes {stored} -> {spelled}")
 
 
+def describe_crosscheck(structure: MkrStructure, folder: str) -> bool:
+    """The save against the solver's own export of it, verdict by verdict."""
+    print("export")
+    try:
+        report = crosscheck(structure, folder)
+    except NativeFormatError as error:
+        print(f"          not compared ({error})")
+        return False
+    print(f"          {folder}")
+    for part in report.summary().split("; "):
+        print(f"          {part}")
+    for mismatch in report.mismatches:
+        print(
+            f"            {mismatch.stem:<10} {mismatch.hand:<12} "
+            f"saved {mismatch.stored:.4f} vs exported {mismatch.exported:.4f}"
+        )
+    if report.differing > len(report.mismatches):
+        print(f"            and {report.differing - len(report.mismatches)} more differing hands")
+    return report.agrees
+
+
+def split_arguments(argv: list[str]) -> tuple[str, list[str], str | None]:
+    """The file, the hands and the exported folder, out of a plain argument list."""
+    rest: list[str] = []
+    folder: str | None = None
+    index = 0
+    while index < len(argv):
+        if argv[index] == "--export" and index + 1 < len(argv):
+            folder = argv[index + 1]
+            index += 2
+            continue
+        rest.append(argv[index])
+        index += 1
+    return rest[0], rest[1:], folder
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
-    path = sys.argv[1]
-    hands = sys.argv[2:]
+    path, hands, folder = split_arguments(sys.argv[1:])
     try:
         structure = read_structure(path)
     except NativeFormatError as error:
@@ -99,8 +145,9 @@ def main() -> int:
     except NativeFormatError as error:
         print(f"model: not built ({error})")
     else:
-        describe_model(provider, hands or [])
-    return 1 if structure.failures else 0
+        describe_model(provider, hands)
+    agreed = describe_crosscheck(structure, folder) if folder else True
+    return 1 if structure.failures or not agreed else 0
 
 
 if __name__ == "__main__":

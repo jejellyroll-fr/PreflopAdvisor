@@ -23,7 +23,14 @@ for a *wrong* reading to fail loudly instead of quietly returning another hand's
 * the largest amount committed before anyone acts must be posted by the seat that acts
   last, which is what a big blind is and what the money unit is derived from;
 * every action code of the tree must be one that has a reading, since an unnamed sizing
-  in a node's identity is a guess nothing downstream could see.
+  in a node's identity is a guess nothing downstream could see;
+* the producer build must be one a save has been read from end to end
+  (:data:`KNOWN_VERSIONS`), so a save from another build is *detected* rather than read as
+  though it were this one.
+
+What no check here can settle is whether the reading is of the right thing: every one of
+them relates a save to itself. That is what :mod:`preflop_advisor.mkr_crosscheck` is for,
+and it needs the solver's own export of the same simulation.
 
 ## The container
 
@@ -77,6 +84,12 @@ logger = logging.getLogger(__name__)
 #: The ``.tree`` signatures this reads. 33487 is what the save at hand carries; 33486 is
 #: accepted by the solver's own reader and is taken on that authority, not from a fixture.
 TREE_SIGNATURES: tuple[int, ...] = (33487, 33486)
+#: The producer builds a save has been read from end to end, packed the way the archive
+#: writes them: 20109 is MonkerSolver 2.1.9. A save carrying anything else -- or nothing --
+#: fails the ``format version`` check and is refused by the provider rather than read as
+#: though it were one of these. The tree signature is a coarser guard: two builds can share
+#: it and still disagree about an entry, which is what this list is for.
+KNOWN_VERSIONS: tuple[int, ...] = (20109,)
 #: The stream magic and version of Java object serialization, which every entry but
 #: ``tree`` begins with.
 JAVA_STREAM_MAGIC = b"\xac\xed\x00\x05"
@@ -1084,6 +1097,23 @@ def run_checks(structure: MkrStructure) -> tuple[MkrCheck, ...]:
                 ),
             )
         )
+
+    version = structure.version
+    checks.append(
+        MkrCheck(
+            name="format version",
+            passed=version in KNOWN_VERSIONS,
+            detail=(
+                f"the save was written by build {version}, which has been read end to end"
+                if version in KNOWN_VERSIONS
+                else (
+                    f"build {version} is not one this reader has read end to end "
+                    f"({', '.join(str(known) for known in KNOWN_VERSIONS)}); its entries may differ "
+                    "in ways nothing here would notice"
+                )
+            ),
+        )
+    )
 
     unnamed = structure.unnamed_action_codes
     checks.append(

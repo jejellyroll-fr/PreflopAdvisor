@@ -74,7 +74,7 @@ fact.
 | Property | Status | Reading |
 | --- | --- | --- |
 | Container structure | **Measured** | ZIP, deflate, UTF-16BE entry names with BOM. |
-| Version markers | **Measured, one value** | `version` is a boxed long: `20109` for MonkerSolver 2.1.9. The reading of it as `major.minor.patch` fits the one build observed and is stated as that, not as a documented encoding. The `tree` entry carries its own signature, `33487`. |
+| Version markers | **Measured, one value, and refused otherwise** | `version` is a boxed long: `20109` for MonkerSolver 2.1.9. The reading of it as `major.minor.patch` fits the one build observed and is stated as that, not as a documented encoding. The `tree` entry carries its own signature, `33487`. A save carrying any other build — or none — fails the `format version` check and is refused: two builds can share a signature and still disagree about an entry. |
 | Compression / serialization | **Measured** | Java object serialization throughout; `storedstrategyN` additionally zlib. |
 | Game metadata | **Measured for the game, `UNKNOWN` for its numbering** | `game` is a boxed int: `1` on the PLO4 save, `0` on the hold'em one, and `2` is reported as omaha hi-lo by the solver's scripting bridge with no fixture here. The integer is **never trusted on its own**: it is checked against the hand size the strategy is indexed by, and a disagreement is a refusal. |
 | Seats / stacks / blinds | **Measured** | The `tree` entry holds the player count, which player opens, and one `int32` stack per player. At street 0 it also holds one committed amount per player, which is where the blinds are: `(0, 1000, 2000, 0)` against stacks of `10000`. |
@@ -178,8 +178,10 @@ a `.mkr` can give, and it is a reason to keep the export path rather than replac
 | A postflop run is refused with why | **Supported** | same |
 | An unknown action code, game, class count or signature is refused | **Supported** | same |
 | The source file is never written to | **Supported** | asserted by size, mtime and sha256, on the synthetic and real fixtures both |
-| Values cross-validated against an export of the same simulation | **Not done**: needs a fixture pair | — |
-| Version detection across solver versions | **Not possible yet**: one version observed | — |
+| A save's tree and hand axis match the solver's own export of that tree | **Supported** | `tests/test_mkr_crosscheck.py`, opt-in on a real pair |
+| A save from an unread build is refused rather than read | **Supported** | `tests/test_mkr_format.py` |
+| Values cross-validated against an export of the same simulation | **Not done**: needs a same-run export; the test is written and skipped | `test_a_real_export_of_the_same_run_agrees_hand_by_hand` |
+| Parsing read through on a second solver version | **Not done**: one build read end to end | — |
 | Five- and six-card Omaha | **Refused**: no confirmed class count | `test_a_hand_size_with_no_confirmed_count_is_refused_rather_than_enumerated` |
 
 ## Fixture and test strategy
@@ -200,14 +202,49 @@ Three layers, in the order they matter.
    must pass, `iscount` must equal decisions × classes, a hand of the file's own game must
    be answered with frequencies summing to one and no EV, and the file must be unchanged by
    hash and mtime afterwards. A real save is not this repository's to redistribute.
-3. **A fixture pair, still missing.** What a *validated* provider needs is not a `.mkr` but
-   a `.mkr` **and the export of the same simulation**, so every extracted frequency can be
-   compared with an independently produced one. The repository already reads exports, so
-   the comparison side exists; what is missing is the pair. The one real save available is
-   also, separately, a barely-converged run — its frequencies sit near 50/50 for most
-   classes — so even having its export would test the plumbing more than the numbers. A
-   contributed pair should come with the file's `sha256` and size, the solver version, the
-   tree it was solved under, the export made from it, and a line on redistribution.
+3. **A pair, and the comparison that is waiting for it.** What a *validated* provider needs
+   is not a `.mkr` but a `.mkr` **and the export of the same simulation**, so every
+   extracted frequency can be compared with an independently produced one. The comparison
+   itself now exists (`mkr_crosscheck`, and `--export` on the report script), with two of
+   its three parts already agreeing against the solver's output; the test for the third is
+   written and skipped until `PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN` names a folder.
+   `PREFLOP_ADVISOR_MKR_EXPORT` names the weaker case — an export of the same tree on any
+   board — and asserts topology and hand axis. The one real save available is also,
+   separately, a barely-converged run, its frequencies sitting near 50/50 for most classes,
+   so even its own export would test the plumbing more than the numbers. A contributed pair
+   should come with the file's `sha256` and size, the solver version, the tree it was
+   solved under, the export made from it, and a line on redistribution.
+
+## Checking the reading against the solver, not against itself
+
+Every cross-check in the table above relates a save to *itself*. A reading can be
+internally perfect and still be of the wrong thing, so the instrument for the outstanding
+gate is the solver's own export: `preflop_advisor/mkr_crosscheck.py`, reachable as
+`python scripts/mkr_report.py <save> --export <folder>`.
+
+It compares three things, in increasing order of what they prove, and reports a verdict per
+part rather than one boolean — because an export of the same *tree* solved on another board
+agrees on the first two and disagrees on every value, which is a true report of two
+different runs and not a failure of the reader.
+
+| Part | What it proves | State |
+| --- | --- | --- |
+| **Topology** — the export's `.rng` file stems against the save's edge paths | that the node stream was walked the way the solver walks it. An export names one file per action by the action codes from the root (`0.3.1.rng`); a save writes a preorder node stream. Nothing about the bytes forces those to agree. | **Agrees.** All 28 stems of an export of the AoF tree are exactly the 28 edge paths read out of the save's node stream — 0 on either side unmatched. |
+| **Hand axis** — the export's hand names against the class numbering's keys | that the numbering derived in `mkr_classes` is the solver's own, seen from the solver's side rather than from an enumeration of ours. | **Agrees.** 16432 keys, 0 unmatched in either direction, after the same `normalize_monker_hand` every other read path applies. |
+| **Values** — every hand of every action, the stored byte against the exported frequency | that the frequencies are the solver's frequencies. Compared to one frequency byte (1/256), which is the finest difference a save could express. | **Open.** Needs an export of the *same simulation*. The export available is of the same tree on a given flop, so it differs on essentially every value, exactly as it should. |
+
+The first two were run on 2026-09-22 against `~/MonkerSolver/savedRuns/ggpoker-aof-plo.mkr`
+and an export of the same tree. They are asserted by
+`test_a_real_export_of_the_same_tree_agrees_on_topology_and_on_the_hand_axis`, gated on
+`PREFLOP_ADVISOR_MKR` and `PREFLOP_ADVISOR_MKR_EXPORT`.
+
+To close the third: open the save in MonkerSolver, export its preflop ranges to a folder,
+and run
+
+```
+PREFLOP_ADVISOR_MKR=<the save> PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN=<the folder> \
+  python -m pytest tests/test_mkr_crosscheck.py -k same_run
+```
 
 ## Promotion gates
 
@@ -222,16 +259,30 @@ The provider stays out of the application until all of these hold. Current state
       one borrowed function decodes archive names rather than strategies, and nothing
       selects it as a source;
 - [x] `docs/native-import.md` states, per property, what is supported and what is not;
-- [ ] **a fixture pair is versioned, and the extracted strategies match the export node by
-      node and hand by hand.** This is the gate. Everything above checks a reading against
-      *itself*; only an export checks it against the solver.
-- [ ] **parsing is deterministic across two solver versions**, or version markers let a
-      file be refused when they differ. One `version` has been seen; the signature check is
-      the current stand-in.
+- [x] **a save written by a build nothing has read end to end is refused.** `KNOWN_VERSIONS`
+      lists the builds a save has been read through — one, 20109 — and a save carrying
+      anything else, or nothing, fails the `format version` check and is refused. Two
+      builds can share a tree signature and still disagree about an entry, so the signature
+      is the coarse guard and the build number is the fine one.
+- [x] **the comparison against an export exists, and two of its three parts pass against
+      the solver's own output.** `preflop_advisor/mkr_crosscheck.py` compares a save with an
+      exported range folder on topology, hand axis and values; see below for what it
+      established.
+- [ ] **the values match an export of the same simulation, node by node and hand by hand.**
+      This is the gate. Everything else checks a reading against *itself* or against the
+      shape of the solver's output; only an export of the same run checks the numbers.
+      `tests/test_mkr_crosscheck.py` holds the test, skipped until
+      `PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN` names one.
+- [ ] **parsing is deterministic across two solver versions.** The refusal above makes an
+      unread build *safe*; it does not make it *read*. Two builds are installed on the
+      machine this was written on (2.1.9 and 2.3.10-beta), so the gate needs one run
+      re-saved from the second and its `version` added to `KNOWN_VERSIONS` once its
+      entries are read through.
 - [ ] **EV magnitudes in the provider's own unit.** Not a matter of more work: the file
-      holds no per-action EV. Promoting the provider means deciding that a frequency-only
-      source is worth having in the Advisor, which is a product question rather than a
-      parsing one.
+      holds no per-action EV, and the *export* does. Promoting the provider means deciding
+      that a frequency-only source is worth having in the Advisor, which is a product
+      question rather than a parsing one — and the export being strictly richer is an
+      argument for keeping the export path rather than replacing it.
 
 ## What this means for the workflow today
 
