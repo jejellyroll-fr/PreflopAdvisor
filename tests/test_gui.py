@@ -631,6 +631,39 @@ def test_a_new_hand_clears_the_previous_answer(qtbot, main_window):
     assert all(button.isEnabled() for button in trainer.buttons)
 
 
+def test_the_trainer_grades_in_the_unit_the_tree_declares(qtbot, two_size_tree, tree_configs, output_configs):
+    """A tree states what its EVs are counted in, and that is what they are divided by.
+
+    The display setting is the fallback for a simulation that says nothing. Dividing by
+    it anyway -- as the panel used to -- leaves every verdict, every loss and every shown
+    EV off by the ratio between the two units.
+    """
+    from preflop_advisor.trainer_panel import TrainerPanel
+
+    # The tree counts a big blind in 1000 chips while the display setting says 2000, so a
+    # correct panel divides the raise's 2000 chips into 2.00bb rather than 1.00bb.
+    configs = dict(tree_configs) | {"ChipsPerBB": "1000"}
+    panel = TrainerPanel(lambda: two_size_tree, configs, output_configs)
+    qtbot.addWidget(panel)
+
+    panel.next_hand()
+    question = panel.question
+
+    assert question is not None
+    assert panel.chips_per_bb == pytest.approx(1000.0), "the tree's unit, not the display default"
+
+    best = max(question.results, key=lambda result: result.ev)
+    panel.answer(best.action)
+
+    assert panel.verdict_label.text() == "Correct"
+    assert [(tile.action_label.text(), tile.ev_label.text()) for tile in panel.tiles] == [
+        ("Fold", "+1.20"),
+        ("Call", "+1.40"),
+        ("Rpot", "+1.50"),
+        ("R100", "+2.00"),
+    ]
+
+
 def test_a_window_that_was_never_shown_saves_no_layout(qtbot):
     """Its divider holds the proportions of a page that was never laid out.
 

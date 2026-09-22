@@ -153,9 +153,11 @@ class MonkerRangeProvider:
 
         Each of the seat's actions is played out on a copy of the line, and the seat who
         acts next is whoever the acting order reaches first among those still in. A
-        child is reported only when the folder actually holds a decision for them, so an
-        action that ends the hand -- a fold, or a call that closes the preflop betting --
-        yields nothing and an intermediate seat's fold does not hide the raise behind it.
+        raise here is one decision per bet size the tree holds, so a node offering two
+        sizes yields two branches rather than only the first. A child is reported only
+        when the folder actually holds a decision for them, so an action that ends the
+        hand -- a fold, or a call that closes the preflop betting -- yields nothing and
+        an intermediate seat's fold does not hide the raise behind it.
 
         Folding is played out like any other action rather than skipped: at a table of
         three or more, a fold leaves the seats behind it to act, and those decisions are
@@ -166,10 +168,7 @@ class MonkerRangeProvider:
             return []
         line = [(seat, action) for seat, action in resolved.path]
         children = []
-        for action in self.processor.valid_actions:
-            played = self.processor.find_valid_raise_sizes(
-                self.processor.get_action_sequence([*line, (resolved.hero, action)])
-            )
+        for played in self.processor.action_sequences_at(line, resolved.hero):
             hero = self._next_to_act(played, after=resolved.hero)
             if hero is None:
                 continue
@@ -196,7 +195,8 @@ class MonkerRangeProvider:
         """The node's whole strategy for one hand, in the model's own terms.
 
         Actions come back in the tree's own order -- the ``ValidActions`` the export was
-        built under -- rather than in an order this model imposes. An action whose file
+        built under -- rather than in an order this model imposes, and a raise comes back
+        once per bet size the node holds. An action whose file
         does not exist is not in the answer at all, and neither is a file that exists
         without the hand in it: the reader's placeholder reads as nothing here, because
         an unnamed action is not something a player can be asked to choose.
@@ -225,12 +225,8 @@ class MonkerRangeProvider:
             return []
         line = [(seat, action) for seat, action in resolved.path]
         keys: set[str] = set()
-        for action in self.processor.valid_actions:
-            played = self.processor.find_valid_raise_sizes(
-                self.processor.get_action_sequence([*line, (resolved.hero, action)])
-            )
-            if self.processor.test_action_sequence(played):
-                keys.update(self.processor.hands_at(played))
+        for sequence in self.processor.action_sequences_at(line, resolved.hero):
+            keys.update(self.processor.hands_at(sequence))
         return sorted(keys)
 
     # ------------------------------------------------------------------
@@ -239,11 +235,7 @@ class MonkerRangeProvider:
 
     def _holds(self, hero: str, line: NodePath) -> bool:
         """Whether any of the seat's action files exists at the end of a line of play."""
-        for action in self.processor.valid_actions:
-            played = self.processor.find_valid_raise_sizes(self.processor.get_action_sequence([*line, (hero, action)]))
-            if self.processor.test_action_sequence(played):
-                return True
-        return False
+        return bool(self.processor.action_sequences_at(line, hero))
 
     def _next_to_act(self, line: NodePath, after: str) -> str | None:
         """The next seat still in the hand after ``after`` acted, or ``None``.
