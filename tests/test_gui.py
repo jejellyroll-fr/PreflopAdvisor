@@ -21,7 +21,7 @@ from preflop_advisor.node_explorer_panel import EMPTY_STATE
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.sampler import DEFAULT_POOL, MODES
-from preflop_advisor.strategy import Node, provider_for
+from preflop_advisor.strategy import Node, node_for, node_identity, provider_for
 from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector, ante_of
@@ -639,6 +639,47 @@ def test_a_new_hand_clears_the_previous_answer(qtbot, main_window):
     assert trainer.verdict_label.text() == ""
     assert trainer.tiles == []
     assert all(button.isEnabled() for button in trainer.buttons)
+
+
+def test_the_trainer_grades_in_the_unit_the_tree_declares(qtbot, two_size_tree, tree_configs, output_configs):
+    """A tree states what its EVs are counted in, and that is what they are divided by.
+
+    The display setting is the fallback for a simulation that says nothing. Dividing by
+    it anyway -- as the panel used to -- leaves every verdict, every loss and every shown
+    EV off by the ratio between the two units.
+    """
+    from preflop_advisor.trainer_panel import TrainerPanel
+
+    # The tree counts a big blind in 1000 chips while the display setting says 2000, so a
+    # correct panel divides the raise's 2000 chips into 2.00bb rather than 1.00bb.
+    configs = dict(tree_configs) | {"ChipsPerBB": "1000"}
+    panel = TrainerPanel(lambda: two_size_tree, configs, output_configs)
+    qtbot.addWidget(panel)
+
+    # Pin the spot: a deal walks a shuffled catalogue, so which node answers is a roll of
+    # the dice, and this test is about the numbers of one known node. The chooser is
+    # filled first -- it holds nothing but "Any situation" until a tree fills it, and a
+    # non-editable combo box cannot be set to an entry it does not have.
+    panel.refresh_spots()
+    panel.spot_choice.setCurrentText("SB first in")
+    panel.next_hand()
+    question = panel.question
+
+    assert question is not None
+    assert panel.chips_per_bb == pytest.approx(1000.0), "the tree's unit, not the display default"
+
+    best = max(question.results, key=lambda result: result.ev)
+    panel.answer(best.action)
+
+    assert panel.verdict_label.text() == "Correct"
+    # The hundred-percent raise is worth +2.00bb this way and +1.00bb divided by the
+    # display default, so the doubling is the whole of what is being asserted.
+    assert [(tile.action_label.text(), tile.ev_label.text()) for tile in panel.tiles] == [
+        ("Fold", "+1.20"),
+        ("Call", "+1.40"),
+        ("Rpot", "+1.50"),
+        ("R100", "+2.00"),
+    ]
 
 
 def test_a_window_that_was_never_shown_saves_no_layout(qtbot, tmp_path):
@@ -1286,6 +1327,74 @@ def test_a_pinned_node_is_part_of_the_filter(main_window):
     assert trainer.filter.exact_line == (("SB", "Raise100"),)
 
 
+def test_a_class_filter_finds_a_node_that_holds_only_a_few_of_the_class(tmp_path, main_window):
+    """One eligible hand among forty: a sample of eight reported that nothing matched.
+
+    Sampling cannot witness an absence, and a class filter is exactly the case that makes
+    that matter -- double-suited hands are a fifth of a real node, and a small export can
+    hold one. The session must walk what the node holds before saying there is nothing.
+    """
+    folder = tmp_path / "HU-few-double-suited"
+    folder.mkdir()
+    ranks = "23456789TJQKA"
+    keys = ["(3K)(4A)", *(ranks[index : index + 4] for index in range(38))]
+    body = "".join(f"{key}\n1.0;2000.0\n" for key in keys)
+    for stem in ("0", "1", "40100"):
+        (folder / f"{stem}.rng").write_text(body)
+    trainer = main_window.trainer
+    trainer.tree_source = lambda: {
+        "plrs": 2,
+        "bb": 100,
+        "game": "PLO",
+        "folder": str(folder),
+        "infos": "few double-suited",
+    }
+    trainer.next_hand()
+    trainer.class_filter.setCurrentIndex(trainer.class_filter.findData("double-suited"))
+
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert "double-suited" in classify(trainer.question.hand, "PLO")
+
+
+def test_switching_to_a_tree_the_filter_cannot_express_reads_the_bar_again(tmp_path, main_window):
+    """A hold'em tree offers no hand class of Omaha's, so the bar resets -- and the filter must.
+
+    The class list is rebuilt under a guard that keeps the combs from looking like user
+    choices, so a filter left holding ``double-suited`` matched nothing while the label
+    said the session was unrestricted.
+    """
+    folder = tmp_path / "NL-hu"
+    folder.mkdir()
+    for stem in ("0", "1", "40100"):
+        (folder / f"{stem}.rng").write_text("AKs\n1.0;2000.0\n")
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.class_filter.setCurrentIndex(trainer.class_filter.findData("double-suited"))
+    assert trainer.filter.hand_class == "double-suited"
+
+    trainer.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "NL", "folder": str(folder), "infos": "nl"}
+    trainer.next_hand()
+
+    assert trainer.class_filter.currentData() is None, "the bar shows no class"
+    assert trainer.filter.hand_class is None, "and the filter agrees with it"
+
+
+def test_a_pinned_node_is_not_drilled_when_the_filter_excludes_it(main_window):
+    """The pin is not silently dropped, and the session says what it cannot match."""
+    trainer = main_window.trainer
+    trainer.train_spot(Spot("BB: SB raise 100%", "BB", [("SB", "Raise100")]))
+    assert trainer.question is not None
+
+    trainer.hero_filter.setCurrentIndex(trainer.hero_filter.findData("SB"))
+    trainer.next_hand()
+
+    assert trainer.pinned_spot is not None, "still pinned"
+    assert trainer.question is None
+    assert "Nothing matches" in trainer.spot_label.text()
+
+
 def test_the_chooser_only_offers_what_the_filter_leaves(main_window):
     trainer = main_window.trainer
     trainer.next_hand()
@@ -1320,6 +1429,37 @@ def test_a_difficulty_aware_mode_looks_past_the_first_spot(main_window):
     assert trainer.pool_size() == DEFAULT_POOL
 
 
+def test_the_plain_draw_reads_no_history(main_window, monkeypatch):
+    """The record is a GROUP BY over every answer ever given; a plain session pays none.
+
+    The argument used to be built on every deal whatever the mode, so the draw the trainer
+    has always done -- the cheapest one -- got slower with every answer in the file.
+    """
+    from preflop_advisor.history import TrainingHistory
+
+    reads: list[str] = []
+    original = TrainingHistory.tally
+
+    def counted(self, by: str = "node", filters=None):
+        reads.append(by)
+        return original(self, by, filters)
+
+    monkeypatch.setattr(TrainingHistory, "tally", counted)
+    trainer = main_window.trainer
+    trainer.rng.seed(5)
+    trainer.next_hand()
+
+    for mode in ("random", "frequency", "close", "mixed"):
+        trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData(mode))
+        trainer.next_hand()
+    assert reads == [], "a mode that weighs only the strategy pays no query"
+
+    trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData("weakness"))
+    trainer.next_hand()
+
+    assert reads == ["node"], "weighed against the history only where the mode reads it"
+
+
 def test_every_mode_still_deals_a_question_it_can_grade(main_window):
     """A preference over what to ask must never leave the session with nothing to answer."""
     trainer = main_window.trainer
@@ -1344,6 +1484,65 @@ def test_a_weakness_session_can_be_answered_before_it_has_a_history(main_window)
 
     assert trainer.track_record() is not None
     assert trainer.question is not None
+
+
+def test_the_chooser_itself_shows_the_pinned_node(main_window):
+    """A pin the chooser does not show cannot be let go of.
+
+    Selecting the entry a combo box already displays emits nothing, so a pin hidden
+    behind "Any situation" outlived every attempt to leave it while the chooser claimed
+    the whole catalogue was being asked.
+    """
+    trainer = main_window.trainer
+    pinned = "BB: SB raise 100%"
+
+    trainer.train_spot(Spot(pinned, "BB", [("SB", "Raise100")]))
+
+    assert trainer.spot_choice.currentText() == pinned
+
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.next_hand()
+
+    assert trainer.pinned_spot is None
+    assert trainer.question is not None
+    assert trainer.question.spot.label != pinned
+
+
+def test_a_node_that_was_drilled_stays_selectable_as_a_situation(main_window):
+    """The catalogue has no family for a squeeze off a limp, so the entry is kept."""
+    trainer = main_window.trainer
+    pinned = "BB: SB raise 100%"
+    trainer.train_spot(Spot(pinned, "BB", [("SB", "Raise100")]))
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.next_hand()
+
+    trainer.spot_choice.setCurrentText(pinned)
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert trainer.question.spot.label == pinned, "the entry still names the decision"
+
+
+def test_a_node_the_trainer_cannot_grade_is_not_offered_for_drilling(tmp_path, main_window):
+    """An enabled button on such a node deals nothing and reports that nothing answered.
+
+    What the user sees is the application failing, rather than a decision the trainer
+    cannot ask about -- so the button stays off and the pane says why.
+    """
+    folder = tmp_path / "HU-no-ev"
+    folder.mkdir()
+    for name in ("0", "1", "40100"):
+        (folder / f"{name}.rng").write_text("(3K)(4A)\n1.0;\n")
+    explorer = open_explorer(main_window)
+    explorer.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "PLO", "folder": str(folder), "infos": "no ev"}
+    explorer.refresh()
+    root = explorer.tree.topLevelItem(0)
+    root.setExpanded(True)
+
+    explorer.tree.setCurrentItem(root)
+
+    assert explorer.train_button.isEnabled() is False
+    assert "not drilled" in explorer.notes.text()
 
 
 def test_the_explorer_says_so_when_there_is_nothing_to_walk(main_window):
@@ -1385,6 +1584,29 @@ def test_answering_a_hand_writes_it_to_the_history(main_window):
     assert stored[0].hero == question.spot.hero
     assert stored[0].verdict == "Correct", "the best action costs nothing"
     assert stored[0].chosen == stored[0].best
+
+
+def test_an_answer_is_filed_under_the_line_the_provider_resolved(main_window):
+    """A decision is one row of the report whichever screen it was reached from.
+
+    A spot's line is implicit -- the folds in between are left out and a raise is named
+    generically -- while what the provider hands back is the explicit line the strategy was
+    read by. Recording the implicit one would file one decision under two identities, and
+    two concrete nodes that only look alike could share one.
+    """
+    trainer = main_window.trainer
+    trainer.rng.seed(42)
+    trainer.next_hand()
+    question = trainer.question
+    assert question is not None and question.node is not None
+    implicit = node_for(question.spot.hero, list(question.spot.line))
+    assert question.node.path != implicit.path, "this spot must hold a concrete sizing, not a generic raise"
+
+    trainer.answer(question.actions()[0])
+
+    stored = main_window.history.answers()[0]
+    assert stored.node_id == node_identity(question.node)
+    assert stored.node_id != node_identity(implicit)
 
 
 def test_an_answer_is_filed_under_the_simulation_it_was_answered_on(main_window):

@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
-from .history import HistoryFilter, Snapshot, TrainingHistory, daily_since
+from .history import TODAY, HistoryFilter, Snapshot, TrainingHistory, period_since
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +46,10 @@ BREAKDOWNS = (
     ("family", "Line families"),
     ("hand_class", "Hand classes"),
 )
-#: The periods the history can be read over, and how many days back each reaches.
-PERIODS = (("All time", None), ("Today", 1), ("Last 7 days", 7), ("Last 30 days", 30))
+#: The periods the history can be read over, and how far back each reaches: ``None`` for
+#: everything, ``TODAY`` for the calendar day being lived, a number of rolling days
+#: otherwise. "Today" used to reach back twenty-four hours, which is another thing.
+PERIODS = (("All time", None), ("Today", TODAY), ("Last 7 days", 7), ("Last 30 days", 30))
 #: How many answers the raw list shows.
 RECENT = 25
 
@@ -131,10 +133,7 @@ class HistoryDialog(QDialog):
         """The filters as the two combo boxes spell them."""
         simulation = self.simulation_filter.currentData()
         days = PERIODS[self.period_filter.currentIndex()][1]
-        return HistoryFilter(
-            simulation=simulation or None,
-            since=daily_since(days) if days else None,
-        )
+        return HistoryFilter(simulation=simulation or None, since=period_since(days))
 
     def refresh(self) -> None:
         """Read everything the dialog shows again, from the history."""
@@ -242,20 +241,29 @@ class HistoryDialog(QDialog):
         """Forget the answers under the current filter, after asking.
 
         Confirmed, because it cannot be undone, and scoped to what is on screen, which is
-        the only reading of "clear" that is not a surprise. The simulations are separate
-        files and are not touched whatever is chosen here.
+        the only reading of "clear" that is not a surprise: the dialog shows one
+        simulation over one period, so clearing that is what the button offers -- and the
+        question says so before anything goes. The simulations are separate files and are
+        not touched whatever is chosen here.
         """
-        simulation = self.simulation_filter.currentData()
-        scope = f"every answer for {simulation}" if simulation else "every answer, of every simulation"
+        filters = self.filter()
         answer = QMessageBox.question(
             self,
             "Clear the training history",
-            f"Forget {scope}?\n\nThe simulations themselves are kept.",
+            f"Forget {self.describe_scope(filters)}?\n\nThe simulations themselves are kept.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        removed = self.history.clear(simulation or None)
+        removed = self.history.clear(filters)
         logger.info("Cleared %d answers from the training history", removed)
         self.refresh()
+
+    def describe_scope(self, filters: HistoryFilter) -> str:
+        """What a clear would remove, in the words of the two filters that selected it."""
+        simulation = filters.simulation
+        scope = f"every answer for {simulation}" if simulation else "every answer, of every simulation"
+        if filters.since is not None:
+            scope += f", from {self.period_filter.currentText().lower()} on"
+        return scope

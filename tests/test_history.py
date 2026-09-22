@@ -6,11 +6,13 @@ tests open it the way the application does, close it, and read it again.
 """
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from preflop_advisor.history import (
     SCHEMA_VERSION,
+    TODAY,
     HistoryFilter,
     Snapshot,
     TrainingAnswer,
@@ -19,6 +21,7 @@ from preflop_advisor.history import (
     default_path,
     new_session_id,
     now,
+    period_since,
 )
 
 
@@ -357,6 +360,44 @@ def test_the_history_can_be_read_by_date(history):
     assert recent.ev_loss == pytest.approx(0.10)
 
 
+def test_today_is_the_calendar_day_and_not_the_last_twenty_four_hours():
+    """The two periods are different things, and just after midnight they differ by a day.
+
+    Read as a rolling window, a period labelled *Today* would count yesterday evening and
+    its totals would not match its name.
+    """
+    reference = datetime.now(timezone.utc).astimezone().replace(hour=0, minute=30, second=0, microsecond=0)
+
+    day_start = datetime.fromisoformat(period_since(TODAY, reference))
+    rolling = datetime.fromisoformat(daily_since(1, reference))
+
+    assert rolling == reference - timedelta(days=1)
+    assert day_start > rolling, "the day begins half an hour back, not twenty-four hours back"
+    assert day_start <= reference
+
+
+def test_the_periods_that_are_not_today_are_still_rolling_windows():
+    reference = datetime(2026, 9, 22, 18, 0, tzinfo=timezone.utc)
+
+    assert period_since(None) is None, "everything is not a timestamp"
+    assert period_since(7, reference) == daily_since(7, reference)
+
+
+def test_the_today_filter_leaves_out_an_answer_made_just_before_midnight(history):
+    """The boundary is the one the reader had, and the comparison is still made in UTC."""
+    local_now = datetime.now(timezone.utc).astimezone()
+    midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday = (midnight - timedelta(minutes=10)).astimezone(timezone.utc).isoformat(timespec="seconds")
+    today = (midnight + timedelta(minutes=10)).astimezone(timezone.utc).isoformat(timespec="seconds")
+    history.record(answer(hand="2c2d7h8s", answered_at=yesterday))
+    history.record(answer(hand="AhKs4h3s", answered_at=today))
+
+    counted = history.snapshot(HistoryFilter(since=period_since(TODAY, local_now)))
+
+    assert counted.hands == 1
+    assert history.answers()[0].hand == "AhKs4h3s"
+
+
 def test_the_history_can_be_read_by_sitting(history):
     history.record(answer(session_id="monday", ev_loss=1.00))
     history.record(answer(session_id="tuesday", ev_loss=0.10))
@@ -418,8 +459,23 @@ def test_clearing_one_simulation_leaves_the_others(history):
     history.record(answer(simulation="HU-100bb"))
     history.record(answer(simulation="6max-100bb"))
 
-    assert history.clear("HU-100bb") == 1
+    assert history.clear(HistoryFilter(simulation="HU-100bb")) == 1
     assert history.simulations() == ["6max-100bb"]
+
+
+def test_clearing_is_scoped_to_the_whole_filter_not_only_its_simulation(history):
+    """A window showing one simulation over one period offers to clear exactly that.
+
+    Clearing by simulation alone deleted the answers the window was not showing, which is
+    the kind of surprise an irreversible button must not have.
+    """
+    history.record(answer(simulation="HU-100bb", answered_at="2020-01-01T10:00:00+00:00"))
+    history.record(answer(simulation="HU-100bb", answered_at="2030-01-01T10:00:00+00:00"))
+
+    removed = history.clear(HistoryFilter(simulation="HU-100bb", since="2025-01-01T00:00:00+00:00"))
+
+    assert removed == 1
+    assert history.snapshot().hands == 1, "the answer outside the period is still there"
 
 
 def test_clearing_does_not_touch_the_simulations_or_the_configuration(tmp_path):
@@ -444,7 +500,7 @@ def test_clearing_one_simulation_removes_its_hand_classes_too(history):
     history.record(answer(simulation="HU-100bb", hand="2c2d7h8s"))
     history.record(answer(simulation="6max-100bb", hand="AhKs4h3s"))
 
-    history.clear("HU-100bb")
+    history.clear(HistoryFilter(simulation="HU-100bb"))
 
     classes = {entry.key for entry in history.weaknesses("hand_class")}
     assert "double-suited" in classes
