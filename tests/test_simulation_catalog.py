@@ -397,6 +397,53 @@ def test_a_policy_that_requires_a_rake_degrades_an_undeclared_one():
     assert result.comparable is False
 
 
+def test_the_same_percentage_capped_in_a_different_place_is_a_different_game():
+    """A cap is part of what a game takes, and the percentage alone cannot see it.
+
+    Both tables take 5%, and above the lower cap they take different amounts of every pot. A
+    comparison reading only the percentage would call them one game and price a hand against
+    the other's numbers.
+    """
+    catalog = catalog_over(FakeSimulation(), declared=[{"rake_percent": "5", "rake_cap": "1", "rake_cap_unit": "bb"}])
+
+    result = judged(catalog, query_of(rake=Rake(percent=5.0, cap=10.0, cap_unit="bb"))).matches[0]
+
+    assert result.of("rake").status == INCOMPATIBLE
+    assert "cap 1bb vs cap 10bb" in result.of("rake").detail
+    assert result.placeable is False
+
+
+def test_a_cap_of_three_big_blinds_is_not_a_cap_of_three_chips():
+    """The unit is carried rather than assumed, so the same number in another unit differs."""
+    catalog = catalog_over(
+        FakeSimulation(), declared=[{"rake_percent": "5", "rake_cap": "3", "rake_cap_unit": "chips"}]
+    )
+
+    result = judged(catalog, query_of(rake=Rake(percent=5.0, cap=3.0, cap_unit="bb"))).matches[0]
+
+    assert result.of("rake").status == INCOMPATIBLE
+    assert "cap 3chips vs cap 3bb" in result.of("rake").detail
+
+
+def test_a_percentage_and_a_cap_that_agree_are_exact():
+    catalog = catalog_over(FakeSimulation(), declared=[{"rake_percent": "5", "rake_cap": "3", "rake_cap_unit": "bb"}])
+
+    result = judged(catalog, query_of(rake=Rake(percent=5.0, cap=3.0, cap_unit="bb"))).chosen
+
+    assert result is not None
+    assert result.of("rake").status == EXACT
+
+
+def test_a_cap_only_one_side_states_is_not_a_mismatch():
+    """A cap nobody wrote is not a cap of nothing, so the percentages are all there is to read."""
+    catalog = catalog_over(FakeSimulation(), declared=[{"rake_percent": "5"}])
+
+    result = judged(catalog, query_of(rake=Rake(percent=5.0, cap=3.0, cap_unit="bb"))).chosen
+
+    assert result is not None
+    assert result.of("rake").status == EXACT
+
+
 def test_a_room_alias_may_stand_in_for_a_rake_the_simulation_does_not_state():
     catalog = catalog_over(FakeSimulation(), declared=[{"aliases": "PokerStars PLO50"}])
 

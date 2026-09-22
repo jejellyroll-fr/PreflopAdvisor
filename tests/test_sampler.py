@@ -14,6 +14,8 @@ import pytest
 from preflop_advisor.history import TrainingAnswer, TrainingHistory, default_path
 from preflop_advisor.sampler import (
     EPSILON,
+    FLOOR,
+    HISTORY_MODES,
     MATERIAL_SHARE,
     MODES,
     VIABLE_GAP_BB,
@@ -23,6 +25,7 @@ from preflop_advisor.sampler import (
     difficulty,
     entropy_of,
     pick,
+    reads_history,
     weight_of,
     weights,
 )
@@ -130,13 +133,26 @@ def test_viable_counts_the_answers_inside_the_threshold_and_not_the_ones_outside
 
 
 def test_a_hand_with_one_action_is_a_forced_move_and_not_a_choice():
+    """One valued action is nothing to have measured a distance against, so there is none."""
     measured = difficulty((StrategyResult("Fold", 1.0, 0.0),), CHIPS_PER_BB)
 
-    assert measured == Difficulty(gap=0.0, viable=1, spread=0.0, played=1)
+    assert measured == Difficulty(gap=None, viable=1, spread=0.0, played=1)
+    assert measured.gap is None, "a zero here would read as a perfect tie"
 
 
 def test_a_node_that_says_nothing_is_measured_as_nothing_rather_than_raising():
-    assert difficulty((), CHIPS_PER_BB) == Difficulty(gap=0.0, viable=0, spread=0.0, played=0)
+    assert difficulty((), CHIPS_PER_BB) == Difficulty(gap=None, viable=0, spread=0.0, played=0)
+
+
+def test_an_action_the_source_cannot_value_leaves_no_gap_to_measure():
+    """One valued action beside one unvalued one is still a node with nothing to decide."""
+    measured = difficulty(
+        (StrategyResult("Raise", 0.6, 130.0), StrategyResult("Call", 0.4, None)),
+        CHIPS_PER_BB,
+    )
+
+    assert measured.gap is None
+    assert measured.spread == pytest.approx(0.4)
 
 
 def test_the_spread_is_what_the_solver_is_actually_mixing():
@@ -215,6 +231,28 @@ def test_close_decisions_weigh_a_near_tie_above_a_rout():
     assert far == pytest.approx(1.0 / (EPSILON + 2.17))
 
 
+def test_the_close_mode_does_not_call_a_forced_move_a_close_decision():
+    """A node with one answer had nothing to decide, so nothing to be close about.
+
+    Reading its gap as zero would weigh it ``1 / EPSILON`` -- the heaviest weight there is
+    -- in the one mode meant to find the decisions that can be got wrong, and a session
+    would then be filled with the decisions that cannot be.
+    """
+    forced = question(("Fold", 1.0, 0.0))
+    marginal = question(("Raise", 0.55, 133.1), ("Call", 0.45, 132.6))
+
+    assert weight_of("close", forced, CHIPS_PER_BB) == FLOOR
+    assert weight_of("close", forced, CHIPS_PER_BB) < weight_of("close", marginal, CHIPS_PER_BB)
+
+
+def test_an_unvalued_second_action_does_not_hand_a_forced_move_a_gap():
+    """A source that cannot value a hand is not saying the solver is indifferent about it."""
+    half_valued = question(("Raise", 0.6, 130.0), ("Call", 0.4, None))
+    forced = question(("Fold", 1.0, 0.0))
+
+    assert weight_of("close", half_valued, CHIPS_PER_BB) == weight_of("close", forced, CHIPS_PER_BB)
+
+
 def test_a_decision_the_solver_is_indifferent_about_weighs_heavily_and_does_not_divide_by_zero():
     tie = question(("Raise", 0.5, 130.0), ("Call", 0.5, 130.0))
 
@@ -283,6 +321,24 @@ def test_the_rare_mode_asks_what_has_not_been_asked():
 
     assert weight_of("rare", fresh, CHIPS_PER_BB, record) == pytest.approx(1.0)
     assert weight_of("rare", asked, CHIPS_PER_BB, record) == pytest.approx(0.1)
+
+
+def test_the_modes_that_say_they_read_the_history_are_the_ones_that_do():
+    """A caller skips the read for every other mode, so the claim has to be true.
+
+    The panel builds the record only when :func:`reads_history` says so; a mode that read
+    it while answering no would silently weigh a stale pool, and one that did not read it
+    while answering yes would draw at random after paying for the query.
+    """
+    candidate = question(("Raise", 0.5, 130.0), ("Call", 0.5, 130.0))
+    costing = TrackRecord(losses={identity_of(candidate): 0.9}, hands={identity_of(candidate): 5})
+
+    for mode in MODES:
+        plain = weight_of(mode, candidate, CHIPS_PER_BB, None)
+        weighed = weight_of(mode, candidate, CHIPS_PER_BB, costing)
+        assert (weighed != plain) == reads_history(mode), f"{mode} misstates what it reads"
+
+    assert set(HISTORY_MODES) == {"weakness", "rare"}
 
 
 def test_without_a_history_the_history_aware_modes_are_the_random_one():

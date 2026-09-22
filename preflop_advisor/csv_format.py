@@ -273,6 +273,17 @@ def parse_action(text: Any) -> tuple[str, str, Sizing]:
     return f"Raise{_size_label(size)}", "Raise", size
 
 
+def is_bare_raise(text: Any) -> bool:
+    """Whether an action says nothing but that a raise happened, with no size of its own.
+
+    ``Raise`` and ``bet`` say only that money went in; ``Open``, ``3-Bet`` and ``Raise75``
+    each say something the table chose to say. The difference matters when a separate column
+    states the size: only the first kind can be renamed without rewriting the export's own
+    vocabulary, and only the first kind leaves two raises of one node under one name.
+    """
+    return not _key(_LEADING_VERB.sub("", str(text)))
+
+
 def action_size(name: str) -> Sizing:
     """What an action *name* means, for a table without a sizing column.
 
@@ -572,6 +583,15 @@ def _read_row(
         stated = action_size(str(declared))
         if stated.kind != "unknown":
             sizing = stated
+            # A sizing column is what tells one raise from another: the action column says
+            # "Raise" on every row, so a name that kept the bare word would make one node's
+            # 2.5bb raise and its 8bb raise a single action -- and the index, which keys
+            # actions by name, would keep whichever it read first and price the node by it.
+            # The size is attached the way :func:`parse_action` attaches one found in the
+            # name, and only where the name itself said nothing: an export's own vocabulary
+            # (``Open``, ``3-Bet``) is what its lines of play are spelled in.
+            if kind == "Raise" and is_bare_raise(cell_of(row, mapping, "action")):
+                name = f"Raise{_size_label(stated)}"
     try:
         frequency = parse_frequency(cell_of(row, mapping, "frequency"))
     except ValueError as error:

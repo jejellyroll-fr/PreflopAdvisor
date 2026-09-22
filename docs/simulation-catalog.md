@@ -63,6 +63,13 @@ matcher says so far more precisely -- *"the tree holds no raise to 4bb here for 
 mismatch marks the simulation unusable for an EV while the walk still happens. Nobody is told
 "there is no compatible simulation" about a simulation that is sitting right there.
 
+The rake is read as more than its percentage. A cap is part of what a game takes -- a 5%
+cap-1bb table and a 5% cap-10bb one charge differently from the first pot above the lower cap
+-- so the cap and its unit are compared too (`Policy.rake_cap`), and a cap written in another
+unit is a different cap whatever the numbers say. A cap only one side states is not judged:
+the percentage is then all there is to compare, and a cap nobody wrote is not a cap of
+nothing.
+
 ## Statuses
 
 `EXACT`, `CLOSE`, `APPROXIMATE`, `INCOMPATIBLE` -- the worst judged dimension decides, with
@@ -88,7 +95,7 @@ this layer exists to prevent.
 Every tolerance is in `Policy`, so "close" is one readable object a test can pin and a user can
 widen for a solver that rounds differently: the depth bands, the ante tolerance, the sizing
 tolerances (the same 0.15bb the node matcher compares with, so the two layers cannot disagree
-about what "the same sizing" is), the rake bands, and four switches:
+about what "the same sizing" is), the rake bands and the cap allowance, and four switches:
 
 - `require_rake` -- off by default. An undeclared rake is *reported*, not assumed to match, and
   also not treated as a refusal; a user who needs it required turns this on and it degrades the
@@ -109,10 +116,10 @@ The contract NodeMatcher and any other caller uses:
 catalog = catalog_of(candidates, profiles=read_profiles(config.section("RakeProfiles")))
 report = catalog.rank(SimulationQuery.from_hand(hand), override=None)
 
-report.chosen       # the Compatibility to use, or None
-report.placeable    # every judgement a hand may be walked through, best first
-report.needs_choice # several equal candidates and a policy that refuses to settle them
-report.reason       # why nothing may be used, in words
+report.chosen  # the Compatibility to use, or None
+report.placeable  # every judgement a hand may be walked through, best first
+report.needs_choice  # several equal candidates and a policy that refuses to settle them
+report.reason  # why nothing may be used, in words
 ```
 
 `SimulationCatalog.rank` never returns a bare boolean or a score out of ten.

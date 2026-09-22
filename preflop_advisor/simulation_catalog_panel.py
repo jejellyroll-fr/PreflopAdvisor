@@ -341,9 +341,18 @@ class CatalogPanel(QWidget):
             self.facts.setText(self.facts_text(meta, entry))
             self.enabled_check.setChecked(meta.enabled)
             self.context_combo.setCurrentIndex(max(self.context_combo.findData(meta.context), 0))
-            self.rake_percent_edit.setText("" if meta.rake.percent is None else f"{meta.rake.percent:g}")
-            self.rake_cap_edit.setText("" if meta.rake.cap is None else f"{meta.rake.cap:g}")
-            self.rake_cap_unit_combo.setCurrentText(meta.rake.cap_unit or "bb")
+            # Only what the simulation itself declares is offered back for editing. A rate or a
+            # cap marked "assumed" is one a rake profile resolved, and showing it here would
+            # have the next save write the profile's own terms into this simulation.
+            declared = meta.origin("rake_percent") == "declared"
+            self.rake_percent_edit.setText(
+                f"{meta.rake.percent:g}" if declared and meta.rake.percent is not None else ""
+            )
+            declared_cap = meta.origin("rake_cap") == "declared"
+            self.rake_cap_edit.setText(f"{meta.rake.cap:g}" if declared_cap and meta.rake.cap is not None else "")
+            # The unit follows its cap, and neither is shown when a profile supplied them:
+            # showing the profile's unit beside an empty cap would have the next save declare it.
+            self.rake_cap_unit_combo.setCurrentText(meta.rake.cap_unit if declared_cap and meta.rake.cap_unit else "bb")
             self.rake_profile_edit.setText(meta.rake.profile)
             self.sb_edit.setText("" if meta.origin("sb_bb") == "assumed" else f"{meta.sb_bb:g}")
             self.bb_edit.setText("" if meta.origin("bb_bb") == "assumed" else f"{meta.bb_bb:g}")
@@ -395,6 +404,16 @@ class CatalogPanel(QWidget):
         # its "assumed" mark, and one that was filled in loses it -- otherwise a blind the
         # user has just typed would go on being treated as a default and never written out.
         stated = {"context", "version"} | ({"sb_bb"} if sb else set()) | ({"bb_bb"} if bb else set())
+        # Per field as well: ``rake`` says something about the rake was stated, and it is the
+        # fields that get written, so a rate typed over a profile's own terms has to lose its
+        # "assumed" mark itself -- otherwise the form would drop what the user just typed.
+        # The cap's unit is stated with its cap: the two are one declaration.
+        if rake.percent is not None:
+            stated.add("rake_percent")
+        if rake.cap is not None:
+            stated |= {"rake_cap", "rake_cap_unit"}
+        if rake.profile:
+            stated.add("rake_profile")
         if rake.declared:
             stated.add("rake")
         assumed = [

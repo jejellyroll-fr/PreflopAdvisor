@@ -456,6 +456,79 @@ def test_a_tree_that_does_not_size_its_ante_prices_nothing():
     assert "ante" in match.note
 
 
+def test_a_simulation_of_another_ante_structure_is_not_this_hand():
+    """The ante is dead money in every pot, so two trees that differ by it are two games.
+
+    Compatible on game, table size and depth alone, a fold or a call would be reported as an
+    exact match -- carrying the EV of a solution solved for a different pot, with nothing
+    about the answer looking wrong.
+    """
+    decisions = hand_of(act("SB", "Fold"), ante_bb=0.5).decisions()
+
+    assert matcher_over(FakeSimulation(ante_bb=0.0)).match(decisions[0]).status == "no simulation"
+    assert matcher_over(FakeSimulation(ante_bb=0.25)).match(decisions[0]).status == "no simulation"
+    assert matcher_over(FakeSimulation(ante_bb=0.5)).match(decisions[0]).status == "exact"
+    assert "ante" in matcher_over(FakeSimulation(ante_bb=0.0)).match(decisions[0]).note
+
+
+def test_a_raise_is_compared_without_the_ante_the_seat_posted():
+    """A history records what a raise came to in the betting; the ante is not part of it.
+
+    Counted together, a raise to four in a half-blind-ante game reads as a raise to four and
+    a half: a raise the tree holds is reported as one it does not.
+    """
+    simulation = FakeSimulation(
+        actions=("RaisePot", "Fold"),
+        sizings={"raisepot": Sizing("pot", 1.0), "fold": Sizing("fold", 0.0)},
+        strategy={"RaisePot": (1.0, 0.0), "Fold": (0.0, 0.0)},
+        ante_bb=0.5,
+    )
+    decisions = hand_of(act("SB", "Raise", 4.0), ante_bb=0.5).decisions()
+
+    match = matcher_over(simulation).match(decisions[0])
+
+    assert match.status == "exact", "the pot-sized raise from the small blind is to 4bb"
+    assert match.taken_action == "RaisePot"
+
+
+def test_the_closest_depth_wins_over_the_one_listed_first():
+    """A 90bb tree beside the 100bb one is a near-miss, and a near-miss is not the hand.
+
+    Both are inside the tolerance, so both are candidates -- but the hand was played at one
+    of them, and the first one the configuration happens to list is not it.
+    """
+    decisions = hand_of(act("SB", "Fold")).decisions()
+
+    match = matcher_over(
+        FakeSimulation(stack_bb=90.0),
+        FakeSimulation(stack_bb=100.0),
+        tolerance=Tolerance(stack_bb=20.0),
+    ).match(decisions[0])
+
+    assert match.status == "exact"
+    assert match.simulation == "sim1", "the tree at the depth the hand was played at"
+
+
+def test_only_the_simulation_the_catalog_chose_is_walked():
+    """A lower-ranked tree holding the node is not the hand's environment.
+
+    Both sit inside the stack tolerance and the hand was played at one of them. Letting the
+    other answer because it is the one with a node on this line would price the hand against
+    another table's numbers while every ranking said the closer tree was the one in use.
+    """
+    decisions = hand_of(act("SB", "Raise", 2.5)).decisions()
+
+    match = matcher_over(
+        FakeSimulation(stack_bb=100.0, strategy={}),
+        FakeSimulation(stack_bb=90.0),
+        tolerance=Tolerance(stack_bb=20.0),
+    ).match(decisions[0])
+
+    assert match.status == "no node"
+    assert match.simulation == "sim0", "the tree at the depth the hand was played at"
+    assert "nothing for this hand" in match.note
+
+
 def test_cards_that_do_not_convert_are_unsupported():
     """Two cards are a hold'em hand, not a four-card one, and nothing is claimed about it."""
     decisions = hand_of(act("SB", "Raise", 2.5), cards="AhKs").decisions()

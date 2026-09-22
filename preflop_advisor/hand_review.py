@@ -135,11 +135,6 @@ logger = logging.getLogger(__name__)
 PAYLOAD_VERSION = 1
 #: The statuses a decision can carry, worst news last.
 STATUSES = ("exact", "sized", "ambiguous", "no node", "no simulation", "ambiguous simulation", "unsupported")
-#: Which finding to report when no simulation matched exactly, most informative first. A sized
-#: match is the closest thing to a match; then a read that could not pick between two actions;
-#: then a specific reason -- an amount no stored action comes to -- and last the generic
-#: "this tree holds no decision here", which says least about why.
-READING_ORDER = ("sized", "ambiguous", "unsupported", "no node")
 #: A status that means the decision was matched to a node, and therefore has a strategy.
 MATCHED_STATUSES = ("exact", "sized")
 #: How close a real raise has to come to a stored one to be called the same raise, in big
@@ -652,25 +647,22 @@ class NodeMatcher:
         if chosen is None:
             return Match("no simulation", note=report.reason)
 
-        best: Match | None = None
-        for comparison in report.placeable:
-            candidate = self._candidate(comparison.simulation_id)
-            if candidate is None:  # pragma: no cover - the catalog was built from these
-                continue
-            found = self._match_in(candidate, decision, comparison)
-            if found.status == "exact":
-                return found
-            if best is None or _reading_rank(found.status) < _reading_rank(best.status):
-                best = found
-        if best is not None:
-            return best
-        return Match(
-            "no node",
-            simulation=chosen.simulation_id,
-            note=f"{chosen.name} holds no decision on this line",
-            comparison=chosen,
-            overridden=self.manual is not None,
-        )
+        # One simulation is walked: the one the catalog chose, which is the deepest-closest of
+        # those this hand is compatible with. Walking every placeable one and taking the first
+        # node that matches would let node availability outrank the ranking -- a 90bb tree
+        # sitting behind the 100bb one would answer for a hand played in it, and the number
+        # that came back would be another table's. That the chosen simulation holds no node
+        # here is a fact about this hand, and it is reported as one.
+        candidate = self._candidate(chosen.simulation_id)
+        if candidate is None:  # pragma: no cover - the catalog was built from these
+            return Match(
+                "no node",
+                simulation=chosen.simulation_id,
+                note=f"{chosen.name} holds no decision on this line",
+                comparison=chosen,
+                overridden=self.manual is not None,
+            )
+        return self._match_in(candidate, decision, chosen)
 
     def _match_in(self, candidate: Candidate, decision: RealDecision, comparison: Compatibility) -> Match:
         """The verdict, carrying how compatible the simulation was with the hand."""
@@ -726,10 +718,7 @@ class NodeMatcher:
         if metadata.ante_bb is None:
             # Every amount on this table is built on the ante: with its size undeclared, no
             # raise can be priced, and a node named without pricing it would be a guess.
-            return Reading(
-                status="unsupported",
-                note="this tree has an ante it does not size, so its raises cannot be compared",
-            )
+            return Reading(status="unsupported", note=UNPRICED_ANTE)
         line: ActionSequence = []
         status = "exact"
         for action in hand.actions[: decision.index]:
@@ -844,9 +833,10 @@ class NodeMatcher:
         return None, "unsupported", f"the tree holds no raise to {action.to_bb:g}bb here for {action.seat}"
 
 
-def _reading_rank(status: str) -> int:
-    """Where a status sits in :data:`READING_ORDER`, with anything else last."""
-    return READING_ORDER.index(status) if status in READING_ORDER else len(READING_ORDER)
+#: What is said about a tree whose ante is undeclared. Every amount on such a table is
+#: built on the ante, so with its size unstated no raise can be priced, and a node named
+#: without pricing it would be a guess.
+UNPRICED_ANTE = "this tree has an ante it does not size, so its raises cannot be compared"
 
 
 def _weaker(first: str, second: str) -> str:
@@ -946,6 +936,26 @@ def mistakes_of_one_node(reviewed: Iterable[ReviewedDecision]) -> list[ReviewedD
         seen.add(identity)
         worst.append(entry)
     return worst
+
+
+def one_simulation(reviewed: Sequence[ReviewedDecision]) -> tuple[list[ReviewedDecision], str, int]:
+    """The decisions of one session, the simulation they were matched against, and the rest.
+
+    A session is drilled on one simulation, because the trainer draws from one tree: reading
+    a node of one solution against another would report a strategy nobody played. The first
+    decision names the simulation -- worst first for a set of mistakes, the first row the
+    user selected for a selection -- and the decisions matched elsewhere are left for another
+    session rather than quietly counted as part of this one.
+
+    :return: ``(kept, simulation, left_out)``: the decisions, the name of the simulation they
+        share, and how many were left out because they matched a different one.
+    """
+    entries = [entry for entry in reviewed if entry.match.node is not None]
+    if not entries:
+        return [], "", 0
+    simulation = entries[0].match.simulation
+    kept = [entry for entry in entries if entry.match.simulation == simulation]
+    return kept, simulation, len(entries) - len(kept)
 
 
 def session_spots(reviewed: Iterable[ReviewedDecision], limit: int = MISTAKE_LIMIT) -> list[Spot]:

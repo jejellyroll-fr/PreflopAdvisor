@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -31,7 +32,14 @@ from PySide6.QtWidgets import (
 
 from .config_store import LayeredConfig
 from .errors import SimulationScanError
-from .import_wizard import ImportRequest, SimulationScan, inferred_mapping, register_simulation, scan_simulation
+from .import_wizard import (
+    ImportRequest,
+    SimulationScan,
+    description_of,
+    inferred_mapping,
+    register_simulation,
+    scan_simulation,
+)
 from .paths import SOURCE_CSV, resolve_range_folder
 from .theme import EV_NEGATIVE, EV_POSITIVE, TEXT_MUTED, TEXT_SECONDARY
 
@@ -132,6 +140,8 @@ class MetadataPage(QWizardPage):
         self.config = config
         self.folder_page = folder_page
         self.codes: list[str] = []
+        #: The scan this page was filled from, so coming back to it keeps what was typed.
+        self._filled: SimulationScan | None = None
 
         self.setTitle("Confirm the simulation's details")
         self.setSubTitle("Detected values are filled in; change any that the export does not state.")
@@ -148,6 +158,10 @@ class MetadataPage(QWizardPage):
             self.players_combo.addItem(f"{players}-max", players)
         form.addRow("Players:", self.players_combo)
         self.stack_edit = QLineEdit()
+        # The entry is read back with ``int()`` by the selector when the window refreshes,
+        # so a depth that is not a number would be accepted here and then crash the
+        # refresh that follows the wizard's own close.
+        self.stack_edit.setValidator(QIntValidator(1, 100000, self))
         form.addRow("Stack (bb):", self.stack_edit)
         self.ante_edit = QLineEdit()
         self.ante_edit.setPlaceholderText("Leave empty when the simulation has no ante")
@@ -213,10 +227,19 @@ class MetadataPage(QWizardPage):
         layout.addWidget(self.mapping)
 
     def initializePage(self) -> None:
-        """Fill the form from the scan the previous page made."""
+        """Fill the form from the scan the previous page made, once per scan.
+
+        ``initializePage`` runs on every entry, so stepping back from the summary would
+        otherwise throw away every field the user had just edited -- and the next step
+        forward would import the scan's values instead of theirs. A rescan makes a new
+        scan object, which is what re-fills the form after the folder changes.
+        """
         scan = self.folder_page.scan
         if scan is None:  # pragma: no cover - the first page refuses to leave without one
             return
+        if self._filled is scan:
+            return
+        self._filled = scan
         self.name_edit.setText(scan.name)
         self.game_combo.setCurrentText(scan.game if scan.game in GAMES else "PLO")
         index = self.players_combo.findData(scan.players)
@@ -241,11 +264,11 @@ class MetadataPage(QWizardPage):
             )
         else:
             self.mapping_label.setText(
-                "Codes this export uses that no sizing can be read from. Name one to declare it "
-                "(in the [TreeReader] section of your own configuration), or leave it blank to import "
-                "anyway with those nodes unpriced."
+                "Action codes this export uses that nothing in your configuration names. Type a name "
+                "to declare one (in the [TreeReader] section of your own configuration), or leave it "
+                "blank to import anyway with those branches unreadable."
                 if self.codes
-                else "Every action code of this export already has a meaning."
+                else "Every action code of this export is already named."
             )
         self.mapping.setRowCount(0)
         self.mapping.setVisible(scan.kind != SOURCE_CSV)
@@ -274,7 +297,11 @@ class MetadataPage(QWizardPage):
             tooltip=self.tooltip_edit.text().strip(),
             code_names=names,
             kind=scan.kind,
-            columns=inferred_mapping(scan),
+            # Nothing is declared about the columns: the wizard has no field for them, and a
+            # table read from its own header needs no declaration -- storing a detection here
+            # would turn one table's reading into a folder-wide override. A mapping can still
+            # be written by hand under the simulation's own name in the configuration.
+            columns=inferred_mapping(),
             rake_percent=self.rake_percent_edit.text().strip(),
             rake_cap=self.rake_cap_edit.text().strip(),
             rake_cap_unit=str(self.rake_cap_unit_combo.currentText()),
@@ -350,6 +377,7 @@ class SummaryPage(QWizardPage):
         resolved = resolve_range_folder(request.folder) or request.folder
         lines = [
             f"Simulation: {request.name}",
+            f"Description on the button: {description_of(request)}",
             f"Folder: {resolved}",
             f"Players: {request.players}",
             f"Game: {request.game}",
@@ -358,8 +386,12 @@ class SummaryPage(QWizardPage):
             *(
                 [
                     "Columns: "
-                    + (", ".join(f"{role}={header}" for role, header in request.columns.items()) or "none")
-                    + " (read from each table's own header)"
+                    + (
+                        ", ".join(f"{role}={header}" for role, header in request.columns.items())
+                        + " (you corrected these)"
+                        if request.columns
+                        else "each table is read from its own header"
+                    )
                 ]
                 if request.kind == SOURCE_CSV
                 else [

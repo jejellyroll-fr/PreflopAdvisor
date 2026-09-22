@@ -115,7 +115,11 @@ def _read_layer(path: Path) -> configparser.ConfigParser:
     must start, so the parse errors are swallowed into the log and an empty
     parser returned.
     """
-    parser = configparser.ConfigParser()
+    # No interpolation: these values are labels, paths and numbers, and a description
+    # saying what a table charges is written with a percent sign -- ``5% capped 3bb`` is
+    # the wizard's own example. Interpolating would refuse that value on the way in and
+    # read a doubled sign back out again.
+    parser = configparser.ConfigParser(interpolation=None)
     if not path.exists():
         return parser
     try:

@@ -135,6 +135,22 @@ RAKE_SECTION = "RakeProfiles"
 
 #: The declared keys whose default is a guess rather than a statement. Named so that
 #: :meth:`SimulationMeta.origin` can tell a value nobody gave from one a user gave.
+#: The declared fields that are written only when they were declared. Each one has a value
+#: that means "nobody said" -- a default blind, a context assumed to be cash, a rate or a cap
+#: a rake profile resolved -- and writing that value down would turn a guess into a fact. The
+#: other defaulted fields say the same thing empty as absent: an alias list nobody wrote and an
+#: empty one are one statement, not two.
+_WRITTEN_ONLY_WHEN_DECLARED = (
+    "sb_bb",
+    "bb_bb",
+    "context",
+    "version",
+    "rake_percent",
+    "rake_cap",
+    "rake_cap_unit",
+    "rake_profile",
+)
+
 _DEFAULTED = (
     "sb_bb",
     "bb_bb",
@@ -516,6 +532,11 @@ class Policy:
     rake_exact_percent: float = 0.01
     rake_close_percent: float = 0.5
     rake_approximate_percent: float = 2.0
+    #: What two rake caps may differ by, in the cap's own unit, and still be the same cap. A
+    #: cap is part of what a game takes -- a 5% cap-1bb table is not the 5% cap-10bb one -- so
+    #: it is compared rather than read as a detail of the percentage. There is no ladder here
+    #: as there is for percentages: a cap either agrees or the two games are priced apart.
+    rake_cap: float = 0.05
     #: Whether a simulation that does not state its rake may still be matched. Off by
     #: default: an undeclared fact is reported as unknown, and requiring it is the user's
     #: call, because turning it on refuses every simulation whose rake was never written.
@@ -946,12 +967,43 @@ def _rake_of(
     delta = abs(float(stored.percent) - float(hand.percent))
     detail = f"{stored.describe()} vs {hand.describe()}"
     if delta <= policy.rake_exact_percent:
-        return Dimension("rake", EXACT, stored.describe(), delta=delta)
-    if delta <= policy.rake_close_percent:
-        return Dimension("rake", CLOSE, detail, delta=delta)
-    if delta <= policy.rake_approximate_percent:
-        return Dimension("rake", APPROXIMATE, detail, delta=delta)
-    return Dimension("rake", INCOMPATIBLE, detail, delta=delta)
+        percent = Dimension("rake", EXACT, stored.describe(), delta=delta)
+    elif delta <= policy.rake_close_percent:
+        percent = Dimension("rake", CLOSE, detail, delta=delta)
+    elif delta <= policy.rake_approximate_percent:
+        percent = Dimension("rake", APPROXIMATE, detail, delta=delta)
+    else:
+        return Dimension("rake", INCOMPATIBLE, detail, delta=delta)
+    # The percentage is not the whole of the rake. Two tables taking 5% and capping it in
+    # different places charge differently from the first pot above the lower cap, and a
+    # comparison that read only the percentage would call them one game and price a hand
+    # against the other's numbers.
+    cap = _cap_of(stored, hand, policy)
+    if not cap.judged or cap.status == EXACT:
+        return percent
+    described = f"{percent.detail}; {cap.detail}" if percent.detail else cap.detail
+    return Dimension("rake", cap.status, described, delta=cap.delta)
+
+
+def _cap_of(stored: Rake, hand: Rake, policy: Policy) -> Dimension:
+    """The rake cap, which is compared rather than assumed to follow the percentage.
+
+    Both sides have to state one for anything to be judged: a cap nobody wrote is not a cap
+    of nothing, and the percentage is then all there is to compare. A cap written in a
+    different unit is a different cap whatever the numbers say -- three big blinds at one
+    room and three chips at another are capped in different places -- while a unit left
+    unsaid is no unit at all, so the numbers are compared as they stand.
+    """
+    if stored.cap is None or hand.cap is None:
+        return Dimension("cap", UNKNOWN, "")
+    units = (stored.cap_unit, hand.cap_unit)
+    detail = f"cap {stored.cap:g}{stored.cap_unit} vs cap {hand.cap:g}{hand.cap_unit}"
+    if all(units) and units[0] != units[1]:
+        return Dimension("cap", INCOMPATIBLE, detail)
+    delta = abs(float(stored.cap) - float(hand.cap))
+    if delta <= policy.rake_cap:
+        return Dimension("cap", EXACT, detail, delta=delta)
+    return Dimension("cap", INCOMPATIBLE, detail, delta=delta)
 
 
 def _room_of(meta: SimulationMeta, query: SimulationQuery, policy: Policy) -> Dimension:
@@ -1059,6 +1111,11 @@ def raise_to_bb(
     small blind, which already had half of one in, adds two and a half -- and it is the three
     that a history records. ``None`` when the line holds a sizing the tree cannot price,
     which is a raise nothing can be compared against.
+
+    The ante is taken back out. The table counts it among the seat's commitment, since it is
+    money the seat put in, and a history records what a raise came *to* in the betting. Left
+    in, a raise to three in a half-blind-ante game would read as a raise to three and a half,
+    and a history that really did raise to three and a half would read as a raise to four.
     """
     state = table_state(
         list(metadata.seats),
@@ -1072,7 +1129,7 @@ def raise_to_bb(
     seat = state.seat(actor)
     if seat is None or seat.committed is None:
         return None
-    return float(seat.committed)
+    return float(seat.committed) - float(metadata.ante_bb or 0.0)
 
 
 def detect_open_sizings(provider: StrategyProvider) -> tuple[float, ...]:
@@ -1388,7 +1445,11 @@ def write_meta(config: MetaStore, table: str, meta: SimulationMeta, section: str
         "enabled": "yes" if meta.enabled else "no",
     }
     for key, value in values.items():
-        if key in ("sb_bb", "bb_bb") and meta.origin(key) == "assumed":
+        # A field the simulation does not state and nobody declared holds a default or a number
+        # a rake profile resolved. Writing it would promote that to a declaration of this
+        # simulation's own -- the profile would stop being the one place to change it, and a
+        # resolved rate would be read as this tree's own fact by every comparison after.
+        if key in _WRITTEN_ONLY_WHEN_DECLARED and meta.origin(key) == "assumed":
             value = ""
         if value:
             config.set(section, f"{table}.{key}", value)

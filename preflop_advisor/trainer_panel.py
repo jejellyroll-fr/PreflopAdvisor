@@ -37,7 +37,7 @@ from .settings import ConfigSource, get
 from .sizings import Sizing
 from .strategy import StrategyProvider, StrategyResult, node_for, provider_for
 from .table_state import table_state
-from .trainer import Question, Session, Spot, Verdict, deal, grade, hand_for_key
+from .trainer import Question, Session, Spot, Verdict, deal, gradable, grade, hand_for_key
 from .trainer_filters import FilterOptions, TrainerFilter, filtered_spots
 from .trainer_table import TrainerTable
 from .types import ActionSequence
@@ -46,10 +46,6 @@ logger = logging.getLogger(__name__)
 
 #: Cards per hand, by the game a tree declares. Matches what the card selector offers.
 CARDS_PER_GAME = {"NL": 2, "PLO": 4, "PLO8": 4, "PLO5": 5}
-#: How many of a node's own hands to try when a randomly dealt one was not in it. Drawn
-#: from what the node holds, so the first realisable one answers; the rest is headroom for
-#: a key the converter cannot deal back out.
-NODE_SAMPLES = 8
 #: Height of the revealed strategy tiles. They read at a glance; they do not need the
 #: whole panel, and the room below is where the tally sits.
 TILE_HEIGHT = 120
@@ -95,6 +91,9 @@ class TrainerPanel(QWidget):
         #: One decision to drill, when the Explorer asked for it. Set instead of the
         #: catalogue, and dropped as soon as the user picks a situation for themselves.
         self.pinned_spot: Spot | None = None
+        #: Spots the chooser offers that the catalogue has no family for, by their label:
+        #: a drilled node, which stays selectable after its pin is released.
+        self.extra_spots: dict[str, Spot] = {}
         #: True while the chooser is being rebuilt, so its own rebuild does not look like
         #: the user choosing something.
         self._filling_choice = False
@@ -275,6 +274,10 @@ class TrainerPanel(QWidget):
         with is one instance of the decision, not the decision. The filter records the same
         line, so a session pinned to a node says so if it ever finds nothing.
 
+        The chooser is left to say so as well; see :meth:`offer_spots`. Hiding the pin
+        behind a chooser that reads "Any situation" leaves no way out of it: the entry it
+        already displays emits nothing when picked again.
+
         :param source: The reviewed hand the session was started from, kept with every
             answer it produces, so what a real mistake cost can be read back later.
         """
@@ -282,6 +285,9 @@ class TrainerPanel(QWidget):
         self.session_spots = []
         self.source = source
         self.filter = replace(self.filter, exact_line=tuple(spot.line))
+        # Remembered by its label, so the entry the chooser shows keeps meaning the same
+        # decision after the pin is released and the catalogue is asked for again.
+        self.extra_spots[spot.label] = spot
         self.next_hand()
 
     def train_spots(self, spots: Sequence[Spot], source: str = "") -> None:
@@ -353,16 +359,25 @@ class TrainerPanel(QWidget):
                 combo.setCurrentIndex(max(index, 0))
         finally:
             self._filling_filters = False
+        # The bar just changed under the filter: a selection this table or this game does
+        # not offer has been reset to "any", and suppressing the change signal left the
+        # filter holding the value the bar no longer shows -- a PLO hand class applied to
+        # a hold'em tree, which matches nothing while the label claims there is no filter.
+        self.on_filter_changed()
 
     def on_spot_choice_changed(self, _label: str) -> None:
-        """A situation the user chose for themselves abandons a pinned node.
+        """A situation the user chose for themselves abandons whatever was being drilled.
 
         Left pinned, the trainer would go on asking the node while the chooser said
         something else -- and the chooser is how a user says they are done with it. The
         pinned line leaves the filter with it: kept, it would narrow the very catalogue
         the user is choosing from to the one node they just walked away from.
+
+        A review session is the same thing wearing the queue instead of the pin: the user
+        choosing a situation is done with the session, which is what stops the next deals
+        from going on rotating through spots they did not ask for.
         """
-        if self._filling_choice or self.pinned_spot is None:
+        if self._filling_choice or (self.pinned_spot is None and not self.session_spots):
             return
         self.pinned_spot = None
         self.session_spots = []
@@ -433,7 +448,11 @@ class TrainerPanel(QWidget):
         self.update_filter_options(list(metadata.seats), metadata.game)
         if self.pinned_spot is not None:
             # One decision, asked for by name: there is nothing to shuffle it against.
-            spots = [self.pinned_spot]
+            # Unless the filters exclude it -- the pin is held while the bar narrows, and
+            # drilling a seat or a line the bar says is filtered out contradicts it. The
+            # session then reports what it cannot match, which is what an empty filter
+            # state already reads as.
+            spots = [self.pinned_spot] if self.filter.allows_spot(self.pinned_spot) else []
         elif self.session_spots:
             # The next decision of a session of several, rotated so the pass repeats.
             spots = [self.session_spots.pop(0)]
@@ -443,6 +462,10 @@ class TrainerPanel(QWidget):
             self.rng.shuffle(spots)
 
         self.sizings = provider.sizings()
+        # The EV unit belongs to the simulation that answered, not to this panel: a tree
+        # declaring another one -- ``ChipsPerBB`` under ``[TreeReader]`` -- would have
+        # every verdict, loss and displayed EV divided by the wrong number otherwise.
+        self.chips_per_bb = metadata.chips_per_bb
         self.stack = metadata.stack_bb
         self.game = metadata.game
         self.ante = metadata.ante_bb
@@ -451,7 +474,11 @@ class TrainerPanel(QWidget):
         if not pool:
             logger.warning("No spot of %s answered", tree.get("folder"))
             return None
-        return sampler.pick(pool, self.sampling, self.chips_per_bb, self.track_record(), self.rng)
+        # The record is read only for the modes that weigh it. It is a GROUP BY over every
+        # answer ever given, and the plain draw -- what the trainer has always done, and
+        # what a session starts on -- never looks at it.
+        record = self.track_record() if sampler.reads_history(self.sampling) else None
+        return sampler.pick(pool, self.sampling, self.chips_per_bb, record, self.rng)
 
     def candidates(self, provider: StrategyProvider, spots: list[Spot], cards: int, limit: int) -> Iterator[Question]:
         """Up to ``limit`` questions this table can answer, every spot walked once.
@@ -473,8 +500,10 @@ class TrainerPanel(QWidget):
         """What the history says about the spots being sampled.
 
         Read once per deal rather than cached: the answer just given changes it, and the
-        query is one indexed GROUP BY. ``None`` when there is no history, which the modes
-        that weigh it read as "nothing known" and sample at random.
+        query is one indexed GROUP BY. Only asked for by the modes that weigh it -- see
+        :func:`~preflop_advisor.sampler.reads_history` -- so a plain session costs no
+        query at all. ``None`` when there is no history, which the modes that weigh it
+        read as "nothing known" and sample at random.
         """
         return sampler.TrackRecord.of(self.history)
 
@@ -503,7 +532,13 @@ class TrainerPanel(QWidget):
         keys = provider.hands_at(node)
         if not keys:
             return None
-        for key in self.rng.sample(keys, min(len(keys), NODE_SAMPLES)):
+        # Every key is looked at, not a sample of them. A class filter narrows sixteen
+        # thousand hands to a few hundred, and eight arbitrary draws would report "nothing
+        # matches" while the node holds plenty -- sampling cannot witness an absence.
+        # Shuffled, so the hand asked still varies from deal to deal.
+        order = list(keys)
+        self.rng.shuffle(order)
+        for key in order:
             held = hand_for_key(key, self.rng)
             if held is None or not self.filter.allows_hand(held):
                 continue
@@ -539,19 +574,12 @@ class TrainerPanel(QWidget):
             game=self.game,
             ante=self.ante,
         )
-        return Question(spot, hand, results, state)
+        return Question(spot, hand, results, state, node)
 
-    @staticmethod
-    def gradable(results: tuple[StrategyResult, ...]) -> bool:
-        """Whether a node's entries can be scored against one another.
-
-        Monker omits the EV for a hand the board makes impossible -- for the hand, so
-        across the node -- and a node with an unknown EV has nothing to grade the answer
-        by: the best action is unknown, and an action whose EV is missing has no cost to
-        measure. Such a spot is passed over like one that answered nothing, rather than
-        asked and then refused.
-        """
-        return bool(results) and all(result.ev is not None for result in results)
+    #: The trainer's own reading of "this node can be graded", which the node explorer
+    #: gates its Train button on. Kept as an attribute of the panel as well because a
+    #: spot is passed over here like one that answered nothing.
+    gradable = staticmethod(gradable)
 
     def offer_spots(self, seats: list[str]) -> None:
         """Fill the chooser with the situations a table of these seats has.
@@ -559,11 +587,19 @@ class TrainerPanel(QWidget):
         Rebuilt when the seats change or when a filter narrows what is offered, so
         choosing a situation survives dealing the next hand -- which is the point of
         choosing one -- while a situation the filter just excluded does not.
+
+        A pinned node is one of the entries, wherever it came from: the explorer drills
+        decisions the catalogue has no family for (a squeeze off a limp is not one), and a
+        pin the chooser does not show is a pin the user cannot leave -- picking the entry
+        it already displays emits nothing at all.
         """
         labels = [ANY_SPOT] + [spot.label for spot in self.menu_spots(seats)]
-        if labels == [self.spot_choice.itemText(index) for index in range(self.spot_choice.count())]:
+        labels.extend(label for label in self.extra_spots if label not in labels)
+        pinned = None if self.pinned_spot is None else self.pinned_spot.label
+        chosen = pinned if pinned is not None else self.spot_choice.currentText()
+        shown = [self.spot_choice.itemText(index) for index in range(self.spot_choice.count())]
+        if labels == shown and chosen == self.spot_choice.currentText():
             return
-        chosen = self.spot_choice.currentText()
         self._filling_choice = True
         try:
             self.spot_choice.clear()
@@ -589,6 +625,8 @@ class TrainerPanel(QWidget):
         chosen = self.spot_choice.currentText()
         if chosen == ANY_SPOT:
             return catalogue
+        if chosen in self.extra_spots:
+            return [self.extra_spots[chosen]]
         return [spot for spot in catalogue if spot.label == chosen] or catalogue
 
     def nothing_to_ask(self) -> str:
@@ -649,11 +687,17 @@ class TrainerPanel(QWidget):
         if self.history is None:
             return
         evs = {result.action: result.ev for result in question.results}
+        # The line the node was *read* by, not the spot's implicit one: a decision reached
+        # from the catalogue and the same decision reached from the Explorer have to be
+        # one row of a report, and the explicit line is the identity they share.
+        node = question.node
+        hero = question.spot.hero if node is None else node.hero
+        line = list(question.spot.line) if node is None else [(seat, action) for seat, action in node.path]
         try:
             self.history.record(
                 TrainingAnswer(
-                    hero=question.spot.hero,
-                    line=list(question.spot.line),
+                    hero=hero,
+                    line=line,
                     hand=question.hand,
                     chosen=verdict.chosen,
                     best=verdict.best,

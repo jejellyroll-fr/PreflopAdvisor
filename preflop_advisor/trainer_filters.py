@@ -187,4 +187,18 @@ class FilterOptions:
 
     @classmethod
     def of(cls, seats: list[str], game: str) -> FilterOptions:
-        return cls(seats=tuple(seats), classes=classes_for(game))
+        """What a table of these seats and this game can be filtered on.
+
+        The families are the ones the catalogue *produces*, in the vocabulary's order,
+        rather than every family the vocabulary has. :func:`family_of` reads the shape of
+        a line, and it can name lines no catalogue builds -- the Explorer reaches those --
+        but a menu is for choosing among the situations on offer: ``vs 4bet`` and
+        ``squeeze`` are real families and no catalogue spot has one, so offering them
+        offers only an empty session.
+        """
+        produced = {family_of(spot.line, spot.hero) for spot in spots_for(seats)}
+        return cls(
+            seats=tuple(seats),
+            families=tuple(name for name in FAMILIES if name in produced),
+            classes=classes_for(game),
+        )

@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .native_format import native_files
+from .native_format import native_count, native_files
 from .settings import ConfigSource
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,11 @@ def validate_tree(
     parts = [p.strip() for p in value.split(",")]
     if len(parts) < 5 or not parts[3]:
         return False, "missing folder"
+    # The depth is read back with ``int()`` wherever a tree is enumerated, so a value
+    # that is not a number has to be refused here -- accepting it would save an entry
+    # that raises on the next refresh, and leave it saved.
+    if not parts[1].isdigit():
+        return False, f"stack depth is not a number: {parts[1]}"
     folder = parts[3]
     if resolve_range_folder(folder) is None:
         return False, f"folder not found: {folder}"
@@ -167,7 +172,10 @@ def _native_hint(folder: str) -> str:
     natives = native_files(folder)
     if not natives:
         return ""
-    more = f", and {len(natives) - 1} more" if len(natives) > 1 else ""
+    # Counted whole: the names stop at a handful, and the count is what the user compares
+    # against the folder they are looking at.
+    total = native_count(folder)
+    more = f", and {total - 1} more" if total > 1 else ""
     return f" (it holds {natives[0]}{more}, which this application cannot read directly yet)"
 
 
@@ -194,7 +202,7 @@ def _tree_seats_match_files(parts: list[str], config: ConfigSource | None) -> bo
 
     tree_infos = {
         "plrs": players,
-        "bb": int(parts[1]) if parts[1].isdigit() else 100,
+        "bb": int(parts[1]),
         "game": parts[2],
         "folder": parts[3],
         "infos": ",".join(parts[4:]).strip(),

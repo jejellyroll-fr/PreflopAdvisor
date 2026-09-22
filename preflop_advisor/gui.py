@@ -270,8 +270,12 @@ class MainWindow(QMainWindow):
         self.resize(*self.opening_size())
         self.restore_layout()
 
-        # Every component exists: allow refreshes and render the default selection.
+        # Every component exists: allow refreshes and render the default selection. The
+        # catalog is read here rather than left to the first configuration change: the tab is
+        # on screen from the start, and one that claimed no simulation was configured until
+        # somebody saved a setting would be wrong about the folder the user just imported.
         self._ready = True
+        self.simulations.refresh()
         self.update_output_frame()
 
     def open_history(self, path: str | None = None) -> TrainingHistory | None:
@@ -379,16 +383,28 @@ class MainWindow(QMainWindow):
         if not self.explorer.reveal(node):
             self.report_error(f"The selected tree holds no decision at {node_identity(node)}.")
 
-    def train_spots(self, spots: object, source: str = "") -> None:
+    def train_spots(self, spots: object, simulation: str = "", source: str = "") -> None:
         """Drill one decision the review asked for, or several in turn.
 
         One spot is pinned to its node -- the session then says which decision it is drilling
         -- and several become one session over all of them, which is what "train my mistakes"
         is: the worst decisions in turn, each asked with whatever hands its node holds, so
         the real hand is one instance of the decision rather than the question repeated.
+
+        :param simulation: The simulation the decisions were matched against, which the
+            window moves to before drilling. A spot resolved against whichever tree happened
+            to be selected would be read from a solution that never played this hand.
         """
         if not isinstance(spots, list) or not all(isinstance(spot, Spot) for spot in spots):
             return  # pragma: no cover - the signal only ever carries the panel's own spots
+        if simulation and not self.tree_selector.select(simulation):
+            # It was configured when the document was read and is not now: drilling these
+            # nodes against the tree on screen would report another solution's strategy.
+            self.trainer.spot_label.setText(
+                f"{simulation} is not configured any more, so these nodes cannot be drilled."
+            )
+            self.tabs.setCurrentWidget(self.trainer)
+            return
         if len(spots) == 1:
             self.trainer.train_spot(spots[0], source=source)
         else:

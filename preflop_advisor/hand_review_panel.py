@@ -53,6 +53,7 @@ from .hand_review import (
     Review,
     ReviewedDecision,
     mistakes,
+    one_simulation,
     ranked_by_loss,
     session_spots,
 )
@@ -120,11 +121,13 @@ MISTAKE_LIMIT = 10
 class HandReviewPanel(QWidget):
     """One document's decisions, worst first, and the sessions they ask for."""
 
-    #: One decision to drill, or several in turn, and the reviewed hand they came from.
-    #: The window drills a single spot pinned to its node and a longer list as one session
-    #: of several -- the trainer's two ways of being asked, and the panel does not choose
-    #: between them.
-    trainRequested = Signal(list, str)
+    #: One decision to drill, or several in turn, the simulation they were matched against,
+    #: and the reviewed hand they came from. The window drills a single spot pinned to its
+    #: node and a longer list as one session of several -- the trainer's two ways of being
+    #: asked, and the panel does not choose between them. The simulation is carried because
+    #: the window has to move to it: a node resolved against the tree that happens to be on
+    #: screen is a strategy nobody played when the decision matched another one.
+    trainRequested = Signal(list, str, str)
 
     def __init__(
         self,
@@ -474,15 +477,28 @@ class HandReviewPanel(QWidget):
 
     def train_selected(self) -> None:
         """Drill the nodes of the selected decisions, keeping the hands they came from."""
-        chosen = self.selected()
-        spots = [entry.decision.spot(entry.match.node) for entry in chosen if entry.match.node is not None]
-        if not spots:
+        chosen, simulation, left_out = one_simulation(self.selected())
+        if not chosen:
             self.problems.setText("Select matched decisions to drill: an unmatched one names no node.")
             return
+        spots = [entry.decision.spot(entry.match.node) for entry in chosen]
         # One decision names the hand it was taken with; several name the review they came
         # from, since a session of them answers for no single hand.
         source = chosen[0].decision.hand.hand_id if len(spots) == 1 else (self.review.path if self.review else "")
-        self.trainRequested.emit(spots, source)
+        self.note_left_out(left_out)
+        self.trainRequested.emit(spots, simulation, source)
+
+    def note_left_out(self, left_out: int) -> None:
+        """Say how many decisions the session could not take, and what to do about them.
+
+        A session is drilled on one simulation, so the decisions matched against another are
+        not in it. Saying so is the difference between a session the user can act on and one
+        that looks like it lost half its mistakes.
+        """
+        if left_out:
+            self.problems.setText(
+                f"{left_out} decision(s) matched another simulation: filter by simulation to drill those."
+            )
 
     def train_mistakes(self) -> None:
         """Drill the worst matched mistakes the filter leaves, worst first, one per node.
@@ -500,10 +516,14 @@ class HandReviewPanel(QWidget):
                 f"No matched decision here cost more than {MIN_LOSS_BB:g}bb: there is nothing to retrain."
             )
             return
-        spots = session_spots(shown, MISTAKE_LIMIT)
+        worst, simulation, left_out = one_simulation(worst)
+        # The worst mistake decides which simulation the session is about -- that is the one
+        # the user asked about -- and the queue holds only the decisions it can serve.
+        spots = session_spots(worst, MISTAKE_LIMIT)
         if not spots:
             return
-        self.trainRequested.emit(spots, self.review.path)
+        self.note_left_out(left_out)
+        self.trainRequested.emit(spots, simulation, self.review.path)
 
 
 def combo(entries: Sequence[tuple[object, str]], width: int) -> QComboBox:

@@ -441,7 +441,7 @@ def test_the_metadata_page_asks_about_the_codes_it_could_not_place(qapp, tmp_pat
 
     assert wizard.metadata_page.mapping.rowCount() == 1
     assert wizard.metadata_page.mapping.item(0, 0).text() == "77"
-    assert "Name one to declare it" in wizard.metadata_page.mapping_label.text()
+    assert "Type a name to declare one" in wizard.metadata_page.mapping_label.text()
 
 
 def test_a_page_with_nothing_to_map_says_so(qapp, tmp_path):
@@ -452,7 +452,7 @@ def test_a_page_with_nothing_to_map_says_so(qapp, tmp_path):
     wizard.metadata_page.initializePage()
 
     assert wizard.metadata_page.mapping.rowCount() == 0
-    assert "already has a meaning" in wizard.metadata_page.mapping_label.text()
+    assert "already named" in wizard.metadata_page.mapping_label.text()
 
 
 def test_a_typed_code_name_reaches_the_configuration(qapp, tmp_path):
@@ -473,3 +473,182 @@ def test_a_typed_code_name_reaches_the_configuration(qapp, tmp_path):
 # --------------------------------------------------------------------------------------
 # The window's own door into it
 # --------------------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------------------
+# Reading a code is not the same as being able to use it
+# --------------------------------------------------------------------------------------
+
+
+def test_a_code_whose_size_can_be_read_is_still_reported_when_nothing_names_it(tmp_path, tree_configs):
+    """``40050`` is a readable raise, and still unreadable to the reader.
+
+    Every line of play is turned into file names through the configuration's names, so a
+    code the sizing table can make sense of is an action nothing can look up until the
+    user declares what to call it. Reporting only the codes with no meaning let such a
+    branch be imported silently, missing from every node that used it.
+    """
+    folder = tmp_path / "6max-readable-code"
+    write_tree(folder, {"1": "(3K)(4A)\n1.0;4000.0\n", "40050": "(3K)(4A)\n1.0;4000.0\n"})
+
+    scan = scan_simulation(str(folder), tree_configs)
+
+    assert scan.unknown_codes == ("40050",)
+    assert scan.sizings["40050"].known is True, "its size is readable; its name is not"
+    assert scan.needs_conversion is True
+    assert any("nothing in your configuration names" in note for note in scan.notes)
+    assert any("can be read from the code" in note for note in scan.notes), "so only a name is needed"
+
+
+def test_a_name_already_bound_to_another_code_is_refused(tmp_path):
+    """``Raise100`` is ``40100``; binding it to ``15`` would change every tree that reads it.
+
+    The declaration is global -- one ``[TreeReader]`` section serves every simulation -- so
+    accepting it would silently remap an action underneath trees the user never touched.
+    """
+    config = make_config(tmp_path)
+    request = ImportRequest("ranges/HU-100bb-with-limp", "Bad", "PLO", 2, "100", code_names={"15": "Raise100"})
+
+    with pytest.raises(SimulationScanError, match="already names action code"):
+        register_simulation(config, request)
+
+    assert config.get("TreeReader", "Raise100") == "40100", "unchanged"
+
+
+def test_declaring_the_code_a_name_already_holds_is_not_a_collision(tmp_path):
+    """Re-typing the mapping the configuration already has is a no-op, not a conflict."""
+    config = make_config(tmp_path)
+
+    key = register_simulation(
+        config,
+        ImportRequest("ranges/HU-100bb-with-limp", "Same", "PLO", 2, "100", code_names={"40100": "Raise100"}),
+    )
+
+    assert config.get("TreeReader", "Raise100") == "40100"
+    assert config.get("TreeInfos", key) is not None
+
+
+# --------------------------------------------------------------------------------------
+# What the wizard refuses, and what it leaves behind
+# --------------------------------------------------------------------------------------
+
+
+def test_a_stack_depth_that_is_not_a_number_is_refused(tmp_path):
+    """The selector reads the depth back with ``int()`` on the next refresh.
+
+    A depth of ``abc`` used to pass validation -- the seat check substituted 100 for it --
+    and was then saved, so the window raised ``ValueError`` while refreshing itself right
+    after the wizard closed.
+    """
+    config = make_config(tmp_path)
+    request = ImportRequest("ranges/HU-100bb-with-limp", "Bad stack", "PLO", 2, "abc")
+
+    with pytest.raises(SimulationScanError, match="stack depth"):
+        register_simulation(config, request)
+
+    assert config.user.has_section("TreeInfos") is False, "nothing was written to the user layer"
+
+
+def test_a_refused_import_leaves_no_action_code_behind(tmp_path):
+    """The configuration is shared and outlives the wizard, so a refusal must undo it all.
+
+    The codes are declared before the entry is validated, because naming one can be what
+    makes a folder readable. When that validation fails, the declarations the failed
+    attempt added have to come back out: left in place, some later save would persist
+    them and the next tree to use that name would read another code.
+    """
+    config = make_config(tmp_path)
+    request = ImportRequest("no/such/folder", "Nowhere", "PLO", 2, "100", code_names={"77": "GiantRaise"})
+
+    with pytest.raises(SimulationScanError):
+        register_simulation(config, request)
+
+    assert config.get("TreeReader", "GiantRaise") is None
+    assert config.user.has_option("TreeReader", "giantraise") is False
+
+
+def test_a_refusal_puts_back_a_mapping_the_user_already_had(tmp_path):
+    """Restoring means the value it had, not removing the key.
+
+    Re-declaring a code under the name it already holds is allowed -- it is what a second
+    import of the same export asks for -- so a refusal afterwards has to put the user's
+    own line back rather than delete it.
+    """
+    config = make_config(tmp_path)
+    config.set("TreeReader", "GiantRaise", "77")
+    request = ImportRequest("no/such/folder", "Nowhere", "PLO", 2, "100", code_names={"77": "GiantRaise"})
+
+    with pytest.raises(SimulationScanError):
+        register_simulation(config, request)
+
+    assert config.get("TreeReader", "GiantRaise") == "77"
+    assert config.user.has_option("TreeReader", "giantraise") is True, "still the user's own line"
+
+
+# --------------------------------------------------------------------------------------
+# The description on the tree's button
+# --------------------------------------------------------------------------------------
+
+
+def test_the_rake_typed_into_the_wizard_is_part_of_the_description(tmp_path):
+    """One field in the configuration, two boxes in the wizard: neither is discarded."""
+    config = make_config(tmp_path)
+
+    key = register_simulation(
+        config,
+        ImportRequest("ranges/HU-100bb-with-limp", "HU 100BB", "PLO", 2, "100", rake="5% capped 3bb"),
+    )
+
+    assert config.get("TreeInfos", key) == "2,100,PLO,ranges/HU-100bb-with-limp,HU 100BB 5% capped 3bb"
+
+
+def test_a_comma_typed_into_the_description_cannot_split_the_entry(tmp_path):
+    """Everything after the folder *is* the description, split on commas by the selector."""
+    config = make_config(tmp_path)
+
+    key = register_simulation(
+        config,
+        ImportRequest("ranges/HU-100bb-with-limp", "HU, 100bb", "PLO", 2, "100", rake="no rake"),
+    )
+
+    value = config.get("TreeInfos", key) or ""
+    parts = value.split(",")
+    assert len(parts) == 5, "the entry still has one field per value"
+    assert parts[3] == "ranges/HU-100bb-with-limp"
+    assert parts[4] == "HU 100bb no rake"
+
+
+def test_coming_back_from_the_summary_keeps_what_was_typed(qapp, tmp_path):
+    """``initializePage`` runs on every entry; re-entering must not reset the form."""
+    config = make_config(tmp_path)
+    wizard = ImportWizard(config)
+    wizard.folder_page.folder_edit.setText("ranges/HU-100bb-with-limp")
+    wizard.metadata_page.initializePage()
+    wizard.metadata_page.name_edit.setText("My tree")
+    wizard.metadata_page.stack_edit.setText("40")
+
+    # What the wizard does when Back is pressed on the summary and this page is shown again.
+    wizard.metadata_page.initializePage()
+
+    assert wizard.metadata_page.name_edit.text() == "My tree"
+    assert wizard.metadata_page.request().stack_bb == "40"
+    wizard.summary_page.initializePage()
+    assert "My tree" in wizard.summary_page.summary.text()
+
+
+def test_rescanning_a_folder_fills_the_form_again(qapp, tmp_path):
+    """The guard is per scan: another folder is another set of answers."""
+    config = make_config(tmp_path)
+    wizard = ImportWizard(config)
+    wizard.folder_page.folder_edit.setText("ranges/HU-100bb-with-limp")
+    wizard.metadata_page.initializePage()
+    wizard.metadata_page.name_edit.setText("My tree")
+    other = tmp_path / "6max-export"
+    other.mkdir()
+    (other / "1.rng").write_text("(3K)(4A)\n1.0;4000.0\n")
+
+    wizard.folder_page.folder_edit.setText(str(other))
+    wizard.metadata_page.initializePage()
+
+    assert wizard.metadata_page.name_edit.text() != "My tree", "the new scan's own name"
+    assert wizard.metadata_page.request().players == 6

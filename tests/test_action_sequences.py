@@ -391,3 +391,41 @@ def test_cache_evicts_the_least_recently_inserted_file(synthetic_tree, tree_conf
     assert len(CACHE) == 2
     assert not any(name.endswith("0.rng") for name in CACHE)
     CACHE.clear()
+
+
+# --------------------------------------------------------------------------------------
+# Every bet size of a node, not the first of them
+# --------------------------------------------------------------------------------------
+
+
+def test_a_node_answers_with_every_bet_size_it_holds(two_size_tree, tree_configs):
+    """A generic ``Raise`` is one result per file the node holds, not one per name.
+
+    Resolving it to the first sizing that exists answers half the node: the grid shows
+    frequencies that do not add up, and the trainer neither offers nor grades the other
+    raise. The shipped tree only ever raises one size, so it cannot tell the two apart.
+    """
+    processor = ActionProcessor(HU_POSITIONS, two_size_tree, tree_configs)
+
+    results = processor.get_results(REFERENCE_HAND, [], "SB")
+
+    assert [action for action, _, _ in results] == ["Fold", "Call", "RaisePot", "Raise100"]
+    assert [ev for _, _, ev in results] == [1200.0, 1400.0, 1500.0, 2000.0]
+
+
+def test_a_sizing_only_the_index_mentions_is_not_an_action(tmp_path, tree_configs):
+    """``2.0.rng`` puts ``2`` in the prefix index while ``2.rng`` does not exist.
+
+    The index also records the prefixes of deeper lines, so taking its word for it would
+    resolve the raise to RaisePot, find no such file, and drop the raise the folder does
+    hold. The file is the proof, and the next sizing is tried.
+    """
+    folder = tmp_path / "prefix-only"
+    folder.mkdir()
+    for stem in ("2.0", "40100"):
+        (folder / f"{stem}.rng").write_text(f"{REFERENCE_HAND_MONKER}\n1.0;4000.0\n")
+    processor = ActionProcessor(HU_POSITIONS, {"plrs": 2, "folder": str(folder)}, tree_configs)
+
+    results = processor.get_results(REFERENCE_HAND, [], "SB")
+
+    assert [action for action, _, _ in results] == ["Raise100"]

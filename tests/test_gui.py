@@ -27,7 +27,7 @@ from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.sampler import DEFAULT_POOL, MODES
 from preflop_advisor.simulation_catalog_panel import COLUMNS as CATALOG_COLUMNS
 from preflop_advisor.simulation_catalog_panel import CatalogPanel
-from preflop_advisor.strategy import Node, provider_for
+from preflop_advisor.strategy import Node, node_for, node_identity, provider_for
 from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector, ante_of
@@ -653,6 +653,47 @@ def test_a_new_hand_clears_the_previous_answer(qtbot, main_window):
     assert trainer.verdict_label.text() == ""
     assert trainer.tiles == []
     assert all(button.isEnabled() for button in trainer.buttons)
+
+
+def test_the_trainer_grades_in_the_unit_the_tree_declares(qtbot, two_size_tree, tree_configs, output_configs):
+    """A tree states what its EVs are counted in, and that is what they are divided by.
+
+    The display setting is the fallback for a simulation that says nothing. Dividing by
+    it anyway -- as the panel used to -- leaves every verdict, every loss and every shown
+    EV off by the ratio between the two units.
+    """
+    from preflop_advisor.trainer_panel import TrainerPanel
+
+    # The tree counts a big blind in 1000 chips while the display setting says 2000, so a
+    # correct panel divides the raise's 2000 chips into 2.00bb rather than 1.00bb.
+    configs = dict(tree_configs) | {"ChipsPerBB": "1000"}
+    panel = TrainerPanel(lambda: two_size_tree, configs, output_configs)
+    qtbot.addWidget(panel)
+
+    # Pin the spot: a deal walks a shuffled catalogue, so which node answers is a roll of
+    # the dice, and this test is about the numbers of one known node. The chooser is
+    # filled first -- it holds nothing but "Any situation" until a tree fills it, and a
+    # non-editable combo box cannot be set to an entry it does not have.
+    panel.refresh_spots()
+    panel.spot_choice.setCurrentText("SB first in")
+    panel.next_hand()
+    question = panel.question
+
+    assert question is not None
+    assert panel.chips_per_bb == pytest.approx(1000.0), "the tree's unit, not the display default"
+
+    best = max(question.results, key=lambda result: result.ev)
+    panel.answer(best.action)
+
+    assert panel.verdict_label.text() == "Correct"
+    # The hundred-percent raise is worth +2.00bb this way and +1.00bb divided by the
+    # display default, so the doubling is the whole of what is being asserted.
+    assert [(tile.action_label.text(), tile.ev_label.text()) for tile in panel.tiles] == [
+        ("Fold", "+1.20"),
+        ("Call", "+1.40"),
+        ("Rpot", "+1.50"),
+        ("R100", "+2.00"),
+    ]
 
 
 def test_a_window_that_was_never_shown_saves_no_layout(qtbot, tmp_path):
@@ -1319,6 +1360,74 @@ def test_a_pinned_node_is_part_of_the_filter(main_window):
     assert trainer.filter.exact_line == (("SB", "Raise100"),)
 
 
+def test_a_class_filter_finds_a_node_that_holds_only_a_few_of_the_class(tmp_path, main_window):
+    """One eligible hand among forty: a sample of eight reported that nothing matched.
+
+    Sampling cannot witness an absence, and a class filter is exactly the case that makes
+    that matter -- double-suited hands are a fifth of a real node, and a small export can
+    hold one. The session must walk what the node holds before saying there is nothing.
+    """
+    folder = tmp_path / "HU-few-double-suited"
+    folder.mkdir()
+    ranks = "23456789TJQKA"
+    keys = ["(3K)(4A)", *(ranks[index : index + 4] for index in range(38))]
+    body = "".join(f"{key}\n1.0;2000.0\n" for key in keys)
+    for stem in ("0", "1", "40100"):
+        (folder / f"{stem}.rng").write_text(body)
+    trainer = main_window.trainer
+    trainer.tree_source = lambda: {
+        "plrs": 2,
+        "bb": 100,
+        "game": "PLO",
+        "folder": str(folder),
+        "infos": "few double-suited",
+    }
+    trainer.next_hand()
+    trainer.class_filter.setCurrentIndex(trainer.class_filter.findData("double-suited"))
+
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert "double-suited" in classify(trainer.question.hand, "PLO")
+
+
+def test_switching_to_a_tree_the_filter_cannot_express_reads_the_bar_again(tmp_path, main_window):
+    """A hold'em tree offers no hand class of Omaha's, so the bar resets -- and the filter must.
+
+    The class list is rebuilt under a guard that keeps the combs from looking like user
+    choices, so a filter left holding ``double-suited`` matched nothing while the label
+    said the session was unrestricted.
+    """
+    folder = tmp_path / "NL-hu"
+    folder.mkdir()
+    for stem in ("0", "1", "40100"):
+        (folder / f"{stem}.rng").write_text("AKs\n1.0;2000.0\n")
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.class_filter.setCurrentIndex(trainer.class_filter.findData("double-suited"))
+    assert trainer.filter.hand_class == "double-suited"
+
+    trainer.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "NL", "folder": str(folder), "infos": "nl"}
+    trainer.next_hand()
+
+    assert trainer.class_filter.currentData() is None, "the bar shows no class"
+    assert trainer.filter.hand_class is None, "and the filter agrees with it"
+
+
+def test_a_pinned_node_is_not_drilled_when_the_filter_excludes_it(main_window):
+    """The pin is not silently dropped, and the session says what it cannot match."""
+    trainer = main_window.trainer
+    trainer.train_spot(Spot("BB: SB raise 100%", "BB", [("SB", "Raise100")]))
+    assert trainer.question is not None
+
+    trainer.hero_filter.setCurrentIndex(trainer.hero_filter.findData("SB"))
+    trainer.next_hand()
+
+    assert trainer.pinned_spot is not None, "still pinned"
+    assert trainer.question is None
+    assert "Nothing matches" in trainer.spot_label.text()
+
+
 def test_the_chooser_only_offers_what_the_filter_leaves(main_window):
     trainer = main_window.trainer
     trainer.next_hand()
@@ -1353,6 +1462,37 @@ def test_a_difficulty_aware_mode_looks_past_the_first_spot(main_window):
     assert trainer.pool_size() == DEFAULT_POOL
 
 
+def test_the_plain_draw_reads_no_history(main_window, monkeypatch):
+    """The record is a GROUP BY over every answer ever given; a plain session pays none.
+
+    The argument used to be built on every deal whatever the mode, so the draw the trainer
+    has always done -- the cheapest one -- got slower with every answer in the file.
+    """
+    from preflop_advisor.history import TrainingHistory
+
+    reads: list[str] = []
+    original = TrainingHistory.tally
+
+    def counted(self, by: str = "node", filters=None):
+        reads.append(by)
+        return original(self, by, filters)
+
+    monkeypatch.setattr(TrainingHistory, "tally", counted)
+    trainer = main_window.trainer
+    trainer.rng.seed(5)
+    trainer.next_hand()
+
+    for mode in ("random", "frequency", "close", "mixed"):
+        trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData(mode))
+        trainer.next_hand()
+    assert reads == [], "a mode that weighs only the strategy pays no query"
+
+    trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData("weakness"))
+    trainer.next_hand()
+
+    assert reads == ["node"], "weighed against the history only where the mode reads it"
+
+
 def test_every_mode_still_deals_a_question_it_can_grade(main_window):
     """A preference over what to ask must never leave the session with nothing to answer."""
     trainer = main_window.trainer
@@ -1377,6 +1517,65 @@ def test_a_weakness_session_can_be_answered_before_it_has_a_history(main_window)
 
     assert trainer.track_record() is not None
     assert trainer.question is not None
+
+
+def test_the_chooser_itself_shows_the_pinned_node(main_window):
+    """A pin the chooser does not show cannot be let go of.
+
+    Selecting the entry a combo box already displays emits nothing, so a pin hidden
+    behind "Any situation" outlived every attempt to leave it while the chooser claimed
+    the whole catalogue was being asked.
+    """
+    trainer = main_window.trainer
+    pinned = "BB: SB raise 100%"
+
+    trainer.train_spot(Spot(pinned, "BB", [("SB", "Raise100")]))
+
+    assert trainer.spot_choice.currentText() == pinned
+
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.next_hand()
+
+    assert trainer.pinned_spot is None
+    assert trainer.question is not None
+    assert trainer.question.spot.label != pinned
+
+
+def test_a_node_that_was_drilled_stays_selectable_as_a_situation(main_window):
+    """The catalogue has no family for a squeeze off a limp, so the entry is kept."""
+    trainer = main_window.trainer
+    pinned = "BB: SB raise 100%"
+    trainer.train_spot(Spot(pinned, "BB", [("SB", "Raise100")]))
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.next_hand()
+
+    trainer.spot_choice.setCurrentText(pinned)
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert trainer.question.spot.label == pinned, "the entry still names the decision"
+
+
+def test_a_node_the_trainer_cannot_grade_is_not_offered_for_drilling(tmp_path, main_window):
+    """An enabled button on such a node deals nothing and reports that nothing answered.
+
+    What the user sees is the application failing, rather than a decision the trainer
+    cannot ask about -- so the button stays off and the pane says why.
+    """
+    folder = tmp_path / "HU-no-ev"
+    folder.mkdir()
+    for name in ("0", "1", "40100"):
+        (folder / f"{name}.rng").write_text("(3K)(4A)\n1.0;\n")
+    explorer = open_explorer(main_window)
+    explorer.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "PLO", "folder": str(folder), "infos": "no ev"}
+    explorer.refresh()
+    root = explorer.tree.topLevelItem(0)
+    root.setExpanded(True)
+
+    explorer.tree.setCurrentItem(root)
+
+    assert explorer.train_button.isEnabled() is False
+    assert "not drilled" in explorer.notes.text()
 
 
 def test_the_explorer_says_so_when_there_is_nothing_to_walk(main_window):
@@ -1418,6 +1617,29 @@ def test_answering_a_hand_writes_it_to_the_history(main_window):
     assert stored[0].hero == question.spot.hero
     assert stored[0].verdict == "Correct", "the best action costs nothing"
     assert stored[0].chosen == stored[0].best
+
+
+def test_an_answer_is_filed_under_the_line_the_provider_resolved(main_window):
+    """A decision is one row of the report whichever screen it was reached from.
+
+    A spot's line is implicit -- the folds in between are left out and a raise is named
+    generically -- while what the provider hands back is the explicit line the strategy was
+    read by. Recording the implicit one would file one decision under two identities, and
+    two concrete nodes that only look alike could share one.
+    """
+    trainer = main_window.trainer
+    trainer.rng.seed(42)
+    trainer.next_hand()
+    question = trainer.question
+    assert question is not None and question.node is not None
+    implicit = node_for(question.spot.hero, list(question.spot.line))
+    assert question.node.path != implicit.path, "this spot must hold a concrete sizing, not a generic raise"
+
+    trainer.answer(question.actions()[0])
+
+    stored = main_window.history.answers()[0]
+    assert stored.node_id == node_identity(question.node)
+    assert stored.node_id != node_identity(implicit)
 
 
 def test_an_answer_is_filed_under_the_simulation_it_was_answered_on(main_window):
@@ -1568,8 +1790,13 @@ def review(main_window, tmp_path):
         encoding="utf-8",
     )
     panel = main_window.review
+    #: The tree the window already has selected, named the way the selector names it. A review
+    #: compares against configured simulations, and the simulation a decision matched is what
+    #: the window selects before drilling it -- so the key has to be one it can select.
+    selected = main_window.tree_selector.get_tree_infos() or {}
     panel.trees_source = lambda: [
         {
+            "table_key": selected.get("table_key", "Table12"),
             "plrs": 2,
             "bb": 100,
             "game": "PLO",
@@ -1642,6 +1869,74 @@ def test_train_my_mistakes_starts_one_session_over_the_worst_decisions(review):
     assert trainer.question is not None
     assert trainer.question.spot.hero == "SB", "the 1.7bb mistake is asked before the 0.1bb one"
     assert trainer.question.spot.line == [], "and it is the root node, not the real hand"
+
+
+def test_drilling_a_reviewed_decision_moves_the_window_to_the_simulation_it_matched(review):
+    """A decision matched on another tree has to be drilled on that tree.
+
+    The spot alone is not enough: resolved against whichever simulation happened to be
+    selected, it reports a strategy from a solution that never played this hand -- and a node
+    that looks the same in two solutions is not the same node.
+    """
+    window = review.window()
+    selector = window.tree_selector
+    config = window.configs
+    #: A second entry over the same folder: what is being pinned is that the window *moves*,
+    #: so the two have to be distinguishable by key and selectable.
+    section = config.section("TreeInfos")
+    elsewhere = next(key for key in section if "." not in key)
+    config.set("TreeInfos", "Table13", section[elsewhere])
+    selector.refresh_trees(config.section("TreeInfos"), config.section("TreeToolTips"))
+    matched = "table13"
+    review.trees_source = lambda: [tree for tree in selector.trees if tree["table_key"] == matched]
+    review.load(review.review.path)
+    assert selector.select(elsewhere) is True, "the other tree is on screen to begin with"
+    review.table.selectRow(0)
+
+    review.train_selected()
+
+    assert selector.get_tree_infos()["table_key"] == matched
+    assert window.trainer.pinned_spot is not None
+    assert window.trainer.question is not None, "the session runs on the tree it matched"
+
+
+def test_a_matched_simulation_that_is_gone_is_reported_rather_than_drilled(review):
+    """A tree the document matched and the configuration no longer offers has nothing to drill.
+
+    Drilling it anyway would read the node against whichever tree is on screen, which is the
+    one answer that is worse than no answer.
+    """
+    window = review.window()
+    configured = review.trees_source
+    review.trees_source = lambda: [dict(tree, table_key="Table99") for tree in configured()]
+    review.load(review.review.path)
+    review.table.selectRow(0)
+
+    review.train_selected()
+
+    assert "Table99 is not configured any more" in window.trainer.spot_label.text()
+    assert window.trainer.pinned_spot is None, "nothing was drilled against the wrong tree"
+
+
+def test_choosing_a_situation_ends_a_review_session(main_window):
+    """The chooser is how a user says they are done with a session, queue or pin.
+
+    A multi-spot session holds no pin, so left alone it went on rotating through the spots
+    the review asked for while the chooser said the user had picked one for themselves.
+    """
+    trainer = main_window.trainer
+    trainer.next_hand()
+    spots = [Spot("SB first in", "SB", []), Spot("BB first in", "BB", [])]
+    trainer.train_spots(spots, source="reviewed")
+    assert trainer.session_spots
+
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.spot_choice.setCurrentText("SB first in")
+    trainer.next_hand()
+
+    assert trainer.session_spots == [], "the queue is gone"
+    assert trainer.source == "", "and the session no longer claims a reviewed hand"
+    assert trainer.question is not None
 
 
 def test_an_answer_drilled_for_a_reviewed_hand_keeps_the_link(review):
@@ -1801,6 +2096,44 @@ def test_training_the_selected_decisions_sends_their_nodes_to_the_trainer(qtbot,
     assert trainer.pinned_spot is not None
     assert list(trainer.pinned_spot.line) == [], "the root decision of the open, not a family"
     assert trainer.question is not None
+
+
+def test_reopening_the_dashboard_reads_the_training_columns_again(analytics):
+    """A session drilled from this tab has to show up in the columns it belongs to.
+
+    The history is re-read every time the tab is opened, but the asked and cost columns are
+    columns of the *surveyed decisions* -- so with the survey left as it was walked, the two
+    rankings that read them went on describing the moment the tree was read.
+    """
+    window = analytics.window()
+    assert {entry.identity: entry for entry in analytics.shown()}[ANALYTICS_DEFEND].answered == 0
+    window.history.record(
+        TrainingAnswer(
+            hero="BB",
+            line=[("SB", "Raise75")],
+            hand=REFERENCE_HAND,
+            chosen="Call",
+            best="Raise2.5bb",
+            ev_loss=0.40,
+            verdict="Mistake",
+            simulation=str(analytics.tree_source()["folder"]),
+            pot=4.0,
+        )
+    )
+
+    analytics.showEvent(QShowEvent())
+
+    refreshed = {entry.identity: entry for entry in analytics.shown()}[ANALYTICS_DEFEND]
+    assert refreshed.answered == 1
+    assert refreshed.cost == pytest.approx(0.40)
+    row = next(
+        index
+        for index in range(analytics.table.rowCount())
+        if analytics.table.item(index, 0).data(Qt.ItemDataRole.UserRole).identity == ANALYTICS_DEFEND
+    )
+    assert analytics.table.item(row, 7).text() == "1", "the drawn row is the one just read"
+    assert analytics.table.item(row, 8).text() == "0.400"
+    assert analytics.table.item(row, 5).text() == "0.100", "the strategy was not re-read to get there"
 
 
 def test_the_training_section_reads_the_history(analytics):
@@ -1985,6 +2318,46 @@ def test_a_profile_declared_once_resolves_the_rake_of_a_simulation_that_names_it
     assert catalog.entries[0].meta.rake.cap == pytest.approx(3.0)
 
 
+def test_a_profile_the_simulation_merely_names_is_never_offered_as_its_own_rake(catalog):
+    """The terms a profile supplies stay the profile's, and a save does not copy them over.
+
+    Shown in the editable rate and cap boxes, they would be saved as ``Table12.rake_percent``
+    on the first save -- after which changing the profile would no longer change this
+    simulation, and nobody would have asked for that.
+    """
+    catalog.add_profile()
+    row = catalog.profiles.rowCount() - 1
+    for column, text in enumerate(("PS_PLO50", "4.5", "3", "bb")):
+        catalog.profiles.setItem(row, column, QTableWidgetItem(text))
+    catalog.rake_profile_edit.setText("PS_PLO50")
+    catalog.save()
+
+    catalog.select("Table12")
+
+    assert catalog.rake_percent_edit.text() == "", "the profile's rate is not this simulation's"
+    assert catalog.rake_cap_edit.text() == ""
+    assert catalog.rake_profile_edit.text() == "PS_PLO50"
+    assert catalog.config.get("TreeInfos", "Table12.rake_percent") in (None, "")
+    assert catalog.config.get("TreeInfos", "Table12.rake_cap") in (None, "")
+    assert catalog.entries[0].meta.rake.percent == pytest.approx(4.5), "and the rake is still resolved"
+
+
+def test_a_rate_typed_beside_a_profile_is_saved_as_the_simulation_own(catalog):
+    """What the form shows and what it writes are the same thing, profile or no profile."""
+    catalog.add_profile()
+    row = catalog.profiles.rowCount() - 1
+    for column, text in enumerate(("PS_PLO50", "4.5", "3", "bb")):
+        catalog.profiles.setItem(row, column, QTableWidgetItem(text))
+    catalog.rake_profile_edit.setText("PS_PLO50")
+    catalog.save()
+
+    catalog.rake_percent_edit.setText("6")
+    catalog.save()
+
+    assert catalog.config.get("TreeInfos", "Table12.rake_percent") == "6"
+    assert catalog.entries[0].meta.rake.percent == pytest.approx(6.0), "the simulation's own rate wins"
+
+
 def test_a_profile_the_user_removes_is_dropped_from_the_configuration(catalog):
     catalog.config.set("RakeProfiles", "OLD_ROOM", "9,1,bb")
     catalog.fill_profiles()
@@ -2029,6 +2402,19 @@ def test_a_save_asks_the_window_to_re_read_the_configuration(catalog, qtbot):
 def test_the_window_has_a_tab_for_the_catalog(main_window):
     assert main_window.simulations is not None
     assert "Simulations" in [main_window.tabs.tabText(i) for i in range(main_window.tabs.count())]
+
+
+def test_the_simulations_tab_is_filled_before_anything_is_saved(main_window):
+    """Nothing refreshes the catalog between the window's construction and the first save.
+
+    A panel that waited for that first save would spend the whole session telling the user
+    that no simulation is configured -- about the folder they had just imported.
+    """
+    panel = main_window.simulations
+
+    assert panel.entries, "the preset configures simulations, and the tab says so from the start"
+    assert panel.table.rowCount() == len(panel.entries)
+    assert panel.heading.text() == f"Simulations: {len(panel.entries)}"
 
 
 # --------------------------------------------------------------------------------------
