@@ -207,6 +207,64 @@ class NodeExplorerPanel(QWidget):
         self.show_node(node)
 
     # ------------------------------------------------------------------
+    # Opening on one decision
+    # ------------------------------------------------------------------
+
+    def reveal(self, node: Node) -> bool:
+        """Open the tree on one exact decision, expanding the line that leads to it.
+
+        This is how the dashboard hands a decision over: the line is walked one action at a
+        time, because a node's children are only readable once its own files have been read
+        -- so the expansion *is* the search, and nothing is read that the walk does not
+        need.
+
+        :return: Whether the tree holds it. A decision of another simulation, or of a line
+            this export stopped short of, is reported rather than silently shown as the
+            nearest thing to it.
+        """
+        if self.explorer is None:
+            self.refresh()
+        if self.explorer is None:
+            return False
+        resolved = self.explorer.provider.resolve(node)
+        if resolved is None:
+            return False
+        item = self.item_for(resolved)
+        if item is None:
+            return False
+        self.tree.setCurrentItem(item)
+        self.tree.scrollToItem(item)
+        return True
+
+    def item_for(self, node: Node) -> QTreeWidgetItem | None:
+        """The row showing one decision, opening what has to be opened to reach it."""
+        item: QTreeWidgetItem | None = None
+        for depth in range(len(node.path) + 1):
+            item = self.item_with_path(node.path[:depth], item)
+            if item is None:
+                return None
+            if depth < len(node.path):
+                self.on_expanded(item)  # a no-op on a row already read
+                self.tree.expandItem(item)
+        return item
+
+    def item_with_path(
+        self,
+        path: tuple[tuple[str, str], ...],
+        parent: QTreeWidgetItem | None,
+    ) -> QTreeWidgetItem | None:
+        """The row at one level whose node's line is exactly this prefix of the path."""
+        if parent is None:
+            children = [self.tree.topLevelItem(index) for index in range(self.tree.topLevelItemCount())]
+        else:
+            children = [parent.child(index) for index in range(parent.childCount())]
+        for item in children:
+            node = None if item is None else item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(node, Node) and node.path == path:
+                return item
+        return None
+
+    # ------------------------------------------------------------------
     # The detail pane
     # ------------------------------------------------------------------
 
