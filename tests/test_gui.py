@@ -634,6 +634,47 @@ def test_a_new_hand_clears_the_previous_answer(qtbot, main_window):
     assert all(button.isEnabled() for button in trainer.buttons)
 
 
+def test_the_trainer_grades_in_the_unit_the_tree_declares(qtbot, two_size_tree, tree_configs, output_configs):
+    """A tree states what its EVs are counted in, and that is what they are divided by.
+
+    The display setting is the fallback for a simulation that says nothing. Dividing by
+    it anyway -- as the panel used to -- leaves every verdict, every loss and every shown
+    EV off by the ratio between the two units.
+    """
+    from preflop_advisor.trainer_panel import TrainerPanel
+
+    # The tree counts a big blind in 1000 chips while the display setting says 2000, so a
+    # correct panel divides the raise's 2000 chips into 2.00bb rather than 1.00bb.
+    configs = dict(tree_configs) | {"ChipsPerBB": "1000"}
+    panel = TrainerPanel(lambda: two_size_tree, configs, output_configs)
+    qtbot.addWidget(panel)
+
+    # Pin the spot: a deal walks a shuffled catalogue, so which node answers is a roll of
+    # the dice, and this test is about the numbers of one known node. The chooser is
+    # filled first -- it holds nothing but "Any situation" until a tree fills it, and a
+    # non-editable combo box cannot be set to an entry it does not have.
+    panel.refresh_spots()
+    panel.spot_choice.setCurrentText("SB first in")
+    panel.next_hand()
+    question = panel.question
+
+    assert question is not None
+    assert panel.chips_per_bb == pytest.approx(1000.0), "the tree's unit, not the display default"
+
+    best = max(question.results, key=lambda result: result.ev)
+    panel.answer(best.action)
+
+    assert panel.verdict_label.text() == "Correct"
+    # The hundred-percent raise is worth +2.00bb this way and +1.00bb divided by the
+    # display default, so the doubling is the whole of what is being asserted.
+    assert [(tile.action_label.text(), tile.ev_label.text()) for tile in panel.tiles] == [
+        ("Fold", "+1.20"),
+        ("Call", "+1.40"),
+        ("Rpot", "+1.50"),
+        ("R100", "+2.00"),
+    ]
+
+
 def test_a_window_that_was_never_shown_saves_no_layout(qtbot):
     """Its divider holds the proportions of a page that was never laid out.
 
@@ -1288,6 +1329,65 @@ def test_the_chooser_only_offers_what_the_filter_leaves(main_window):
     offered = [trainer.spot_choice.itemText(index) for index in range(trainer.spot_choice.count())]
     assert "SB first in" not in offered
     assert any("BB" in label for label in offered)
+
+
+def test_the_chooser_itself_shows_the_pinned_node(main_window):
+    """A pin the chooser does not show cannot be let go of.
+
+    Selecting the entry a combo box already displays emits nothing, so a pin hidden
+    behind "Any situation" outlived every attempt to leave it while the chooser claimed
+    the whole catalogue was being asked.
+    """
+    trainer = main_window.trainer
+    pinned = "BB: SB raise 100%"
+
+    trainer.train_spot(Spot(pinned, "BB", [("SB", "Raise100")]))
+
+    assert trainer.spot_choice.currentText() == pinned
+
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.next_hand()
+
+    assert trainer.pinned_spot is None
+    assert trainer.question is not None
+    assert trainer.question.spot.label != pinned
+
+
+def test_a_node_that_was_drilled_stays_selectable_as_a_situation(main_window):
+    """The catalogue has no family for a squeeze off a limp, so the entry is kept."""
+    trainer = main_window.trainer
+    pinned = "BB: SB raise 100%"
+    trainer.train_spot(Spot(pinned, "BB", [("SB", "Raise100")]))
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.next_hand()
+
+    trainer.spot_choice.setCurrentText(pinned)
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert trainer.question.spot.label == pinned, "the entry still names the decision"
+
+
+def test_a_node_the_trainer_cannot_grade_is_not_offered_for_drilling(tmp_path, main_window):
+    """An enabled button on such a node deals nothing and reports that nothing answered.
+
+    What the user sees is the application failing, rather than a decision the trainer
+    cannot ask about -- so the button stays off and the pane says why.
+    """
+    folder = tmp_path / "HU-no-ev"
+    folder.mkdir()
+    for name in ("0", "1", "40100"):
+        (folder / f"{name}.rng").write_text("(3K)(4A)\n1.0;\n")
+    explorer = open_explorer(main_window)
+    explorer.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "PLO", "folder": str(folder), "infos": "no ev"}
+    explorer.refresh()
+    root = explorer.tree.topLevelItem(0)
+    root.setExpanded(True)
+
+    explorer.tree.setCurrentItem(root)
+
+    assert explorer.train_button.isEnabled() is False
+    assert "not drilled" in explorer.notes.text()
 
 
 def test_the_explorer_says_so_when_there_is_nothing_to_walk(main_window):

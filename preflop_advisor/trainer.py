@@ -226,6 +226,21 @@ def holdem_hand_for_key(key: str, source: random.Random) -> str | None:
     return hand if convert_hand(hand) == key else None
 
 
+def gradable(results: Sequence[StrategyResult]) -> bool:
+    """Whether a node's entries can be scored against one another.
+
+    Monker omits the EV for a hand the board makes impossible -- for the hand, so across
+    the node -- and a node with an unknown EV has nothing to grade the answer by: the
+    best action is unknown, and an action whose EV is missing has no cost to measure.
+
+    Stated once, here, because two screens have to agree on it: the trainer passes such a
+    spot over rather than asking and then refusing, and the node explorer offers to drill
+    a decision only where this holds. A button that drills a node the trainer will not
+    ask about is a button that reports there was nothing to answer.
+    """
+    return bool(results) and all(result.ev is not None for result in results)
+
+
 def grade(results: Sequence[StrategyResult], chosen: str, chips_per_bb: float) -> Verdict:
     """Score an answer by what it gives up against the best action of the node.
 

@@ -60,6 +60,34 @@ def test_the_children_are_the_decisions_the_folder_holds(explorer):
     assert [child.path for child in children] == [(("SB", "Call"),), (("SB", "Raise100"),)]
 
 
+def test_every_bet_size_of_a_node_is_a_branch_to_walk(two_size_tree, tree_configs):
+    """A node offering two raises holds two lines, and the explorer walks both.
+
+    The reader resolves a generic ``Raise`` to one sizing, so delegating the walk to it
+    without asking for every bet size leaves the whole hundred-percent subtree
+    unreachable -- on screen as in the trainer.
+    """
+    explorer = NodeExplorer(provider_for(two_size_tree, tree_configs))
+
+    children = explorer.children(explorer.root())
+
+    assert [(child.hero, child.path) for child in children] == [
+        ("BB", (("SB", "Call"),)),
+        ("BB", (("SB", "RaisePot"),)),
+        ("BB", (("SB", "Raise100"),)),
+    ]
+
+
+def test_a_node_offering_two_bet_sizes_lists_both(two_size_tree, tree_configs):
+    explorer = NodeExplorer(provider_for(two_size_tree, tree_configs))
+
+    view = explorer.describe(explorer.root(), REFERENCE_HAND)
+
+    assert [action.action for action in view.actions] == ["Fold", "Call", "RaisePot", "Raise100"]
+    assert [action.ev_bb for action in view.actions] == [0.6, 0.7, 0.75, 1.0], "each read from its own file"
+    assert view.gradable is True
+
+
 def test_a_seat_that_is_not_at_the_table_has_no_node(explorer):
     assert explorer.children(node_for("CO", [])) == []
     assert explorer.has_node(node_for("CO", [])) is False
@@ -174,6 +202,21 @@ def test_a_node_holding_a_hand_without_evs_says_it_cannot_be_graded(tmp_path, tr
 
     assert view.actions
     assert any("no EV" in note for note in view.notes)
+    assert view.gradable is False, "the trainer would pass this node over"
+
+
+def test_a_node_whose_hand_could_not_be_dealt_is_not_drillable(tmp_path, tree_configs, hu_tree):
+    """No hand read means no strategy read, and nothing the trainer could ask about."""
+    folder = tmp_path / "HU-empty"
+    folder.mkdir()
+    (folder / "1.rng").write_text("")
+    explorer = NodeExplorer(provider_for(dict(hu_tree, folder=str(folder)), tree_configs))
+
+    view = explorer.describe(node_for("SB", []))
+
+    assert view.hand is None
+    assert view.gradable is False
+    assert any("nothing to drill" in note for note in view.notes)
 
 
 # --------------------------------------------------------------------------------------

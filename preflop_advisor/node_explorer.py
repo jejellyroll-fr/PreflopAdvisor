@@ -31,7 +31,7 @@ from typing import Any
 
 from .strategy import Node, StrategyProvider, StrategyResult, node_for, node_identity
 from .table_state import TableState, table_state
-from .trainer import Spot, hand_for_key
+from .trainer import Spot, gradable, hand_for_key
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,11 @@ class NodeView:
     #: The table as the line left it, handed to the display so it draws the same one the
     #: numbers above were read from. ``None`` when it could not be worked out.
     table: TableState | None = None
+    #: Whether the trainer could ask about this decision at all. A node it would pass over
+    #: -- no hand dealt, or an action the source does not price -- is one it must not be
+    #: offered the chance to answer, and the display says so rather than offering a button
+    #: whose only outcome is "nothing answered".
+    gradable: bool = False
 
 
 def action_label(action: str, sizings: dict[str, Any]) -> str:
@@ -192,10 +197,17 @@ class NodeExplorer:
                     else None,
                 )
             )
+        if hand is None:
+            notes.append("No hand of this node could be dealt back out, so there is nothing to drill.")
         if hand and not strategy:
             notes.append(f"This node does not hold {hand}.")
-        if strategy and all(result.ev is None for result in strategy):
-            notes.append("The source reports no EV for this hand: it can be shown, not graded.")
+        if strategy and not gradable(strategy):
+            unpriced = [result.action for result in strategy if result.ev is None]
+            notes.append(
+                "The source reports no EV for "
+                + (", ".join(unpriced) if len(unpriced) != len(strategy) else "any action of this hand")
+                + ": it can be shown, not drilled."
+            )
 
         table = self._table(resolved)
         stacks: tuple[tuple[str, float | None], ...] = ()
@@ -217,6 +229,7 @@ class NodeExplorer:
             seat_stacks=stacks,
             notes=tuple(notes),
             table=table,
+            gradable=gradable(strategy),
         )
 
     def spot_for(self, node: Node) -> Spot:
