@@ -1,0 +1,18 @@
+---
+# What Codacy reads, and what somebody else already reads.
+#
+# The suite is 13k lines of test code checked in CI by ruff, ruff format and mypy -- the same
+# tools, pinned, on every pull request and every platform. Codacy's second opinion on a test
+# file's style is not a check nobody else makes, and it was the largest single source of the
+# new issues the gate counted. The documentation is prose plus the code fences inside it, and
+# the lint job formats those fences as Python already.
+#
+# What is left is `preflop_advisor/` and `scripts/`: the code that runs for a user.
+#
+# This file cannot change the gate's threshold. "New issues: 0, at least minor severity" is a
+# repository setting on Codacy itself (Repository -> Settings -> Quality gate); a 34k-line
+# port cannot satisfy a threshold of zero, whichever paths are analysed.
+exclude_paths:
+  - "tests/**"
+  - "docs/**"
+  - "**/*.md"
