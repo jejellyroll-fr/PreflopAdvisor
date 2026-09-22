@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .native_format import native_files
+from .native_format import native_count, native_files
 from .settings import ConfigSource
 
 logger = logging.getLogger(__name__)
@@ -167,7 +167,10 @@ def _native_hint(folder: str) -> str:
     natives = native_files(folder)
     if not natives:
         return ""
-    more = f", and {len(natives) - 1} more" if len(natives) > 1 else ""
+    # Counted whole: the names stop at a handful, and the count is what the user compares
+    # against the folder they are looking at.
+    total = native_count(folder)
+    more = f", and {total - 1} more" if total > 1 else ""
     return f" (it holds {natives[0]}{more}, which this application cannot read directly yet)"
 
 

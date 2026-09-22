@@ -175,18 +175,35 @@ def is_native_file(path: str | os.PathLike[str]) -> bool:
     return os.path.splitext(str(path))[1].lower() in NATIVE_EXTENSIONS
 
 
+def _native_names(folder: str | os.PathLike[str] | None) -> list[str]:
+    """Every native simulation file of a folder, at its top level, in a stable order.
+
+    Its own files only, not a search: a folder chosen in the wizard is the simulation, and a
+    walk that descended into subfolders would report files the user did not point at.
+    """
+    if not folder or not os.path.isdir(folder):
+        return []
+    return sorted(entry.name for entry in os.scandir(folder) if entry.is_file() and is_native_file(entry.name))
+
+
 def native_files(folder: str | os.PathLike[str] | None, limit: int = MEMBER_LIMIT) -> tuple[str, ...]:
     """The native simulation files a folder holds, at its top level, in a stable order.
 
-    Its own files only, not a search: a folder chosen in the wizard is the simulation, and a
-    walk that descended into subfolders would report files the user did not point at. Capped
-    at ``limit`` because this is used to write a message: "and 40 more" is a countable fact,
-    a list of four hundred is a wall of text.
+    Capped at ``limit`` because this is used to write a message: naming the first file is what
+    identifies the folder, and a list of four hundred is a wall of text. The number is
+    ``None`` of this tuple's business -- see :func:`native_count`.
     """
-    if not folder or not os.path.isdir(folder):
-        return ()
-    names = sorted(entry.name for entry in os.scandir(folder) if entry.is_file() and is_native_file(entry.name))
-    return tuple(names[:limit])
+    return tuple(_native_names(folder)[:limit])
+
+
+def native_count(folder: str | os.PathLike[str] | None) -> int:
+    """How many native simulation files a folder holds, whole.
+
+    Read separately from the names because a message counts files: "and 19 more", said about
+    a folder of two, is worse than saying nothing, and so is twenty ignored files when the
+    folder holds four hundred. The walk is the same one either way -- one listing, sorted.
+    """
+    return len(_native_names(folder))
 
 
 def holds_native_files(folder: str | os.PathLike[str] | None) -> bool:

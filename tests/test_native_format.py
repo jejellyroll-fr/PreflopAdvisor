@@ -31,6 +31,7 @@ from preflop_advisor.native_format import (
     describe_refusal,
     holds_native_files,
     is_native_file,
+    native_count,
     native_files,
     open_native,
     probe,
@@ -294,6 +295,37 @@ def test_the_native_files_of_a_folder_are_listed_in_order_and_capped(tmp_path):
     assert native_files(tmp_path, limit=1) == ("a.mkr",)
     assert native_files(tmp_path / "absent") == ()
     assert holds_native_files(None) is False
+    assert native_count(tmp_path) == 2, "the count is not the capped list"
+
+
+def test_a_folder_of_more_files_than_are_named_counts_them_all(tmp_path, tree_configs):
+    """The names stop at a readable handful; the number is the folder's own.
+
+    Counted from the capped tuple, "and 19 more" was said about any folder holding more than
+    twenty files -- understating a folder of four hundred, and saying it about a folder of
+    two.
+    """
+    for index in range(MEMBER_LIMIT + 5):
+        write(tmp_path / f"{index:02d}.mkr", b"\xac\xed\x00\x05" + bytes(32))
+
+    assert len(native_files(tmp_path)) == MEMBER_LIMIT
+    assert native_count(tmp_path) == MEMBER_LIMIT + 5
+
+    with pytest.raises(SimulationScanError) as raised:
+        scan_simulation(str(tmp_path), tree_configs)
+
+    assert f"00.mkr, and {MEMBER_LIMIT + 4} more" in str(raised.value)
+
+
+def test_the_ignored_files_of_a_folder_are_counted_whole(tmp_path, tree_configs):
+    """The note about what a folder ignores is a number, and it is about the folder."""
+    folder = copied_hu_tree(tmp_path)
+    for index in range(MEMBER_LIMIT + 3):
+        write(folder / f"save{index:02d}.mkr", zip_bytes())
+
+    scan = scan_simulation(str(folder), tree_configs)
+
+    assert any(f"{MEMBER_LIMIT + 3} solver simulation file(s)" in note for note in scan.notes)
 
 
 def test_only_a_folders_own_files_are_reported(tmp_path):

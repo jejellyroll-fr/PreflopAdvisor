@@ -36,7 +36,7 @@ from .csv_format import ROLES, ColumnMapping
 from .errors import CsvImportError, NativeFormatError, SimulationScanError
 from .hand_classes import ranks_of
 from .hand_convert_helper import normalize_monker_hand
-from .native_format import describe_refusal, native_files, probe
+from .native_format import describe_refusal, native_count, native_files, probe
 from .paths import (
     SOURCE_CSV,
     SOURCE_MONKER,
@@ -292,7 +292,11 @@ def native_refusal(folder: str | None) -> str | None:
     natives = native_files(absolute)
     if not natives:
         return None
-    count = f", and {len(natives) - 1} more" if len(natives) > 1 else ""
+    # Counted whole rather than from the names: the names are capped at a readable handful,
+    # so "and 19 more" would be said about a folder of two files and understate a folder of
+    # four hundred -- the one number in this message that is a fact about the folder.
+    total = native_count(absolute)
+    count = f", and {total - 1} more" if total > 1 else ""
     try:
         detail = describe_refusal(probe(str(Path(absolute) / natives[0])))
     except NativeFormatError as error:
@@ -391,10 +395,10 @@ def scan_csv_simulation(
         notes.append(f"Players: {players} detected from the seats the table names. Check it before importing.")
     if not NAME_STACK_SIGNAL.search(name):
         notes.append(f"Stack depth: {stack}bb assumed, as the folder name declares none.")
-    natives = native_files(absolute)
-    if natives:
+    ignored = native_count(absolute)
+    if ignored:
         notes.append(
-            f"{len(natives)} solver simulation file(s) here are ignored: this folder is read from its"
+            f"{ignored} solver simulation file(s) here are ignored: this folder is read from its"
             " CSV tables. See docs/native-import.md for why they cannot be read directly."
         )
     if not ev_rows:
@@ -556,10 +560,10 @@ def scan_simulation(
     folder_name = absolute.name
 
     notes: list[str] = []
-    natives = native_files(absolute)
-    if natives:
+    ignored = native_count(absolute)
+    if ignored:
         notes.append(
-            f"{len(natives)} solver simulation file(s) here are ignored: this folder is read from its"
+            f"{ignored} solver simulation file(s) here are ignored: this folder is read from its"
             " range files. See docs/native-import.md for why they cannot be read directly."
         )
     if not hands:
