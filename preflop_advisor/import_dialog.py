@@ -125,7 +125,15 @@ class FolderPage(QWizardPage):
 
 
 class MetadataPage(QWizardPage):
-    """Step two: what the export could not say, asked for rather than assumed."""
+    """Step two: what the export could not say, asked for rather than assumed.
+
+    Two halves, and the split is the point. The first is what the folder answered -- its
+    variant, seats, depth, ante -- pre-filled and editable. The second is what no range file
+    can carry: the rake the room charges, the room and stake names, whether this was cash or
+    a tournament. A blank there declares *nothing*, which a comparison later reads as
+    "unknown"; it is never read as "none", because a simulation silent about its rake and one
+    that proudly has none are different facts.
+    """
 
     def __init__(self, config: LayeredConfig, folder_page: FolderPage) -> None:
         super().__init__()
@@ -158,13 +166,55 @@ class MetadataPage(QWizardPage):
         self.ante_edit = QLineEdit()
         self.ante_edit.setPlaceholderText("Leave empty when the simulation has no ante")
         form.addRow("Ante (bb):", self.ante_edit)
-        self.rake_edit = QLineEdit()
-        self.rake_edit.setPlaceholderText("e.g. no Rake, 5% capped 3bb")
-        form.addRow("Rake / notes:", self.rake_edit)
         self.tooltip_edit = QLineEdit()
         self.tooltip_edit.setPlaceholderText("Optional: a popup image name, or a note")
         form.addRow("Tooltip:", self.tooltip_edit)
         layout.addLayout(form)
+
+        self.declared_label = QLabel(
+            "What the folder cannot know. Leave a field empty and nothing is declared about it -- an "
+            'empty rake is read as "not stated", never as "no rake".'
+        )
+        self.declared_label.setWordWrap(True)
+        self.declared_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
+        layout.addWidget(self.declared_label)
+
+        declared = QFormLayout()
+        self.context_combo = QComboBox()
+        for value, label in (("", "Not stated"), ("cash", "Cash game"), ("tournament", "Tournament")):
+            self.context_combo.addItem(label, value)
+        declared.addRow("Context:", self.context_combo)
+        self.rake_percent_edit = QLineEdit()
+        self.rake_percent_edit.setPlaceholderText("e.g. 4.5")
+        declared.addRow("Rake (%):", self.rake_percent_edit)
+        self.rake_cap_edit = QLineEdit()
+        self.rake_cap_edit.setPlaceholderText("e.g. 3")
+        declared.addRow("Rake cap:", self.rake_cap_edit)
+        self.rake_cap_unit_combo = QComboBox()
+        self.rake_cap_unit_combo.addItems(["bb", "chips"])
+        declared.addRow("Cap unit:", self.rake_cap_unit_combo)
+        self.rake_profile_edit = QLineEdit()
+        self.rake_profile_edit.setPlaceholderText("e.g. PS_PLO50, declared in [RakeProfiles]")
+        declared.addRow("Rake profile:", self.rake_profile_edit)
+        self.sb_edit = QLineEdit()
+        self.sb_edit.setPlaceholderText("Leave empty when the stakes are not known")
+        declared.addRow("Small blind (bb):", self.sb_edit)
+        self.bb_edit = QLineEdit()
+        declared.addRow("Big blind (bb):", self.bb_edit)
+        self.aliases_edit = QLineEdit()
+        self.aliases_edit.setPlaceholderText("e.g. PokerStars PLO50, ps_plo_6max_midstakes")
+        declared.addRow("Room / stake aliases:", self.aliases_edit)
+        self.solver_edit = QLineEdit()
+        self.solver_edit.setPlaceholderText("e.g. MonkerSolver")
+        declared.addRow("Solver:", self.solver_edit)
+        self.version_edit = QLineEdit()
+        declared.addRow("Version:", self.version_edit)
+        self.tags_edit = QLineEdit()
+        self.tags_edit.setPlaceholderText("Optional, comma separated")
+        declared.addRow("Tags:", self.tags_edit)
+        self.notes_edit = QLineEdit()
+        declared.addRow("Notes:", self.notes_edit)
+        layout.addLayout(declared)
 
         self.mapping_label = QLabel("")
         self.mapping_label.setWordWrap(True)
@@ -197,7 +247,10 @@ class MetadataPage(QWizardPage):
             self.players_combo.setCurrentIndex(index)
         self.stack_edit.setText(str(scan.stack_bb))
         self.ante_edit.setText(scan.ante_bb)
-        self.rake_edit.setText("no Rake" if not scan.ante_bb else "")
+        # Nothing is pre-filled here but the name: the rake, the room and the stakes are the
+        # user's to state, and the wizard writing a guess into them is exactly what the
+        # catalog's "declared" label exists to keep out of a comparison.
+        self.aliases_edit.setText(scan.name)
         self.codes = list(scan.unknown_codes)
         if scan.kind == SOURCE_CSV:
             # A table is named by its columns, not by codes: there is nothing to declare about
@@ -241,18 +294,62 @@ class MetadataPage(QWizardPage):
             players=int(self.players_combo.currentData()),
             stack_bb=self.stack_edit.text().strip() or str(scan.stack_bb),
             ante_bb=self.ante_edit.text().strip(),
-            rake=self.rake_edit.text().strip(),
             tooltip=self.tooltip_edit.text().strip(),
             code_names=names,
             kind=scan.kind,
             # Nothing is declared about the columns: the wizard has no field for them, and a
-            # table read from its own header needs no declaration. A mapping can still be
-            # written by hand under the simulation's own name in the configuration.
+            # table read from its own header needs no declaration -- storing a detection here
+            # would turn one table's reading into a folder-wide override. A mapping can still
+            # be written by hand under the simulation's own name in the configuration.
             columns=inferred_mapping(),
+            rake_percent=self.rake_percent_edit.text().strip(),
+            rake_cap=self.rake_cap_edit.text().strip(),
+            rake_cap_unit=str(self.rake_cap_unit_combo.currentText()),
+            rake_profile=self.rake_profile_edit.text().strip(),
+            context=str(self.context_combo.currentData() or ""),
+            solver=self.solver_edit.text().strip(),
+            version=self.version_edit.text().strip(),
+            sb_bb=self.sb_edit.text().strip(),
+            bb_bb=self.bb_edit.text().strip(),
+            aliases=self.aliases_edit.text().strip(),
+            tags=self.tags_edit.text().strip(),
+            notes=self.notes_edit.text().strip(),
         )
 
     def nextId(self) -> int:
         return 2
+
+
+def declared_lines(request: ImportRequest) -> list[str]:
+    """The metadata a confirmed import declares, one ``what: value`` line each.
+
+    Only the declared half: the detected facts are already in the lines above it, and
+    repeating them would blur the distinction the summary exists to make.
+    """
+    lines: list[str] = []
+    if request.context:
+        lines.append(f"context: {request.context}")
+    rake = [
+        part
+        for part in (
+            f"{request.rake_percent}%" if request.rake_percent else "",
+            f"cap {request.rake_cap}{request.rake_cap_unit}" if request.rake_cap else "",
+            f"profile {request.rake_profile}" if request.rake_profile else "",
+        )
+        if part
+    ]
+    if rake:
+        lines.append("rake: " + " ".join(rake))
+    if request.sb_bb and request.bb_bb:
+        lines.append(f"blinds: {request.sb_bb}/{request.bb_bb}")
+    if request.aliases:
+        lines.append(f"aliases: {request.aliases}")
+    if request.solver:
+        lines.append(f"solver: {request.solver}" + (f" {request.version}" if request.version else ""))
+    for kind, value in (("tags", request.tags), ("notes", request.notes)):
+        if value:
+            lines.append(f"{kind}: {value}")
+    return lines
 
 
 class SummaryPage(QWizardPage):
@@ -302,6 +399,7 @@ class SummaryPage(QWizardPage):
                     + (", ".join(f"{name}={code}" for code, name in request.code_names.items()) or "none")
                 ]
             ),
+            "Declared: " + (", ".join(declared_lines(request)) or "nothing beyond what the files state"),
             "Stored in your own configuration; the shipped preset is never written.",
         ]
         scan = self.metadata_page.folder_page.scan

@@ -20,6 +20,9 @@ So a decision comes out of here with a status, and the status is the point:
                  than one: it cannot say which one this hand went through.
 ``no node``      A simulation fits the hand, but holds no decision on this line.
 ``no simulation`` Nothing configured is this game, at this table size, this deep.
+``ambiguous simulation``
+                 Two simulations are equally compatible and the policy refuses to settle
+                 them: either may be used, and which one is the user's call.
 ``unsupported``  The hand cannot be read -- cards that do not convert, a line with no
                  seat at the table -- and nothing is claimed about it.
 ===============  ===================================================================
@@ -28,6 +31,13 @@ The EV of a decision is only ever read off a **matched** node, for the hand's ow
 key, and only where the source reports EVs at all. An unmatched hand gets no frequencies, no
 best action and no loss: "no compatible simulation" is an answer, and a fabricated one is
 worse than none.
+
+Which simulation a hand is even eligible for is decided before a single node is walked, by
+:mod:`preflop_advisor.simulation_catalog`: variant, table size, depth, ante and rake have to
+agree, and the judgement that got a simulation there travels with every match as
+:attr:`Match.comparison`, so a screen can show it and so an EV is only ever computed when
+that judgement was close enough to deserve one. Nothing here decides what "close enough"
+means; it asks.
 
 Where a number does come back, it is in big blinds -- the unit the trainer grades in -- and
 the spot it came from is a :class:`~preflop_advisor.trainer.Spot` and a
@@ -59,6 +69,10 @@ same way and nothing here knows which one it was. What the mapping must hold::
           "table_size": 6,
           "effective_stack_bb": 100.0,
           "ante_bb": 0.0,
+          "site": "PokerStars",            # optional labels: a name, never an identity
+          "stake_label": "PLO50",
+          "rake_profile": "PS_PLO50",     # resolves through the user's [RakeProfiles]
+          "rake_percent": 4.5,
           "seats": ["UTG", "MP", "CO", "BU", "SB", "BB"],   # acting order, blinds last
           "actions": [
             {"seat": "SB", "action": "Raise", "to_bb": 3.0},
@@ -88,16 +102,29 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from .hand_classes import ranks_of
 from .hand_convert_helper import hand_key_of
+from .simulation_catalog import (
+    RAISE_KINDS,
+    Candidate,
+    Compatibility,
+    CompatibilityReport,
+    Policy,
+    SimulationCatalog,
+    SimulationQuery,
+    action_set,
+    catalog_of,
+    kind_of_action,
+    raise_to_bb,
+)
 from .sizings import Sizing
 from .strategy import Node, SimulationMetadata, StrategyProvider, StrategyResult, node_for, node_identity
-from .table_state import BIG_BLIND, SMALL_BLIND, table_state
-from .trainer import Spot, hand_for_key
+from .table_state import BIG_BLIND, SMALL_BLIND
+from .trainer import Spot
 from .trainer_filters import family_of
 from .types import ActionSequence
 
@@ -107,12 +134,7 @@ logger = logging.getLogger(__name__)
 #: than parsed hopefully: the fields it does not have would read as blanks.
 PAYLOAD_VERSION = 1
 #: The statuses a decision can carry, worst news last.
-STATUSES = ("exact", "sized", "ambiguous", "no node", "no simulation", "unsupported")
-#: Which finding to report when no simulation matched exactly, most informative first. A sized
-#: match is the closest thing to a match; then a read that could not pick between two actions;
-#: then a specific reason -- an amount no stored action comes to -- and last the generic
-#: "this tree holds no decision here", which says least about why.
-READING_ORDER = ("sized", "ambiguous", "unsupported", "no node")
+STATUSES = ("exact", "sized", "ambiguous", "no node", "no simulation", "ambiguous simulation", "unsupported")
 #: A status that means the decision was matched to a node, and therefore has a strategy.
 MATCHED_STATUSES = ("exact", "sized")
 #: How close a real raise has to come to a stored one to be called the same raise, in big
@@ -129,18 +151,7 @@ STACK_TOLERANCE_BB = 10.0
 MISTAKE_LIMIT = 10
 #: How many of a node's own hands to try when the one asked about is not in it, which happens
 #: on a truncated export. Drawn from what the node holds, so the first realisable one answers.
-NODE_HANDS = 8
-#: What a decision has to have cost to be worth ranking as a mistake, in big blinds.
 MIN_LOSS_BB = 0.02
-
-#: What a table action is called, in the model's own words. A history writes ``raises``,
-#: ``bets``, ``posts``; the model knows five kinds and the line is spelled in them.
-_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("AllIn", ("allin", "all-in", "jam", "shove", "push")),
-    ("Fold", ("fold", "folds", "folded", "folds to")),
-    ("Call", ("call", "calls", "called")),
-    ("Check", ("check", "checks", "checked")),
-)
 
 
 @dataclass(frozen=True)
@@ -156,12 +167,13 @@ class RealAction:
 
     @property
     def kind(self) -> str:
-        """Which of the model's five kinds this action is."""
-        word = str(self.action).strip().lower()
-        for kind, spellings in _KINDS:
-            if word in spellings or word.startswith(kind.lower()):
-                return kind
-        return "Raise"
+        """Which of the model's five kinds this action is.
+
+        Read by the same reading the stored actions get, so a history that writes "raises"
+        and a tree that stores "Raise" are one action -- which is what a line of play and a
+        decision's own move are compared through.
+        """
+        return kind_of_action(self.action)
 
 
 @dataclass(frozen=True)
@@ -188,6 +200,16 @@ class RealHand:
     seats: tuple[str, ...] = ()
     table: str = ""
     source: str = ""
+    #: The room, stake and rake profile the history states, when it states any. Labels and
+    #: nothing more: they are what lets the catalog recognise a simulation whose rake is
+    #: declared under a profile, and they never decide what a strategy is. Without them a
+    #: hand is still reviewed, with the rake reported as unknown rather than assumed equal.
+    site: str = ""
+    stake_label: str = ""
+    rake_profile: str = ""
+    rake_percent: float | None = None
+    rake_cap: float | None = None
+    rake_cap_unit: str = ""
 
     @property
     def hand_key(self) -> str | None:
@@ -282,10 +304,31 @@ class Match:
     #: The solver action the hero's action corresponds to, when one could be identified.
     taken_action: str | None = None
     note: str = ""
+    #: What the simulation is to this hand, when the match went through one. The catalog's
+    #: judgement travels with the match rather than being looked up again, so the panel that
+    #: shows it and the review that priced it are reading one result.
+    comparison: Compatibility | None = None
+    #: Whether the user picked the simulation by hand rather than the catalog choosing it.
+    overridden: bool = False
 
     @property
     def matched(self) -> bool:
         return self.status in MATCHED_STATUSES
+
+    @property
+    def comparable(self) -> bool:
+        """Whether an EV may be read off this match, as the catalog judged the simulation.
+
+        A match nobody judged -- one built without a catalog -- is comparable: that is how
+        this class behaved before there was a catalog, and a class that silently stopped
+        pricing its own matches would be a worse default than the honest one.
+        """
+        return self.matched and (self.comparison is None or self.comparison.comparable)
+
+    @property
+    def compatibility(self) -> str:
+        """The compatibility status, or an empty string when nothing judged it."""
+        return "" if self.comparison is None else self.comparison.status
 
 
 @dataclass(frozen=True)
@@ -456,7 +499,23 @@ def _real_hand(raw: Mapping[str, Any], path: str) -> RealHand:
         seats=tuple(str(seat).strip() for seat in (raw.get("seats") or ()) if str(seat).strip()),
         table=str(raw.get("table") or ""),
         source=path,
+        site=str(raw.get("site") or raw.get("room") or ""),
+        stake_label=str(raw.get("stake_label") or raw.get("stake") or ""),
+        rake_profile=str(raw.get("rake_profile") or ""),
+        rake_percent=_optional_float(raw.get("rake_percent")),
+        rake_cap=_optional_float(raw.get("rake_cap")),
+        rake_cap_unit=str(raw.get("rake_cap_unit") or ""),
     )
+
+
+def _optional_float(value: Any) -> float | None:
+    """A number a hand-history payload may or may not carry."""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{value!r} is not a number") from None
 
 
 def _real_action(raw: Mapping[str, Any]) -> RealAction:
@@ -476,15 +535,6 @@ def _real_action(raw: Mapping[str, Any]) -> RealAction:
 
 
 @dataclass(frozen=True)
-class Candidate:
-    """One configured simulation a real hand may be compared against."""
-
-    name: str
-    provider: StrategyProvider
-    folder: str = ""
-
-
-@dataclass(frozen=True)
 class Tolerance:
     """How close is close enough, for the two things that can be a near-miss.
 
@@ -497,9 +547,6 @@ class Tolerance:
 
     blinds: float = SIZING_TOLERANCE_BLINDS
     stack_bb: float = STACK_TOLERANCE_BB
-    #: Antes are in big blinds and are declared exactly, or not at all: this is not a
-    #: tolerance so much as a rounding allowance for a configuration that wrote ``0.125``.
-    ante_bb: float = 1e-9
 
     def within(self, real: float, stored: float) -> bool:
         """Whether a real raise and a stored one are the same raise, in this tolerance."""
@@ -529,93 +576,99 @@ class NodeMatcher:
     compared against a Monker export and a CSV table with the same code.
     """
 
-    def __init__(self, candidates: Sequence[Candidate], tolerance: Tolerance | None = None) -> None:
+    def __init__(
+        self,
+        candidates: Sequence[Candidate],
+        tolerance: Tolerance | None = None,
+        catalog: SimulationCatalog | None = None,
+        policy: Policy | None = None,
+        manual: str | None = None,
+    ) -> None:
+        """Build a matcher over the simulations a review may use.
+
+        :param tolerance: How close a real raise has to be to a stored one. The same knob as
+            it always was, and it also seeds the compatibility policy's own tolerances, so a
+            caller that widened one cannot end up with a catalog judging by the other.
+        :param catalog: The compatibility layer, when the caller already built one -- the
+            review panel does, so the screen and the matcher read one set of metadata.
+        :param policy: The compatibility tolerances, when the catalog is built here.
+        :param manual: A simulation the user picked by hand. It is used whatever the catalog
+            would have chosen, and every match it produces says it was overridden.
+        """
         self.candidates = list(candidates)
         self.tolerance = tolerance or Tolerance()
+        self.manual = manual
+        self.catalog = (
+            catalog
+            if catalog is not None
+            else catalog_of(
+                self.candidates,
+                policy=policy or Policy.for_sizing(self.tolerance.blinds, self.tolerance.stack_bb),
+            )
+        )
 
     # ------------------------------------------------------------------
     # Which simulation is this hand even in
 
+    def assess(self, hand: RealHand) -> CompatibilityReport:
+        """What the catalog makes of this hand: every simulation, and how close each is."""
+        return self.catalog.rank(SimulationQuery.from_hand(hand), override=self.manual)
+
     def compatible(self, hand: RealHand) -> list[Candidate]:
-        """The candidates that are this game, this table size, this depth and this ante.
+        """The candidates this hand may be walked through, best first.
 
         A three-handed 100bb tree is not a six-handed 40bb hand, and comparing the two would
-        produce numbers about a game nobody played. What is checked is exactly what the
-        model states: the game, the number of seats, the depth within
-        :attr:`Tolerance.stack_bb`, and the ante.
-
-        The ante is compared like the rest and not approximated: it is dead money in every
-        pot, so two trees that differ only by it are two different games -- their pot-sized
-        raises come to different amounts and their strategies were solved for different
-        incentives. A tree whose ante is not declared at all is left out rather than
-        assumed to have none, since a pot built on a guess is a guess all the way down.
+        produce numbers about a game nobody played. Variant, table size, depth, ante and rake
+        are what decides it, and they are decided in
+        :mod:`preflop_advisor.simulation_catalog`, so the screen that explains a review and
+        the matcher that produces one cannot come to different conclusions.
         """
-        return self._fitting(hand)[0]
+        candidates: list[Candidate] = []
+        for comparison in self.assess(hand).placeable:
+            found = self._candidate(comparison.simulation_id)
+            if found is not None:
+                candidates.append(found)
+        return candidates
 
-    def _fitting(self, hand: RealHand) -> tuple[list[Candidate], str]:
-        """The candidates that are this hand's game, and why the others are not.
-
-        :return: ``(fitting, note)``. The note is about a simulation that *is* this game but
-            cannot be priced -- an ante it does not size -- because "no configured simulation
-            is a 100bb heads-up game" would be an untrue thing to say about one that is.
-        """
-        fitting: list[Candidate] = []
-        unpriced = ""
-        for candidate in self.candidates:
-            metadata = candidate.provider.metadata()
-            if str(metadata.game).upper() != hand.game.upper():
-                continue
-            if int(metadata.num_players) != int(hand.table_size):
-                continue
-            if abs(float(metadata.stack_bb) - hand.stack_bb) > self.tolerance.stack_bb:
-                continue
-            if metadata.ante_bb is None:
-                unpriced = unpriced or UNPRICED_ANTE
-                continue
-            if abs(float(metadata.ante_bb) - float(hand.ante_bb)) > self.tolerance.ante_bb:
-                continue
-            fitting.append(candidate)
-        return fitting, unpriced
+    def _candidate(self, simulation_id: str) -> Candidate | None:
+        """The candidate a catalog entry was built from."""
+        return next((candidate for candidate in self.candidates if candidate.name == simulation_id), None)
 
     def match(self, decision: RealDecision) -> Match:
         """The node this decision is, or the reason there is none."""
         hand = decision.hand
-        key = hand.hand_key
-        if key is None:
+        if hand.hand_key is None:
             return Match("unsupported", note=f"{hand.hero_cards} cannot be read as a hand of {hand.game}")
 
-        fitting, unpriced = self._fitting(hand)
-        if not fitting:
-            if unpriced:
-                # This *is* the game, it just cannot price a raise. Saying no simulation is a
-                # 100bb heads-up game about a tree that is one would send the reader looking
-                # for a simulation to configure rather than an ante to size.
-                return Match("unsupported", note=unpriced)
+        report = self.assess(hand)
+        if report.needs_choice:
+            return Match("ambiguous simulation", note=report.reason)
+        chosen = report.chosen
+        if chosen is None:
+            return Match("no simulation", note=report.reason)
+
+        # One simulation is walked: the one the catalog chose, which is the deepest-closest of
+        # those this hand is compatible with. Walking every placeable one and taking the first
+        # node that matches would let node availability outrank the ranking -- a 90bb tree
+        # sitting behind the 100bb one would answer for a hand played in it, and the number
+        # that came back would be another table's. That the chosen simulation holds no node
+        # here is a fact about this hand, and it is reported as one.
+        candidate = self._candidate(chosen.simulation_id)
+        if candidate is None:  # pragma: no cover - the catalog was built from these
             return Match(
-                "no simulation",
-                note=(
-                    f"no configured simulation is {hand.game} {hand.table_size}-handed at "
-                    f"{hand.stack_bb:g}bb with an ante of {hand.ante_bb:g}bb"
-                ),
+                "no node",
+                simulation=chosen.simulation_id,
+                note=f"{chosen.name} holds no decision on this line",
+                comparison=chosen,
+                overridden=self.manual is not None,
             )
+        return self._match_in(candidate, decision, chosen)
 
-        # Closest depth first. Several configured trees sit inside the stack tolerance -- a
-        # 90bb tree beside the 100bb one -- and a hand is reviewed against the solution it
-        # was played in, not against whichever of them the configuration listed first.
-        ordered = sorted(
-            fitting,
-            key=lambda candidate: abs(float(candidate.provider.metadata().stack_bb) - hand.stack_bb),
-        )
-        best: Match | None = None
-        for candidate in ordered:
-            found = self._match_in(candidate, decision)
-            if found.status == "exact":
-                return found
-            if best is None or _reading_rank(found.status) < _reading_rank(best.status):
-                best = found
-        return best or Match("no node", note="no simulation holds a decision on this line")
+    def _match_in(self, candidate: Candidate, decision: RealDecision, comparison: Compatibility) -> Match:
+        """The verdict, carrying how compatible the simulation was with the hand."""
+        return replace(self._walk(candidate, decision), comparison=comparison, overridden=self.manual is not None)
 
-    def _match_in(self, candidate: Candidate, decision: RealDecision) -> Match:
+    def _walk(self, candidate: Candidate, decision: RealDecision) -> Match:
         """Whether one simulation holds this decision, and how its sizing compares.
 
         The line is walked action by action rather than resolved in one call. A real "raises
@@ -675,7 +728,7 @@ class NodeMatcher:
                     status="unsupported",
                     note=f"the line reaches {action.seat}, who is not seated at this table",
                 )
-            if action.kind in _RAISE_KINDS:
+            if action.kind in RAISE_KINDS:
                 name, sizing_status, note = self._identify_sizing(
                     provider, list(line), action, hand.hero_cards, metadata, sizings
                 )
@@ -704,7 +757,7 @@ class NodeMatcher:
             rather than one it holds approximately.
         """
         kind = decision.taken.kind
-        if kind in _RAISE_KINDS:
+        if kind in RAISE_KINDS:
             return self._identify_sizing(
                 provider,
                 list(reading.line),
@@ -714,7 +767,7 @@ class NodeMatcher:
                 provider.sizings(),
                 mix,
             )
-        same_kind = [result for result in mix if _kind_of(result.action) == kind]
+        same_kind = [result for result in mix if kind_of_action(result.action) == kind]
         if not same_kind:
             return None, "unsupported", f"the tree holds no {kind.lower()} here"
         return same_kind[0].action, "exact", ""
@@ -746,9 +799,9 @@ class NodeMatcher:
             node = provider.resolve(node_for(action.seat, list(line)))
             if node is None:
                 return None, "no node", f"the tree holds no decision for {action.seat} on this line"
-            mix = self._strategy_of(provider, node, hand)
+            mix = action_set(provider, node, hand)
 
-        candidates = [result.action for result in mix if _kind_of(result.action) in _RAISE_KINDS]
+        candidates = [result.action for result in mix if kind_of_action(result.action) in RAISE_KINDS]
         if not candidates:
             return None, "unsupported", f"the tree holds no raise for {action.seat} here"
         if action.to_bb is None:
@@ -761,7 +814,7 @@ class NodeMatcher:
 
         within: list[tuple[float, str]] = []
         for name in candidates:
-            stored = self._raise_to(line, action.seat, name, metadata, sizings)
+            stored = raise_to_bb(line, action.seat, name, metadata, sizings)
             if stored is None:
                 continue
             if abs(stored - action.to_bb) <= 1e-9:
@@ -779,85 +832,11 @@ class NodeMatcher:
             return within[0][1], "sized", ""
         return None, "unsupported", f"the tree holds no raise to {action.to_bb:g}bb here for {action.seat}"
 
-    @staticmethod
-    def _strategy_of(provider: StrategyProvider, node: Node, hand: str) -> Sequence[StrategyResult]:
-        """A node's action set, asked about a hand of the node rather than about a fixed one.
 
-        The hand asked about first is the hero's own, which is what the decision is about.
-        Where that hand is not in this node -- a truncated export holds a handful of the
-        sixteen thousand -- one of the hands it does hold is asked about instead: the actions
-        a node offers are the same for every hand of it, so either answer is this node's
-        action set. Empty means the node holds nothing at all, which is the caller's answer.
-        """
-        mix = provider.strategy(node, hand)
-        if mix:
-            return mix
-        for key in provider.hands_at(node)[:NODE_HANDS]:
-            dealt = hand_for_key(key)
-            if not dealt:
-                continue
-            held = provider.strategy(node, dealt)
-            if held:
-                return held
-        return mix
-
-    def _raise_to(
-        self,
-        line: ActionSequence,
-        actor: str,
-        action: str,
-        metadata: SimulationMetadata,
-        sizings: dict[str, Sizing],
-    ) -> float | None:
-        """What a stored action raises a seat *to*, in big blinds, along a line of play.
-
-        The seat's own commitment rather than what it adds: a raise to three big blinds from
-        the small blind, which already had half of one in, adds two and a half -- and it is
-        the three that a history records. ``None`` when the line holds a sizing the tree
-        cannot price, which is a raise nothing can be compared against.
-        """
-        state = table_state(
-            list(metadata.seats),
-            [*line, (actor, action)],
-            actor,
-            sizings,
-            stack=metadata.stack_bb,
-            game=metadata.game,
-            ante=metadata.ante_bb,
-        )
-        seat = state.seat(actor)
-        if seat is None or seat.committed is None:
-            return None
-        # The betting commitment, not what the seat has put in: the table counts the ante it
-        # posted among that, and a history records what a raise came *to* in the betting. Read
-        # as they stand, a raise to three in a half-blind-ante game looks like a raise to
-        # three and a half, and a history that really did raise to three and a half looks like
-        # a raise to four.
-        return float(seat.committed) - float(metadata.ante_bb or 0.0)
-
-
-def _kind_of(action: str) -> str:
-    """Which of the model's kinds a stored action name is."""
-    word = str(action).strip().lower().replace("_", "")
-    for kind, spellings in _KINDS:
-        if word == kind.lower() or any(word.startswith(spelling) for spelling in spellings):
-            return kind
-    return "Raise"
-
-
-#: The two kinds that put more money in and can therefore be sized: a raise, and the raise that
-#: is the whole stack. Compared together, because a tree whose deepest raise is all-in and a
-#: history that calls the same move a shove are describing one action.
-_RAISE_KINDS = ("Raise", "AllIn")
-
-#: What is said about a tree whose ante is undeclared. One sentence, said in the two places it
-#: is the answer: when such a tree is the only one of this game, and when its raise is priced.
+#: What is said about a tree whose ante is undeclared. Every amount on such a table is
+#: built on the ante, so with its size unstated no raise can be priced, and a node named
+#: without pricing it would be a guess.
 UNPRICED_ANTE = "this tree has an ante it does not size, so its raises cannot be compared"
-
-
-def _reading_rank(status: str) -> int:
-    """Where a status sits in :data:`READING_ORDER`, with anything else last."""
-    return READING_ORDER.index(status) if status in READING_ORDER else len(READING_ORDER)
 
 
 def _weaker(first: str, second: str) -> str:
@@ -884,7 +863,11 @@ def review(decisions: Iterable[RealDecision], matcher: NodeMatcher) -> list[Revi
         mix: tuple[StrategyResult, ...] = ()
         taken_ev: float | None = None
         best_ev: float | None = None
-        if match.matched and match.node is not None and match.simulation:
+        # Only a match the catalog judged close enough is priced. An approximate simulation is
+        # still shown and drillable -- the frequencies are worth reading -- and an EV loss
+        # computed across the gap it admits to would be exactly the number this layer exists
+        # to prevent.
+        if match.matched and match.comparable and match.node is not None and match.simulation:
             provider = _provider_of(matcher, match.simulation)
             if provider is not None:
                 mix = provider.strategy(match.node, decision.hand.hero_cards)

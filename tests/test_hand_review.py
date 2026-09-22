@@ -425,12 +425,14 @@ def test_a_line_that_reaches_a_seat_the_tree_does_not_have_is_unsupported():
 
 
 def test_a_hand_of_another_table_size_has_no_compatible_simulation():
+    """And the note names the nearest simulation and what it disagreed about."""
     decisions = hand_of(act("SB", "Raise", 2.5), hero="SB", table_size=6).decisions()
 
     match = matcher_over(FakeSimulation()).match(decisions[0])
 
     assert match.status == "no simulation"
-    assert "6-handed" in match.note
+    assert "6-max" in match.note
+    assert "HU vs 6-max" in match.note
     assert match.matched is False
 
 
@@ -505,6 +507,26 @@ def test_the_closest_depth_wins_over_the_one_listed_first():
 
     assert match.status == "exact"
     assert match.simulation == "sim1", "the tree at the depth the hand was played at"
+
+
+def test_only_the_simulation_the_catalog_chose_is_walked():
+    """A lower-ranked tree holding the node is not the hand's environment.
+
+    Both sit inside the stack tolerance and the hand was played at one of them. Letting the
+    other answer because it is the one with a node on this line would price the hand against
+    another table's numbers while every ranking said the closer tree was the one in use.
+    """
+    decisions = hand_of(act("SB", "Raise", 2.5)).decisions()
+
+    match = matcher_over(
+        FakeSimulation(stack_bb=100.0, strategy={}),
+        FakeSimulation(stack_bb=90.0),
+        tolerance=Tolerance(stack_bb=20.0),
+    ).match(decisions[0])
+
+    assert match.status == "no node"
+    assert match.simulation == "sim0", "the tree at the depth the hand was played at"
+    assert "nothing for this hand" in match.note
 
 
 def test_cards_that_do_not_convert_are_unsupported():

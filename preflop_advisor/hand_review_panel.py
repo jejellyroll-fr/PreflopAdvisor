@@ -15,12 +15,19 @@ The list is built once and drawn from: :meth:`HandReviewPanel.shown` is the only
 decides what a row means, which is why the table's own header sorting stays off. A header sort
 would reorder the rows underneath that list, and the decision a user selected for drilling
 would no longer be the decision they read.
+
+Which simulation each hand was compared against is the catalog's decision
+(:mod:`preflop_advisor.simulation_catalog`), and this panel shows it rather than reproducing
+it: the status is a column, the detail behind it is the row's tooltip, and a simulation the
+user pinned by hand is announced above the list and marked on every row it produced. Pinning
+re-reads the document instead of relabelling it: another simulation means other nodes, and a
+row keeping the first answer under the second name would be a lie about the number in it.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -42,7 +49,6 @@ from PySide6.QtWidgets import (
 from . import theme
 from .hand_review import (
     MIN_LOSS_BB,
-    Candidate,
     NodeMatcher,
     Review,
     ReviewedDecision,
@@ -51,7 +57,7 @@ from .hand_review import (
     ranked_by_loss,
     session_spots,
 )
-from .strategy import provider_for
+from .simulation_catalog import Compatibility, Rake, SimulationCatalog, candidates_of, catalog_of
 from .trainer import Spot
 
 logger = logging.getLogger(__name__)
@@ -59,7 +65,9 @@ logger = logging.getLogger(__name__)
 #: What the tab says before a document has been read.
 EMPTY_STATE = "Load a hand review to compare real decisions against the solver."
 #: The columns, in the order they are read: what the hand was, what was done, what the solver
-#: held, and -- last, because that is the column the eye lands on -- what it cost.
+#: held, and -- last, because that is the column the eye lands on -- what it cost. The
+#: compatibility sits beside the loss because that is what qualifies it: a number the catalog
+#: would not stand behind is a bigger thing to know about a row than which node matched it.
 COLUMNS = (
     "Hand",
     "Played at",
@@ -71,11 +79,16 @@ COLUMNS = (
     "Solver mix",
     "Best",
     "EV loss (bb)",
+    "Compatible",
     "Match",
     "Why",
 )
 #: The column the loss is in, coloured rather than merely printed.
 LOSS_COLUMN = COLUMNS.index("EV loss (bb)")
+#: The column a row's whole compatibility judgement is attached to as a tooltip, along with
+#: the "why" column: the number and its qualification are the same story.
+COMPATIBILITY_COLUMN = COLUMNS.index("Compatible")
+WHY_COLUMN = COLUMNS.index("Why")
 #: The statuses, as the filter offers them, with what "any" means spelled out.
 STATUS_FILTERS = (
     ("any", "Every decision"),
@@ -84,8 +97,11 @@ STATUS_FILTERS = (
     ("ambiguous", "Ambiguous"),
     ("no node", "No matching node"),
     ("no simulation", "No compatible simulation"),
+    ("ambiguous simulation", "A simulation to choose"),
     ("unsupported", "Unsupported"),
 )
+#: What the override chooser offers when the catalog is left to decide.
+AUTO_SIMULATION = "Automatic (recommended)"
 #: How the list is ordered. Nothing here reorders the table itself; the order is applied to
 #: the reviewed decisions, and the rows are drawn in it.
 SORTS = (
@@ -100,35 +116,6 @@ ANY_SIMULATION = "Any simulation"
 #: How many decisions a "Train my mistakes" session takes. The same small number the module
 #: uses, so the button and the module cannot disagree about how much "my mistakes" is.
 MISTAKE_LIMIT = 10
-
-
-def candidates_of(
-    trees: Sequence[dict[str, Any]],
-    configs: Any,
-    builder: Callable[[dict[str, Any], Any], Any] | None = None,
-) -> list[Candidate]:
-    """Every configured simulation a real hand may be compared against.
-
-    A simulation whose folder cannot be read is skipped rather than fatal: a review against
-    the six trees that do load is worth having, and refusing it because the seventh has moved
-    would be a worse answer than the one it can give.
-    """
-    build = builder or provider_for
-    candidates: list[Candidate] = []
-    for tree in trees:
-        try:
-            provider = build(tree, configs)
-        except Exception as error:  # noqa: BLE001 - an unreadable tree is not a broken review
-            logger.warning("Skipping %s while reviewing hands: %s", tree.get("folder", "?"), error)
-            continue
-        candidates.append(
-            Candidate(
-                name=str(tree.get("table_key") or tree.get("folder") or ""),
-                provider=provider,
-                folder=str(tree.get("folder") or ""),
-            )
-        )
-    return candidates
 
 
 class HandReviewPanel(QWidget):
@@ -146,13 +133,25 @@ class HandReviewPanel(QWidget):
         self,
         trees_source: Callable[[], Sequence[dict[str, Any]]],
         tree_reader_configs: Any,
+        profiles_source: Callable[[], Mapping[str, Rake]] | None = None,
         parent: QWidget | None = None,
     ) -> None:
+        """Build the tab.
+
+        :param profiles_source: The ``[RakeProfiles]`` the user declared, if they declared
+            any. Read rather than passed, because the catalog is rebuilt on every load: a
+            profile added in the catalog screen is then in effect for the next document
+            without this tab knowing anything happened.
+        """
         super().__init__(parent)
         self.trees_source = trees_source
         self.tree_reader_configs = tree_reader_configs
+        self.profiles_source = profiles_source or (dict)
         self.review: Review | None = None
         self.matcher: NodeMatcher | None = None
+        self.catalog: SimulationCatalog | None = None
+        #: The document last read, so pinning another simulation can review it again.
+        self.path: str | None = None
         #: True while the filters are being rebuilt from a freshly read document, so their
         #: own repopulation does not look like the user changing one.
         self._filling = False
@@ -188,6 +187,12 @@ class HandReviewPanel(QWidget):
         controls.addWidget(self.mistakes_button)
         layout.addLayout(controls)
 
+        self.override_note = QLabel("")
+        self.override_note.setWordWrap(True)
+        self.override_note.setStyleSheet(f"color: {theme.EV_NEGATIVE};")
+        self.override_note.setVisible(False)
+        layout.addWidget(self.override_note)
+
         filters = QHBoxLayout()
         filters.setSpacing(6)
         self.status_choice = combo(STATUS_FILTERS, width=170)
@@ -215,6 +220,20 @@ class HandReviewPanel(QWidget):
         filters.addStretch(1)
         layout.addLayout(filters)
 
+        override_row = QHBoxLayout()
+        override_row.setSpacing(6)
+        self.override_choice = combo(((None, AUTO_SIMULATION),), width=260)
+        self.override_choice.setToolTip(
+            "Which simulation the catalog compares this document against.\n"
+            "Pin one to override the choice: the warning it carries is kept, and every row it\n"
+            "produced is marked as chosen by hand."
+        )
+        self.override_choice.currentIndexChanged.connect(self.on_override_changed)
+        override_row.addWidget(QLabel("Simulation:"))
+        override_row.addWidget(self.override_choice)
+        override_row.addStretch(1)
+        layout.addLayout(override_row)
+
         self.problems = QLabel("")
         self.problems.setWordWrap(True)
         self.problems.setStyleSheet(f"color: {theme.TEXT_MUTED};")
@@ -238,8 +257,10 @@ class HandReviewPanel(QWidget):
 
     def load(self, path: str) -> None:
         """Review one document, and say what could not be read."""
+        self.path = path
         candidates = candidates_of(self.trees_source() or [], self.tree_reader_configs)
-        self.matcher = NodeMatcher(candidates)
+        self.catalog = catalog_of(candidates, profiles=self.profiles_source())
+        self.matcher = NodeMatcher(candidates, catalog=self.catalog, manual=self.override())
         from .hand_review import review_document
 
         try:
@@ -260,13 +281,21 @@ class HandReviewPanel(QWidget):
         position no hand was played in, or a simulation nothing matched, is a filter whose
         every choice answers nothing.
         """
-        if self.review is None:
+        if self.review is None or self.matcher is None:
             return
         seats = sorted({entry.decision.hand.hero for entry in self.review.decisions})
         families = sorted({entry.decision.family for entry in self.review.decisions})
         simulations = sorted({entry.match.simulation for entry in self.review.decisions if entry.match.simulation})
         self._filling = True
         try:
+            # The simulations, not the ones this document happened to match: pinning one the
+            # catalog passed over is the whole point of the override.
+            pinned = self.override()
+            self.override_choice.clear()
+            self.override_choice.addItem(AUTO_SIMULATION, None)
+            for candidate in self.matcher.candidates:
+                self.override_choice.addItem(candidate.title, candidate.name)
+            self.override_choice.setCurrentIndex(max(self.override_choice.findData(pinned), 0))
             for widget, entries, any_label in (
                 (self.seat_choice, seats, ANY_SEAT),
                 (self.family_choice, families, ANY_FAMILY),
@@ -292,10 +321,57 @@ class HandReviewPanel(QWidget):
             notes.extend(f"• {problem}" for problem in self.review.report.problems[:5])
         if len(shown) != len(self.review.decisions):
             notes.append(f"Showing {len(shown)} of {len(self.review.decisions)} decisions.")
+        for comparison in self.comparisons():
+            if comparison.status != "exact" or comparison.overridden:
+                mark = " [chosen by hand]" if comparison.overridden else ""
+                notes.append(f"{comparison.name}: {comparison.status}{mark} — {comparison.reason()}")
         self.problems.setText("\n".join(notes))
+        self.show_override()
         self.table.setRowCount(0)
         for entry in shown:
             self.append(entry)
+
+    def override(self) -> str | None:
+        """The simulation the user pinned, or ``None`` when the catalog is left to decide."""
+        chosen = self.override_choice.currentData()
+        return None if chosen is None else str(chosen)
+
+    def on_override_changed(self, _index: int) -> None:
+        """A simulation was pinned: read the document again under it.
+
+        Read again rather than relabelled. Another simulation means other nodes -- which
+        decisions match at all, and what each of them is worth -- so a row that kept the
+        first simulation's numbers under the second one's name would be a worse lie than the
+        one the override is admitting to.
+        """
+        if self._filling:
+            return
+        if self.path:
+            self.load(self.path)
+        else:
+            self.show_override()
+
+    def show_override(self) -> None:
+        """Announce a hand-picked simulation, and that its warnings still stand."""
+        if self.override() is None:
+            self.override_note.setText("")
+            self.override_note.setVisible(False)
+            return
+        self.override_note.setText(
+            f"Override: {self.override_choice.currentText()}. The catalog did not choose this simulation; "
+            "every row keeps the compatibility it was judged with, and none of them is priced unless that "
+            "judgement allows it."
+        )
+        self.override_note.setVisible(True)
+
+    def comparisons(self) -> list[Compatibility]:
+        """The distinct compatibility judgements this document was reviewed with."""
+        seen: dict[str, Compatibility] = {}
+        for entry in self.review.decisions if self.review else ():
+            comparison = entry.match.comparison
+            if comparison is not None and comparison.simulation_id not in seen:
+                seen[comparison.simulation_id] = comparison
+        return list(seen.values())
 
     def shown(self) -> list[ReviewedDecision]:
         """The decisions the controls leave, in the order they are drawn.
@@ -349,14 +425,39 @@ class HandReviewPanel(QWidget):
             self.mix_text(entry),
             entry.best_action or "",
             "" if entry.ev_loss_bb is None else f"{entry.ev_loss_bb:.3f}",
+            entry.match.compatibility,
             entry.status,
-            entry.match.note,
+            self.why_text(entry),
         ]
         for column, text in enumerate(cells):
             item = QTableWidgetItem(str(text))
             if column == LOSS_COLUMN and entry.ev_loss_bb is not None:
                 item.setForeground(Qt.GlobalColor.red if entry.ev_loss_bb > 0 else Qt.GlobalColor.darkGreen)
             self.table.setItem(row, column, item)
+        # The whole judgement, not the status alone: a user who wants to know why 4.5% of rake
+        # was called close gets the per-dimension numbers rather than an adjective.
+        comparison = entry.match.comparison
+        if comparison is not None:
+            explain = comparison.explain()
+            for column in (COMPATIBILITY_COLUMN, WHY_COLUMN):
+                cell = self.table.item(row, column)
+                if cell is not None:
+                    cell.setToolTip(explain)
+
+    @staticmethod
+    def why_text(entry: ReviewedDecision) -> str:
+        """Why a row reads as it does: the match's own note, and any EV that was withheld.
+
+        Both, when there are both. "the tree holds no raise to 8bb here for SB" is about the
+        line; "not priced: approximate" is about the simulation the line was walked in. One
+        of them alone would leave the user answering a different question than the one the
+        row raises.
+        """
+        parts = [entry.match.note] if entry.match.note else []
+        comparison = entry.match.comparison
+        if comparison is not None and entry.match.matched and not comparison.comparable:
+            parts.append(f"not priced: {comparison.status} ({comparison.reason()})")
+        return " ".join(parts)
 
     @staticmethod
     def mix_text(entry: ReviewedDecision) -> str:
