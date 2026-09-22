@@ -425,12 +425,14 @@ def test_a_line_that_reaches_a_seat_the_tree_does_not_have_is_unsupported():
 
 
 def test_a_hand_of_another_table_size_has_no_compatible_simulation():
+    """And the note names the nearest simulation and what it disagreed about."""
     decisions = hand_of(act("SB", "Raise", 2.5), hero="SB", table_size=6).decisions()
 
     match = matcher_over(FakeSimulation()).match(decisions[0])
 
     assert match.status == "no simulation"
-    assert "6-handed" in match.note
+    assert "6-max" in match.note
+    assert "HU vs 6-max" in match.note
     assert match.matched is False
 
 

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from .csv_format import ROLES
 from .paths import SOURCE_CSV, SOURCE_MONKER, holds_csv_files, holds_range_files, resolve_range_folder
 from .settings import ConfigSource, Settings, get
+from .simulation_catalog import declared_meta
 from .tooltip import CreateToolTip
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,10 @@ class TreeSelector(QWidget):
                 "ante": ante_of(table, infos[4], tree_infos),
                 "kind": kind_of(table, tree_infos),
                 "columns": columns_of(table, tree_infos),
+                # What the user declared about this simulation beyond what its files say:
+                # rake, room aliases, blinds. Read here, beside the entry it describes, and
+                # carried on the tree dict so a review needs no configuration of its own.
+                "meta": declared_meta(table, tree_infos),
             }
             self.trees.append(table_dic)
         logger.debug("Processed tree information: %s", self.trees)

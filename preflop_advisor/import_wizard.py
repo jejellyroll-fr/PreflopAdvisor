@@ -47,6 +47,7 @@ from .paths import (
     validate_tree,
 )
 from .settings import ConfigSource, normalize, seats_for
+from .simulation_catalog import Rake, SimulationMeta, write_meta
 from .sizings import Sizing, sizing_for_code
 from .sqlite_store import parse_range_file
 from .tree_reader_helpers import action_code_names, is_action_name
@@ -178,6 +179,23 @@ class ImportRequest:
     #: user changed becomes part of the simulation, which is what makes a corrected column
     #: survive a restart and a re-import.
     columns: dict[str, str] = field(default_factory=dict)
+    #: What the user declared beyond what the folder states: the rake their room charges, the
+    #: room itself, whether they are playing cash or a tournament, the solver and its version.
+    #: Every one of them is a label or a term of play that no range file can carry, and every
+    #: one of them is optional -- a blank declares nothing rather than declaring an absence,
+    #: which is the difference a comparison later has to be able to read.
+    rake_percent: str = ""
+    rake_cap: str = ""
+    rake_cap_unit: str = "bb"
+    rake_profile: str = ""
+    context: str = ""
+    solver: str = ""
+    version: str = ""
+    sb_bb: str = ""
+    bb_bb: str = ""
+    aliases: str = ""
+    tags: str = ""
+    notes: str = ""
 
 
 def _stems(folder: Path, ending: str) -> list[str]:
@@ -644,6 +662,74 @@ def code_name_pairs(request: ImportRequest) -> Iterator[tuple[str, str]]:
         yield cleaned, code
 
 
+def _number(text: str, what: str, default: float) -> float:
+    """A number a user typed, read as one rather than silently dropped.
+
+    :raises SimulationScanError: on something that is not a number. A declared fact the
+        import quietly discarded would be worse than a refused import: the user would believe
+        the rake was recorded, and every comparison after it would read as undeclared.
+    """
+    cleaned = str(text).strip()
+    if not cleaned:
+        return default
+    try:
+        return float(cleaned)
+    except ValueError:
+        raise SimulationScanError(f"{what} must be a number, not {text!r}.") from None
+
+
+def _names(text: str) -> tuple[str, ...]:
+    """A comma-separated list a user typed, as names."""
+    return tuple(part.strip() for part in str(text).split(",") if part.strip())
+
+
+def declared_meta(request: ImportRequest) -> SimulationMeta:
+    """What this import declares about the simulation, as the catalog reads it.
+
+    Only the declared half is built: the variant, the seats, the depth, the ante and the
+    sizings are read back off the folder by the catalog, and copying them here would be one
+    more place for the two to disagree. What is here is what no file can state -- the rake,
+    the room, cash or tournament, the solver's version -- plus the blinds, which are declared
+    only if the user said what they were: a blind nobody stated is not a declaration.
+
+    :raises SimulationScanError: on a number that is not one.
+    """
+    rake = Rake(
+        percent=_number(request.rake_percent, "The rake percentage", 0.0) if request.rake_percent.strip() else None,
+        cap=_number(request.rake_cap, "The rake cap", 0.0) if request.rake_cap.strip() else None,
+        cap_unit=request.rake_cap_unit or "bb",
+        profile=request.rake_profile.strip(),
+    )
+    assumed: list[str] = []
+    if not rake.declared:
+        assumed.append("rake")
+    if not request.context.strip():
+        assumed.append("context")
+    if not request.version.strip():
+        assumed.append("version")
+    for name, value in (("sb_bb", request.sb_bb), ("bb_bb", request.bb_bb)):
+        if not value.strip():
+            assumed.append(name)
+    return SimulationMeta(
+        simulation_id=request.name,
+        name=request.name,
+        game=request.game,
+        players=request.players,
+        stack_bb=_number(request.stack_bb, "The stack depth", 100.0),
+        ante_bb=_number(request.ante_bb, "The ante", 0.0),
+        sb_bb=_number(request.sb_bb, "The small blind", 0.5),
+        bb_bb=_number(request.bb_bb, "The big blind", 1.0),
+        context=request.context.strip().lower(),
+        rake=rake,
+        solver=request.solver.strip(),
+        version=request.version.strip(),
+        aliases=_names(request.aliases),
+        tags=_names(request.tags),
+        notes=request.notes.strip(),
+        assumed=tuple(assumed),
+    )
+
+
 def register_simulation(config: LayeredConfig, request: ImportRequest) -> str:
     """Write a confirmed import into the user's configuration and save it.
 
@@ -687,6 +773,10 @@ def register_simulation(config: LayeredConfig, request: ImportRequest) -> str:
         config.set("TreeToolTips", key, request.tooltip)
     else:
         config.reset("TreeToolTips", key)
+    # What the user declared about their own game, stored beside the tree it describes and
+    # written through the catalog's own writer -- so an import and the catalog screen leave
+    # the configuration in exactly one shape.
+    write_meta(config, key, declared_meta(request))
     config.save()
     logger.info("Imported %s as %s", request.folder, key)
     return key

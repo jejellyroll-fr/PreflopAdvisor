@@ -38,6 +38,8 @@ from .paths import package_file
 from .position_selector import PositionSelector
 from .randomizer import RandomButton
 from .settings import ConfigSource, Settings, normalize
+from .simulation_catalog import read_profiles
+from .simulation_catalog_panel import CatalogPanel
 from .strategy import Node, node_identity
 from .trainer import Spot
 from .trainer_panel import TrainerPanel
@@ -219,8 +221,14 @@ class MainWindow(QMainWindow):
 
         # The review reads every configured simulation at once rather than the selected one:
         # a real hand played six-handed has to be compared against the six-handed tree, and
-        # the one on screen may be another game entirely.
-        self.review = HandReviewPanel(lambda: self.tree_selector.trees, tree_reader_settings)
+        # the one on screen may be another game entirely. The rake profiles are read on every
+        # load, so the one just declared in the Simulations tab is in effect for the next
+        # document without the review knowing anything happened.
+        self.review = HandReviewPanel(
+            lambda: self.tree_selector.trees,
+            tree_reader_settings,
+            lambda: read_profiles(self.configs.section("RakeProfiles")),
+        )
         self.review.trainRequested.connect(self.train_spots)
 
         # The dashboard reads the selected tree the way the Explorer does, one bounded survey
@@ -234,6 +242,12 @@ class MainWindow(QMainWindow):
         self.analytics.trainRequested.connect(self.train_spots)
         self.analytics.openRequested.connect(self.open_node)
 
+        # The catalog screen edits what a user declares about their own simulations -- rake,
+        # room aliases, cash or tournament -- which is what decides whether a real hand may be
+        # compared against them. A save is a configuration change, so the window redraws.
+        self.simulations = CatalogPanel(self.configs, lambda: self.tree_selector.trees, tree_reader_settings)
+        self.simulations.catalogChanged.connect(self.on_configuration_changed)
+
         # The configuration tab edits the user layer of the config and, on save, asks the
         # window to redraw with the new values and rebuild the sim list if it changed.
         self.config_tab = ConfigTab(self.configs)
@@ -245,6 +259,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.explorer, "Explorer")
         self.tabs.addTab(self.review, "Review Hands")
         self.tabs.addTab(self.analytics, "Analytics")
+        self.tabs.addTab(self.simulations, "Simulations")
         self.tabs.addTab(self.config_tab, "Configuration")
         main_layout.addWidget(self.tabs, 0, 0)
 
@@ -419,6 +434,10 @@ class MainWindow(QMainWindow):
         # that folder means -- another stack, another kind, another column mapping. Forgotten
         # here so the next opening of the tab reads it as it is now.
         self.analytics.forget()
+        # And the catalog is re-read for the same reason: an import or a saved profile changes
+        # what each simulation is, and a list still showing the old rake would be the one
+        # screen a user checks before trusting a review.
+        self.simulations.refresh()
         self.update_output_frame()
 
     def update_output_frame(self) -> None:

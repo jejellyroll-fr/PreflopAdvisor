@@ -10,7 +10,7 @@ import json
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShowEvent
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QTableWidgetItem
 
 from preflop_advisor import gui as gui_module
 from preflop_advisor.analytics_panel import EMPTY_STATE as ANALYTICS_EMPTY_STATE
@@ -19,11 +19,14 @@ from preflop_advisor.config_store import LayeredConfig
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
 from preflop_advisor.hand_classes import classify
 from preflop_advisor.hand_convert_helper import convert_hand
+from preflop_advisor.hand_review_panel import COLUMNS as REVIEW_COLUMNS
 from preflop_advisor.history import TrainingAnswer, default_path
 from preflop_advisor.node_explorer_panel import EMPTY_STATE
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
 from preflop_advisor.sampler import DEFAULT_POOL, MODES
+from preflop_advisor.simulation_catalog_panel import COLUMNS as CATALOG_COLUMNS
+from preflop_advisor.simulation_catalog_panel import CatalogPanel
 from preflop_advisor.strategy import Node, provider_for
 from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
@@ -582,7 +585,15 @@ def test_showing_the_window_trims_it(qtbot, main_window):
 def test_the_window_offers_the_advisor_the_trainer_and_the_explorer(main_window):
     tabs = [main_window.tabs.tabText(index) for index in range(main_window.tabs.count())]
 
-    assert tabs == ["Advisor", "Trainer", "Explorer", "Review Hands", "Analytics", "Configuration"]
+    assert tabs == [
+        "Advisor",
+        "Trainer",
+        "Explorer",
+        "Review Hands",
+        "Analytics",
+        "Simulations",
+        "Configuration",
+    ]
 
 
 def test_dealing_asks_a_spot_the_selected_tree_can_answer(main_window):
@@ -1873,3 +1884,253 @@ def test_a_saved_setting_makes_the_dashboard_survey_again(main_window):
     main_window.on_configuration_changed()
 
     assert panel._surveyed is None
+
+
+# --------------------------------------------------------------------------------------
+# The Simulations catalog
+
+
+#: One configured simulation, pointed at the repository's heads-up export. The ``meta`` keys
+#: are the declared ones the catalog reads, so a save has somewhere to land and a test can
+#: start from a simulation somebody has already described.
+HU_SIMULATION = {
+    "table_key": "Table12",
+    "plrs": 2,
+    "bb": 100,
+    "game": "PLO",
+    "folder": "ranges/HU-100bb-with-limp",
+    "infos": "no Rake",
+    "ante": 0.0,
+    "kind": "monker",
+    "meta": {},
+}
+
+
+@pytest.fixture
+def catalog(qtbot, tmp_path, tree_configs):
+    """The catalog panel over a configuration of this test's own."""
+    config = LayeredConfig(PACKAGE_CONFIG, user_path=tmp_path / "config.ini")
+    panel = CatalogPanel(config, lambda: [HU_SIMULATION], tree_configs)
+    qtbot.addWidget(panel)
+    panel.refresh()
+    return panel
+
+
+def test_the_catalog_lists_what_the_simulation_states_and_what_nobody_declared(catalog):
+    assert catalog.table.rowCount() == 1
+    row = [catalog.table.item(0, column).text() for column in range(len(CATALOG_COLUMNS))]
+
+    assert row[0].startswith("Table12")
+    assert row[1] == "PLO"
+    assert row[2] == "HU"
+    assert row[3] == "100bb"
+    assert row[5] == "not declared", "the rake nobody wrote down is said to be missing"
+    assert "rake" in row[CATALOG_COLUMNS.index("Metadata")]
+    assert row[CATALOG_COLUMNS.index("State")] == "enabled"
+    assert "PLO HU 100bb" in catalog.facts.text()
+    assert "read from the simulation" in catalog.facts.text()
+
+
+def test_declaring_a_rake_and_a_room_writes_them_beside_the_tree(catalog):
+    catalog.rake_percent_edit.setText("4.5")
+    catalog.rake_cap_edit.setText("3")
+    catalog.rake_cap_unit_combo.setCurrentText("bb")
+    catalog.context_combo.setCurrentIndex(catalog.context_combo.findData("cash"))
+    catalog.aliases_edit.setText("PokerStars PLO50, ps_plo_6max_midstakes")
+    catalog.sb_edit.setText("0.5")
+    catalog.bb_edit.setText("1")
+
+    catalog.save()
+
+    assert catalog.config.get("TreeInfos", "Table12.rake_percent") == "4.5"
+    assert catalog.config.get("TreeInfos", "Table12.rake_cap") == "3"
+    assert catalog.config.get("TreeInfos", "Table12.context") == "cash"
+    assert catalog.config.get("TreeInfos", "Table12.aliases") == "PokerStars PLO50, ps_plo_6max_midstakes"
+    assert catalog.config.get("TreeInfos", "Table12.bb_bb") == "1"
+    assert catalog.entries[0].meta.rake.percent == pytest.approx(4.5), "and the row reads it back"
+    assert catalog.table.item(0, CATALOG_COLUMNS.index("Rake")).text() == "4.5% cap 3bb"
+
+
+def test_a_field_left_empty_declares_nothing_at_all(catalog):
+    """The difference between "no rake" and "nobody said": one is a fact, the other is not."""
+    catalog.rake_percent_edit.setText("")
+
+    catalog.save()
+
+    assert catalog.config.get("TreeInfos", "Table12.rake_percent") in (None, "")
+    assert catalog.entries[0].meta.rake.percent is None
+    assert catalog.entries[0].meta.origin("rake") == "assumed"
+
+
+def test_a_rake_typed_as_something_other_than_a_number_is_refused_not_dropped(catalog):
+    catalog.rake_percent_edit.setText("about five")
+
+    catalog.save()
+
+    assert "must be a number" in catalog.status.text()
+    assert catalog.config.get("TreeInfos", "Table12.rake_percent") in (None, "")
+
+
+def test_a_profile_declared_once_resolves_the_rake_of_a_simulation_that_names_it(catalog):
+    catalog.add_profile()
+    row = catalog.profiles.rowCount() - 1
+    for column, text in enumerate(("PS_PLO50", "4.5", "3", "bb")):
+        catalog.profiles.setItem(row, column, QTableWidgetItem(text))
+    catalog.rake_profile_edit.setText("PS_PLO50")
+
+    catalog.save()
+
+    assert catalog.config.get("RakeProfiles", "PS_PLO50") == "4.5,3,bb"
+    assert catalog.entries[0].meta.rake.percent == pytest.approx(4.5)
+    assert catalog.entries[0].meta.rake.cap == pytest.approx(3.0)
+
+
+def test_a_profile_the_user_removes_is_dropped_from_the_configuration(catalog):
+    catalog.config.set("RakeProfiles", "OLD_ROOM", "9,1,bb")
+    catalog.fill_profiles()
+    catalog.profiles.selectRow(0)
+
+    catalog.remove_profile()
+    catalog.save()
+
+    assert catalog.config.get("RakeProfiles", "OLD_ROOM") in (None, "")
+
+
+def test_disabling_a_simulation_takes_it_out_of_matching(catalog):
+    catalog.enabled_check.setChecked(False)
+
+    catalog.save()
+
+    assert catalog.config.get("TreeInfos", "Table12.enabled") == "no"
+    assert catalog.entries[0].meta.enabled is False
+    assert catalog.table.item(0, CATALOG_COLUMNS.index("State")).text() == "disabled"
+
+
+def test_a_simulation_whose_folder_has_moved_is_listed_and_explained(qtbot, tmp_path, tree_configs):
+    """It is still configured, it takes part in nothing, and the row says why."""
+    config = LayeredConfig(PACKAGE_CONFIG, user_path=tmp_path / "config.ini")
+    panel = CatalogPanel(config, lambda: [{**HU_SIMULATION, "folder": "no/such/tree"}], tree_configs)
+    qtbot.addWidget(panel)
+
+    panel.refresh()
+
+    assert panel.table.rowCount() == 1
+    assert "could not be opened" in panel.table.item(0, CATALOG_COLUMNS.index("State")).text()
+    assert "no/such/tree" in panel.entries[0].note
+
+
+def test_a_save_asks_the_window_to_re_read_the_configuration(catalog, qtbot):
+    with qtbot.waitSignal(catalog.catalogChanged, timeout=1000):
+        catalog.save()
+
+    assert "Saved" in catalog.status.text()
+
+
+def test_the_window_has_a_tab_for_the_catalog(main_window):
+    assert main_window.simulations is not None
+    assert "Simulations" in [main_window.tabs.tabText(i) for i in range(main_window.tabs.count())]
+
+
+# --------------------------------------------------------------------------------------
+# Reviewing against a simulation the catalog chose
+
+
+#: Two tables that are the same game except for the rake claimed for them, so the choice
+#: between them is a judgement rather than a search.
+RAKE_TABLES = (
+    {
+        "plrs": 2,
+        "bb": 100,
+        "game": "PLO",
+        "table_key": "TableA",
+        "folder": "folder-a",
+        "infos": "low rake",
+        "ante": 0.0,
+        "kind": "csv",
+        "meta": {"rake_percent": "2"},
+    },
+    {
+        "plrs": 2,
+        "bb": 100,
+        "game": "PLO",
+        "table_key": "TableB",
+        "folder": "folder-b",
+        "infos": "high rake",
+        "ante": 0.0,
+        "kind": "csv",
+        "meta": {"rake_percent": "8"},
+    },
+)
+
+
+def raked_tables(folder):
+    """The two rake tables, both pointed at a folder that holds the one solution file."""
+    return [{**table, "folder": str(folder)} for table in RAKE_TABLES]
+
+
+def test_the_review_shows_the_compatibility_it_judged_each_row_with(review):
+    column = REVIEW_COLUMNS.index("Compatible")
+    unsized = next(
+        row
+        for row in range(review.table.rowCount())
+        if review.table.item(row, REVIEW_COLUMNS.index("Hand")).text() == "unsized"
+    )
+
+    assert review.table.horizontalHeaderItem(column).text() == "Compatible"
+    assert review.table.item(unsized, column).text() == "incompatible"
+    assert "this simulation opens 2.5bb" in review.table.item(unsized, column).toolTip()
+    assert "EV comparison: disabled" in review.table.item(unsized, column).toolTip()
+
+
+def test_an_approximate_simulation_is_walked_and_never_priced(review, tmp_path):
+    """A hand can be matched in a tree 12bb off and still cost nothing that can be said."""
+    review.trees_source = lambda: [{**HU_SIMULATION, "folder": str(tmp_path), "kind": "csv", "bb": 88}]
+    review.load(review.path)
+    called = next(entry for entry in review.shown() if entry.decision.hand.hand_id == "called")
+
+    assert called.match.matched is True, "the node is there"
+    assert called.match.comparison is not None
+    assert called.match.comparison.status == "approximate"
+    assert called.ev_loss_bb is None, "and it is not priced across a gap the catalog admits to"
+    assert "not priced: approximate" in review.why_text(called)
+
+
+def test_a_row_the_catalog_would_not_price_says_which_dimension_stopped_it(review):
+    unsized = next(entry for entry in review.shown() if entry.decision.hand.hand_id == "unsized")
+
+    assert unsized.ev_loss_bb is None
+    assert unsized.match.comparable is False
+    assert unsized.match.comparison is not None
+    assert unsized.match.comparison.of("sizings").status == "incompatible"
+
+
+def test_pinning_a_simulation_re_reads_the_document_under_it(review, tmp_path):
+    review.trees_source = lambda: raked_tables(tmp_path)
+    review.load(review.path)
+
+    assert review.override_choice.count() == 3, "automatic, and the two configured"
+
+    review.override_choice.setCurrentIndex(review.override_choice.findData("TableB"))
+
+    assert review.matcher.manual == "TableB"
+    assert review.review is not None
+    assert "Override" in review.override_note.text()
+    assert "TableB" in review.override_note.text()
+    assert all(
+        entry.match.comparison is None or entry.match.comparison.overridden
+        for entry in review.review.decisions
+        if entry.match.comparison is not None
+    )
+    assert "[chosen by hand]" in review.problems.text()
+
+
+def test_an_automatic_choice_names_the_simulation_it_used(review, tmp_path):
+    review.trees_source = lambda: raked_tables(tmp_path)
+    review.load(review.path)
+
+    assert review.override() is None
+    assert review.override_note.text() == ""
+    assert review.matcher is not None
+    assert review.matcher.catalog is not None
+    assert [entry.simulation_id for entry in review.matcher.catalog.entries] == ["TableA", "TableB"]
+    assert review.override_choice.itemText(0) == "Automatic (recommended)"
