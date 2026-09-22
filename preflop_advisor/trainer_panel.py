@@ -9,12 +9,15 @@ answer.
 import logging
 import random
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QShowEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -31,7 +34,8 @@ from .settings import ConfigSource, get
 from .sizings import Sizing
 from .strategy import StrategyProvider, StrategyResult, node_for, provider_for
 from .table_state import table_state
-from .trainer import Question, Session, Spot, deal, gradable, grade, hand_for_key, spots_for
+from .trainer import Question, Session, Spot, deal, gradable, grade, hand_for_key
+from .trainer_filters import FilterOptions, TrainerFilter, filtered_spots
 from .trainer_table import TrainerTable
 from .types import ActionSequence
 
@@ -39,10 +43,6 @@ logger = logging.getLogger(__name__)
 
 #: Cards per hand, by the game a tree declares. Matches what the card selector offers.
 CARDS_PER_GAME = {"NL": 2, "PLO": 4, "PLO8": 4, "PLO5": 5}
-#: How many of a node's own hands to try when a randomly dealt one was not in it. Drawn
-#: from what the node holds, so the first realisable one answers; the rest is headroom for
-#: a key the converter cannot deal back out.
-NODE_SAMPLES = 8
 #: Height of the revealed strategy tiles. They read at a glance; they do not need the
 #: whole panel, and the room below is where the tally sits.
 TILE_HEIGHT = 120
@@ -50,6 +50,11 @@ TILE_HEIGHT = 120
 EMPTY_STATE = "Pick a tree in the Advisor tab, then deal a hand."
 #: Chooser entry standing for the whole catalogue.
 ANY_SPOT = "Any situation"
+#: Labels of the filter bar's list entries that stand for "no restriction".
+ANY_SEAT = "Any seat"
+ANY_VILLAIN = "Any opponent"
+ANY_FAMILY = "Any line"
+ANY_CLASS = "Any hand"
 
 
 class TrainerPanel(QWidget):
@@ -80,6 +85,11 @@ class TrainerPanel(QWidget):
         #: True while the chooser is being rebuilt, so its own rebuild does not look like
         #: the user choosing something.
         self._filling_choice = False
+        #: What the session is restricted to. Everything, until the bar says otherwise.
+        self.filter = TrainerFilter()
+        #: What the bar was last filled with, so it is only rebuilt when it changed.
+        self._filter_options: FilterOptions | None = None
+        self._filling_filters = False
 
         # What the table is worth, replaced by whichever tree the next hand comes from.
         # Held from the start rather than only once a hand has been dealt: a panel whose
@@ -105,6 +115,36 @@ class TrainerPanel(QWidget):
         chooser.addWidget(self.spot_choice)
         chooser.addStretch(1)
         layout.addLayout(chooser)
+
+        filters = QHBoxLayout()
+        filters.setSpacing(6)
+        self.hero_filter = QComboBox()
+        self.villain_filter = QComboBox()
+        self.family_filter = QComboBox()
+        self.class_filter = QComboBox()
+        self.mixed_filter = QCheckBox("Mixed only")
+        self.mixed_filter.setToolTip("Ask only decisions the solver plays two ways or more.")
+        self.frequency_filter = QDoubleSpinBox()
+        self.frequency_filter.setRange(0.0, 1.0)
+        self.frequency_filter.setSingleStep(0.05)
+        self.frequency_filter.setDecimals(2)
+        self.frequency_filter.setToolTip("Skip hands whose most played action is taken less often than this.")
+        for widget, width in ((self.hero_filter, 110), (self.villain_filter, 130), (self.family_filter, 110)):
+            widget.setMinimumWidth(width)
+            filters.addWidget(widget)
+        filters.addWidget(self.class_filter)
+        filters.addWidget(self.mixed_filter)
+        filters.addWidget(QLabel("Min freq:"))
+        filters.addWidget(self.frequency_filter)
+        filters.addStretch(1)
+        self.filter_label = QLabel("")
+        self.filter_label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+        filters.addWidget(self.filter_label)
+        layout.addLayout(filters)
+        for widget in (self.hero_filter, self.villain_filter, self.family_filter, self.class_filter):
+            widget.currentIndexChanged.connect(self.on_filter_changed)
+        self.mixed_filter.toggled.connect(self.on_filter_changed)
+        self.frequency_filter.valueChanged.connect(self.on_filter_changed)
 
         self.spot_label = QLabel(EMPTY_STATE)
         self.spot_label.setFont(QFont(theme.FONT_FAMILY, 15, QFont.Weight.Bold))
@@ -179,31 +219,99 @@ class TrainerPanel(QWidget):
 
         The spot carries the node's own line of play, already explicit, so the provider
         resolves it to the decision the explorer showed -- and dealing again asks that
-        node another hand, which is the point of drilling it.
+        node another hand, which is the point of drilling it. The filter records the same
+        line, so a session pinned to a node says so if it ever finds nothing.
 
         The chooser is left to say so as well; see :meth:`offer_spots`. Hiding the pin
         behind a chooser that reads "Any situation" leaves no way out of it: the entry it
         already displays emits nothing when picked again.
         """
         self.pinned_spot = spot
+        self.filter = replace(self.filter, exact_line=tuple(spot.line))
         # Remembered by its label, so the entry the chooser shows keeps meaning the same
         # decision after the pin is released and the catalogue is asked for again.
         self.extra_spots[spot.label] = spot
         self.next_hand()
 
+    # ------------------------------------------------------------------
+    # The filters
+    # ------------------------------------------------------------------
+
+    def on_filter_changed(self, _value: object = None) -> None:
+        """Read the bar into the filter, and re-offer the situations it leaves."""
+        if self._filling_filters:
+            return
+        self.filter = TrainerFilter(
+            hero=self.hero_filter.currentData(),
+            villain=self.villain_filter.currentData(),
+            family=self.family_filter.currentData(),
+            hand_class=self.class_filter.currentData(),
+            mixed_only=self.mixed_filter.isChecked(),
+            min_frequency=self.frequency_filter.value(),
+            exact_line=tuple(self.pinned_spot.line) if self.pinned_spot else (),
+            game=self.game,
+        )
+        self.show_filter()
+        self.refresh_spots()
+
+    def show_filter(self) -> None:
+        """Say what the session is restricted to, so an empty session can be explained."""
+        self.filter_label.setText(f"Filtered to {self.filter.describe()}" if self.filter.active() else "")
+
+    def update_filter_options(self, seats: list[str], game: str) -> None:
+        """Fill the bar with what this table and this game can be filtered on.
+
+        Only when the options actually changed: rebuilding a combo box on every deal would
+        take the choice away from under the user's cursor, and the seats and the game are
+        the only things that decide what may be offered.
+        """
+        options = FilterOptions.of(seats, game)
+        if options == self._filter_options:
+            return
+        self._filter_options = options
+        self._filling_filters = True
+        try:
+            for combo, entries in (
+                (self.hero_filter, [(ANY_SEAT, None), *((seat, seat) for seat in options.seats)]),
+                (self.villain_filter, [(ANY_VILLAIN, None), *((seat, seat) for seat in options.seats)]),
+                (self.family_filter, [(ANY_FAMILY, None), *((name, name) for name in options.families)]),
+                (self.class_filter, [(ANY_CLASS, None), *((name, name) for name in options.classes)]),
+            ):
+                chosen = combo.currentData()
+                combo.clear()
+                for label, data in entries:
+                    combo.addItem(label, data)
+                index = combo.findData(chosen)
+                combo.setCurrentIndex(max(index, 0))
+        finally:
+            self._filling_filters = False
+        # The bar just changed under the filter: a selection this table or this game does
+        # not offer has been reset to "any", and suppressing the change signal left the
+        # filter holding the value the bar no longer shows -- a PLO hand class applied to
+        # a hold'em tree, which matches nothing while the label claims there is no filter.
+        self.on_filter_changed()
+
     def on_spot_choice_changed(self, _label: str) -> None:
         """A situation the user chose for themselves abandons a pinned node.
 
         Left pinned, the trainer would go on asking the node while the chooser said
-        something else -- and the chooser is how a user says they are done with it.
+        something else -- and the chooser is how a user says they are done with it. The
+        pinned line leaves the filter with it: kept, it would narrow the very catalogue
+        the user is choosing from to the one node they just walked away from.
         """
-        if self._filling_choice:
+        if self._filling_choice or self.pinned_spot is None:
             return
         self.pinned_spot = None
+        self.filter = replace(self.filter, exact_line=())
+        self.show_filter()
 
     def next_hand(self) -> None:
         """Deal a new spot and hand, or say why it could not be done."""
         self.clear_answer()
+        # Held until a question actually comes back: a panel that failed to draw must not
+        # go on offering the previous hand to grade, and asking whether there is a question
+        # is how everything else in here -- and in the tests -- reads the panel's state.
+        self.question = None
         tree = self.tree_source()
         if tree is None:
             self.spot_label.setText(EMPTY_STATE)
@@ -253,9 +361,15 @@ class TrainerPanel(QWidget):
         metadata = provider.metadata()
         cards = CARDS_PER_GAME.get(metadata.game.upper(), 4)
         self.offer_spots(list(metadata.seats))
+        self.game = metadata.game
+        self.update_filter_options(list(metadata.seats), metadata.game)
         if self.pinned_spot is not None:
             # One decision, asked for by name: there is nothing to shuffle it against.
-            spots = [self.pinned_spot]
+            # Unless the filters exclude it -- the pin is held while the bar narrows, and
+            # drilling a seat or a line the bar says is filtered out contradicts it. The
+            # session then reports what it cannot match, which is what an empty filter
+            # state already reads as.
+            spots = [self.pinned_spot] if self.filter.allows_spot(self.pinned_spot) else []
         else:
             spots = self.chosen_spots(list(metadata.seats))
             self.rng.shuffle(spots)
@@ -270,33 +384,55 @@ class TrainerPanel(QWidget):
         self.ante = metadata.ante_bb
         self.seats = list(metadata.seats)
         for spot in spots:
-            node = provider.resolve(node_for(spot.hero, spot.line))
-            if node is None or not provider.has_node(node):
-                # Nothing behind this line at all: no hand would find anything.
-                continue
-
-            hand = deal(cards, self.rng)
-            results = provider.strategy(node, hand)
-            if self.gradable(results):
-                return self.question_for(provider, spot, hand, results)
-
-            # The spot did not answer for that hand. Rather than deal again and hope, ask
-            # what the node holds and deal one of those back out. A node whose files are
-            # all empty -- a truncated export can leave one -- has nothing to draw from
-            # and is left after this one look.
-            keys = provider.hands_at(node)
-            if not keys:
-                continue
-
-            for key in self.rng.sample(keys, min(len(keys), NODE_SAMPLES)):
-                held = hand_for_key(key, self.rng)
-                if held is None:
-                    continue
-                results = provider.strategy(node, held)
-                if self.gradable(results):
-                    return self.question_for(provider, spot, held, results)
+            question = self.candidate(provider, spot, cards)
+            if question is not None:
+                return question
         logger.warning("No spot of %s answered", tree.get("folder"))
         return None
+
+    def candidate(self, provider: StrategyProvider, spot: Spot, cards: int) -> Question | None:
+        """A question this spot can answer, or ``None`` when the filters leave it nothing.
+
+        The spot did not answer for the hand dealt? Rather than deal again and hope, the
+        node is asked which hands it holds and one of those is dealt back out. A node
+        whose files are all empty -- a truncated export can leave one -- has nothing to
+        draw from and is left after this one look.
+
+        Every hand tried goes through the hand-class filter, the dealt one included: a
+        session asked for double-suited hands must not be answered with a rainbow one
+        because that is what came out of the deck.
+        """
+        node = provider.resolve(node_for(spot.hero, spot.line))
+        if node is None or not provider.has_node(node):
+            # Nothing behind this line at all: no hand would find anything.
+            return None
+
+        hand = deal(cards, self.rng)
+        results = provider.strategy(node, hand)
+        if self.asks(results, hand):
+            return self.question_for(provider, spot, hand, results)
+
+        keys = provider.hands_at(node)
+        if not keys:
+            return None
+        # Every key is looked at, not a sample of them. A class filter narrows sixteen
+        # thousand hands to a few hundred, and eight arbitrary draws would report "nothing
+        # matches" while the node holds plenty -- sampling cannot witness an absence.
+        # Shuffled, so the hand asked still varies from deal to deal.
+        order = list(keys)
+        self.rng.shuffle(order)
+        for key in order:
+            held = hand_for_key(key, self.rng)
+            if held is None or not self.filter.allows_hand(held):
+                continue
+            results = provider.strategy(node, held)
+            if self.asks(results, held):
+                return self.question_for(provider, spot, held, results)
+        return None
+
+    def asks(self, results: tuple[StrategyResult, ...], hand: str) -> bool:
+        """Whether this node's answer to this hand is gradable and within the filter."""
+        return self.gradable(results) and self.filter.allows_strategy(results) and self.filter.allows_hand(hand)
 
     def question_for(
         self,
@@ -331,15 +467,16 @@ class TrainerPanel(QWidget):
     def offer_spots(self, seats: list[str]) -> None:
         """Fill the chooser with the situations a table of these seats has.
 
-        Rebuilt only when the entries or the selection have to change, so choosing a
-        situation survives dealing the next hand -- which is the point of choosing one.
+        Rebuilt when the seats change or when a filter narrows what is offered, so
+        choosing a situation survives dealing the next hand -- which is the point of
+        choosing one -- while a situation the filter just excluded does not.
 
         A pinned node is one of the entries, wherever it came from: the explorer drills
         decisions the catalogue has no family for (a squeeze off a limp is not one), and a
         pin the chooser does not show is a pin the user cannot leave -- picking the entry
         it already displays emits nothing at all.
         """
-        labels = [ANY_SPOT] + [spot.label for spot in spots_for(seats)]
+        labels = [ANY_SPOT] + [spot.label for spot in self.menu_spots(seats)]
         labels.extend(label for label in self.extra_spots if label not in labels)
         pinned = None if self.pinned_spot is None else self.pinned_spot.label
         chosen = pinned if pinned is not None else self.spot_choice.currentText()
@@ -355,9 +492,19 @@ class TrainerPanel(QWidget):
         finally:
             self._filling_choice = False
 
+    def menu_spots(self, seats: list[str]) -> list[Spot]:
+        """The situations the chooser offers: what the filters leave.
+
+        The exact line of a pinned node is lifted here, deliberately. A pinned node is one
+        situation among the others, not a restriction on choosing between them: left in the
+        filter, the menu would hold that node alone and there would be no way back to the
+        catalogue.
+        """
+        return filtered_spots(seats, replace(self.filter, exact_line=()))
+
     def chosen_spots(self, seats: list[str]) -> list[Spot]:
-        """The catalogue, or the one situation asked for."""
-        catalogue = spots_for(seats)
+        """The catalogue the filters leave, or the one situation asked for."""
+        catalogue = filtered_spots(seats, self.filter)
         chosen = self.spot_choice.currentText()
         if chosen == ANY_SPOT:
             return catalogue
@@ -367,6 +514,8 @@ class TrainerPanel(QWidget):
 
     def nothing_to_ask(self) -> str:
         """Why no question came back, in the terms the player chose."""
+        if self.filter.active():
+            return f"Nothing matches {self.filter.describe()}; widen the filters or pick another tree."
         chosen = self.spot_choice.currentText()
         if chosen != ANY_SPOT:
             return f"{chosen} has no ranges in this tree."

@@ -14,6 +14,7 @@ from preflop_advisor import gui as gui_module
 from preflop_advisor.card_selector import CardSelector
 from preflop_advisor.config_store import LayeredConfig
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
+from preflop_advisor.hand_classes import classify
 from preflop_advisor.hand_convert_helper import convert_hand
 from preflop_advisor.node_explorer_panel import EMPTY_STATE
 from preflop_advisor.outputframe import short_action_label
@@ -698,13 +699,12 @@ def test_every_spot_is_looked_at_before_calling_a_tree_empty(main_window, monkey
     A nine-handed catalogue is 81 spots; a tree exporting one line would have been
     declared empty better than half the time.
     """
-    from preflop_advisor import trainer_panel
-    from preflop_advisor.trainer import Spot
+    from preflop_advisor import trainer_filters
 
     # "UTG" is not seated at the heads-up tree, so these answer nothing.
     barren = [Spot(f"nowhere {index}", "UTG", []) for index in range(60)]
     real = Spot("SB first in", "SB", [])
-    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [*barren, real])
+    monkeypatch.setattr(trainer_filters, "spots_for", lambda seats: [*barren, real])
 
     main_window.trainer.next_hand()
 
@@ -713,10 +713,9 @@ def test_every_spot_is_looked_at_before_calling_a_tree_empty(main_window, monkey
 
 
 def test_a_tree_with_nothing_to_drill_says_so(main_window, monkeypatch):
-    from preflop_advisor import trainer_panel
-    from preflop_advisor.trainer import Spot
+    from preflop_advisor import trainer_filters
 
-    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "UTG", [])])
+    monkeypatch.setattr(trainer_filters, "spots_for", lambda seats: [Spot("nowhere", "UTG", [])])
 
     main_window.trainer.next_hand()
 
@@ -805,13 +804,13 @@ def test_a_line_with_no_file_is_left_without_dealing_for_it(main_window, tmp_pat
     which is the one question that tells "this tree skipped the line" from "this node does
     not hold the hand".
     """
-    from preflop_advisor import trainer_panel
+    from preflop_advisor import trainer_filters, trainer_panel
     from preflop_advisor.trainer import Spot
 
     folder = tmp_path / "empty"
     folder.mkdir()
     main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
-    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "SB", [])])
+    monkeypatch.setattr(trainer_filters, "spots_for", lambda seats: [Spot("nowhere", "SB", [])])
 
     deals = []
     monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: deals.append(1) or "AhKs4h3s")
@@ -827,14 +826,14 @@ def test_a_node_whose_files_are_empty_is_left_after_one_look(main_window, tmp_pa
     is asked which hands it has. Having none, dealing again is only a slower way of
     finding that out.
     """
-    from preflop_advisor import trainer_panel
+    from preflop_advisor import trainer_filters, trainer_panel
     from preflop_advisor.trainer import Spot
 
     folder = tmp_path / "empty-file"
     folder.mkdir()
     (folder / "0.rng").write_text("")
     main_window.trainer.tree_source = lambda: {"plrs": 2, "game": "PLO", "folder": str(folder)}
-    monkeypatch.setattr(trainer_panel, "spots_for", lambda seats: [Spot("nowhere", "SB", [])])
+    monkeypatch.setattr(trainer_filters, "spots_for", lambda seats: [Spot("nowhere", "SB", [])])
 
     deals = []
     monkeypatch.setattr(trainer_panel, "deal", lambda cards, rng: deals.append(1) or "AhKs4h3s")
@@ -1236,6 +1235,168 @@ def test_choosing_a_situation_yourself_drops_the_pinned_node(main_window):
     trainer.spot_choice.setCurrentText("SB first in")
 
     assert trainer.pinned_spot is None
+
+
+def test_a_seat_filter_is_never_answered_with_another_seat(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()  # fills the bar with the seats this tree has
+    trainer.hero_filter.setCurrentIndex(trainer.hero_filter.findData("BB"))
+    assert trainer.hero_filter.currentData() == "BB"
+
+    for _ in range(4):
+        trainer.next_hand()
+        question = trainer.question
+        if question is None:
+            assert "hero BB" in trainer.spot_label.text()
+            continue
+        assert question.spot.hero == "BB"
+
+
+def test_a_hand_class_filter_is_never_answered_with_another_class(main_window):
+    """The deck is dealt, not chosen: a class filter has to filter the deals, not hope."""
+    trainer = main_window.trainer
+    trainer.next_hand()  # fills the class list for the game this tree is
+    index = trainer.class_filter.findData("double-suited")
+    assert index >= 0, "a PLO tree offers the class"
+    trainer.class_filter.setCurrentIndex(index)
+
+    for _ in range(6):
+        trainer.next_hand()
+        question = trainer.question
+        if question is None:
+            assert "double-suited hands" in trainer.spot_label.text()
+            continue
+        assert "double-suited" in classify(question.hand, "PLO")
+
+
+def test_mixed_only_asks_only_mixed_decisions(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.mixed_filter.setChecked(True)
+
+    for _ in range(4):
+        trainer.next_hand()
+        question = trainer.question
+        if question is None:
+            assert "mixed strategies" in trainer.spot_label.text()
+            continue
+        assert sum(1 for result in question.results if result.frequency >= 0.10) >= 2
+
+
+def test_a_filter_that_matches_nothing_says_so(main_window):
+    """The small blind never faces an open heads-up, so that combination is empty."""
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.hero_filter.setCurrentIndex(trainer.hero_filter.findData("SB"))
+    trainer.family_filter.setCurrentIndex(trainer.family_filter.findData("defend"))
+
+    trainer.next_hand()
+
+    assert trainer.question is None
+    assert "Nothing matches" in trainer.spot_label.text()
+    assert "widen the filters" in trainer.spot_label.text()
+
+
+def test_the_bar_says_what_the_session_is_filtered_to(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+
+    trainer.hero_filter.setCurrentIndex(trainer.hero_filter.findData("BB"))
+
+    assert "hero BB" in trainer.filter_label.text()
+    assert trainer.filter.active() is True
+
+    trainer.hero_filter.setCurrentIndex(0)
+
+    assert trainer.filter_label.text() == ""
+    assert trainer.filter.active() is False
+
+
+def test_a_pinned_node_is_part_of_the_filter(main_window):
+    trainer = main_window.trainer
+
+    trainer.train_spot(Spot("BB: SB raise 100%", "BB", [("SB", "Raise100")]))
+
+    assert trainer.filter.exact_line == (("SB", "Raise100"),)
+
+
+def test_a_class_filter_finds_a_node_that_holds_only_a_few_of_the_class(tmp_path, main_window):
+    """One eligible hand among forty: a sample of eight reported that nothing matched.
+
+    Sampling cannot witness an absence, and a class filter is exactly the case that makes
+    that matter -- double-suited hands are a fifth of a real node, and a small export can
+    hold one. The session must walk what the node holds before saying there is nothing.
+    """
+    folder = tmp_path / "HU-few-double-suited"
+    folder.mkdir()
+    ranks = "23456789TJQKA"
+    keys = ["(3K)(4A)", *(ranks[index : index + 4] for index in range(38))]
+    body = "".join(f"{key}\n1.0;2000.0\n" for key in keys)
+    for stem in ("0", "1", "40100"):
+        (folder / f"{stem}.rng").write_text(body)
+    trainer = main_window.trainer
+    trainer.tree_source = lambda: {
+        "plrs": 2,
+        "bb": 100,
+        "game": "PLO",
+        "folder": str(folder),
+        "infos": "few double-suited",
+    }
+    trainer.next_hand()
+    trainer.class_filter.setCurrentIndex(trainer.class_filter.findData("double-suited"))
+
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert "double-suited" in classify(trainer.question.hand, "PLO")
+
+
+def test_switching_to_a_tree_the_filter_cannot_express_reads_the_bar_again(tmp_path, main_window):
+    """A hold'em tree offers no hand class of Omaha's, so the bar resets -- and the filter must.
+
+    The class list is rebuilt under a guard that keeps the combs from looking like user
+    choices, so a filter left holding ``double-suited`` matched nothing while the label
+    said the session was unrestricted.
+    """
+    folder = tmp_path / "NL-hu"
+    folder.mkdir()
+    for stem in ("0", "1", "40100"):
+        (folder / f"{stem}.rng").write_text("AKs\n1.0;2000.0\n")
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.class_filter.setCurrentIndex(trainer.class_filter.findData("double-suited"))
+    assert trainer.filter.hand_class == "double-suited"
+
+    trainer.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "NL", "folder": str(folder), "infos": "nl"}
+    trainer.next_hand()
+
+    assert trainer.class_filter.currentData() is None, "the bar shows no class"
+    assert trainer.filter.hand_class is None, "and the filter agrees with it"
+
+
+def test_a_pinned_node_is_not_drilled_when_the_filter_excludes_it(main_window):
+    """The pin is not silently dropped, and the session says what it cannot match."""
+    trainer = main_window.trainer
+    trainer.train_spot(Spot("BB: SB raise 100%", "BB", [("SB", "Raise100")]))
+    assert trainer.question is not None
+
+    trainer.hero_filter.setCurrentIndex(trainer.hero_filter.findData("SB"))
+    trainer.next_hand()
+
+    assert trainer.pinned_spot is not None, "still pinned"
+    assert trainer.question is None
+    assert "Nothing matches" in trainer.spot_label.text()
+
+
+def test_the_chooser_only_offers_what_the_filter_leaves(main_window):
+    trainer = main_window.trainer
+    trainer.next_hand()
+
+    trainer.hero_filter.setCurrentIndex(trainer.hero_filter.findData("BB"))
+
+    offered = [trainer.spot_choice.itemText(index) for index in range(trainer.spot_choice.count())]
+    assert "SB first in" not in offered
+    assert any("BB" in label for label in offered)
 
 
 def test_the_chooser_itself_shows_the_pinned_node(main_window):
