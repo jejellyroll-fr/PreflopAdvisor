@@ -220,6 +220,10 @@ class TrainerPanel(QWidget):
         self.rng.shuffle(spots)
 
         self.sizings = provider.sizings()
+        # The EV unit belongs to the simulation that answered, not to this panel: a tree
+        # declaring another one -- ``ChipsPerBB`` under ``[TreeReader]`` -- would have
+        # every verdict, loss and displayed EV divided by the wrong number otherwise.
+        self.chips_per_bb = metadata.chips_per_bb
         self.stack = metadata.stack_bb
         self.game = metadata.game
         self.ante = metadata.ante_bb

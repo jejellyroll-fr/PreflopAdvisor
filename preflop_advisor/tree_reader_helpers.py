@@ -247,6 +247,10 @@ class ActionProcessor:
         """
         Retrieves results for a given hand and action sequence.
 
+        One entry per action the tree holds at this decision, in the order the actions
+        are declared -- which for a raise is one entry per *bet size* that exists here,
+        not one for the generic name: see :meth:`action_sequences_at`.
+
         :param hand: Hand to analyze.
         :param action_before_list: Actions taken before the current position.
         :param position: Current position.
@@ -260,18 +264,46 @@ class ActionProcessor:
         logger.debug("Analyzing results for hand: %s and position: %s", hand, position)
         results = []
 
-        for action in self.valid_actions:
-            action_sequence = action_before_list + [(position, action)]
-            full_action_sequence = self.get_action_sequence(action_sequence)
-            full_action_sequence = self.find_valid_raise_sizes(full_action_sequence)
-            if self.test_action_sequence(full_action_sequence):
-                if self.store is not None:
-                    result = self.read_hand_from_store(hand, full_action_sequence)
-                else:
-                    result = self.read_hand_from_files(hand, full_action_sequence)
-                results.append(result)
+        for full_action_sequence in self.action_sequences_at(action_before_list, position):
+            if self.store is not None:
+                result = self.read_hand_from_store(hand, full_action_sequence)
+            else:
+                result = self.read_hand_from_files(hand, full_action_sequence)
+            results.append(result)
         logger.debug("Results retrieved: %s", results)
         return results
+
+    def action_sequences_at(self, action_before_list: ActionSequence, position: str) -> list[ActionSequence]:
+        """Every action this decision offers, as complete action sequences.
+
+        A generic ``Raise`` becomes one entry per declared sizing whose file is there,
+        rather than one entry resolved to the first sizing that exists: a Monker export
+        writes a file per bet size, so a node offering two sizes offers two raises, and
+        keeping only the first would hide the rest of the node from the grid and from
+        the trainer. Everything else keeps its single declared name.
+
+        Existence is the file, not the prefix index: the index also records the prefixes
+        of *deeper* lines, so a sizing it mentions can lead nowhere while the next one
+        holds the whole node.
+
+        :param action_before_list: Actions taken before the current position.
+        :param position: Current position.
+        :return: One complete action sequence per action available here.
+        """
+        prefix = self.find_valid_raise_sizes(self.get_action_sequence(action_before_list))
+        candidates: ActionSequence = []
+        for action in self.valid_actions:
+            if action == "Raise":
+                candidates.extend((position, size_key) for size_key in self.raise_size_keys)
+            else:
+                candidates.append((position, action))
+
+        sequences = []
+        for candidate in candidates:
+            sequence = self.get_action_sequence([*prefix, candidate])
+            if self.test_action_sequence(sequence):
+                sequences.append(sequence)
+        return sequences
 
     def find_valid_raise_sizes(self, full_action_sequence: ActionSequence) -> ActionSequence:
         """
