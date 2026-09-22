@@ -20,7 +20,7 @@ from preflop_advisor.history import default_path
 from preflop_advisor.node_explorer_panel import EMPTY_STATE
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
-from preflop_advisor.strategy import Node, provider_for
+from preflop_advisor.strategy import Node, node_for, node_identity, provider_for
 from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector, ante_of
@@ -1503,6 +1503,29 @@ def test_answering_a_hand_writes_it_to_the_history(main_window):
     assert stored[0].hero == question.spot.hero
     assert stored[0].verdict == "Correct", "the best action costs nothing"
     assert stored[0].chosen == stored[0].best
+
+
+def test_an_answer_is_filed_under_the_line_the_provider_resolved(main_window):
+    """A decision is one row of the report whichever screen it was reached from.
+
+    A spot's line is implicit -- the folds in between are left out and a raise is named
+    generically -- while what the provider hands back is the explicit line the strategy was
+    read by. Recording the implicit one would file one decision under two identities, and
+    two concrete nodes that only look alike could share one.
+    """
+    trainer = main_window.trainer
+    trainer.rng.seed(42)
+    trainer.next_hand()
+    question = trainer.question
+    assert question is not None and question.node is not None
+    implicit = node_for(question.spot.hero, list(question.spot.line))
+    assert question.node.path != implicit.path, "this spot must hold a concrete sizing, not a generic raise"
+
+    trainer.answer(question.actions()[0])
+
+    stored = main_window.history.answers()[0]
+    assert stored.node_id == node_identity(question.node)
+    assert stored.node_id != node_identity(implicit)
 
 
 def test_an_answer_is_filed_under_the_simulation_it_was_answered_on(main_window):

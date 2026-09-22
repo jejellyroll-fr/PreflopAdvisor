@@ -478,7 +478,7 @@ class TrainerPanel(QWidget):
             game=self.game,
             ante=self.ante,
         )
-        return Question(spot, hand, results, state)
+        return Question(spot, hand, results, state, node)
 
     #: The trainer's own reading of "this node can be graded", which the node explorer
     #: gates its Train button on. Kept as an attribute of the panel as well because a
@@ -591,11 +591,17 @@ class TrainerPanel(QWidget):
         if self.history is None:
             return
         evs = {result.action: result.ev for result in question.results}
+        # The line the node was *read* by, not the spot's implicit one: a decision reached
+        # from the catalogue and the same decision reached from the Explorer have to be
+        # one row of a report, and the explicit line is the identity they share.
+        node = question.node
+        hero = question.spot.hero if node is None else node.hero
+        line = list(question.spot.line) if node is None else [(seat, action) for seat, action in node.path]
         try:
             self.history.record(
                 TrainingAnswer(
-                    hero=question.spot.hero,
-                    line=list(question.spot.line),
+                    hero=hero,
+                    line=line,
                     hand=question.hand,
                     chosen=verdict.chosen,
                     best=verdict.best,

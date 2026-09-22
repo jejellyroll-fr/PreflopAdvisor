@@ -430,25 +430,31 @@ class TrainingHistory:
             )
         return rowid
 
-    def clear(self, simulation: str | None = None) -> int:
-        """Forget answers, all of them or one simulation's, and say how many went.
+    def clear(self, filters: HistoryFilter | None = None) -> int:
+        """Forget the answers a filter selects -- everything, unfiltered -- and count them.
+
+        The filter is the whole of the scope, because the scope is what the user was
+        looking at: a window showing one simulation over one period offers to clear *that*,
+        and deleting the simulation's entire history instead is a surprise that cannot be
+        undone. Every row goes through the same predicate the reading does, so what is
+        deleted cannot drift from what was on screen.
 
         Only the history: the database that holds the strategy (``preflop.db``) and the
         configuration are separate files and are untouched, which is what "clear my
         training history" has to mean -- otherwise clearing it would cost the user their
         simulations.
         """
+        where, parameters = (filters or HistoryFilter()).where()
         conn = self.connection
         with conn:
-            if simulation is None:
-                conn.execute("DELETE FROM answer_classes")
-                cursor = conn.execute("DELETE FROM answers")
-            else:
-                cursor = conn.execute(
-                    "DELETE FROM answer_classes WHERE answer_id IN (SELECT id FROM answers WHERE simulation = ?)",
-                    (simulation,),
-                )
-                cursor = conn.execute("DELETE FROM answers WHERE simulation = ?", (simulation,))
+            conn.execute(
+                f"DELETE FROM answer_classes WHERE answer_id IN (SELECT a.id FROM answers a WHERE {where})",
+                parameters,
+            )
+            cursor = conn.execute(
+                f"DELETE FROM answers WHERE id IN (SELECT a.id FROM answers a WHERE {where})",
+                parameters,
+            )
         return cursor.rowcount or 0
 
     # ------------------------------------------------------------------
@@ -639,3 +645,28 @@ def daily_since(days: int, reference: datetime | None = None) -> str:
     """The ISO timestamp ``days`` ago, for "last week" style filters."""
     moment = (reference or datetime.now(timezone.utc)) - timedelta(days=days)
     return moment.isoformat(timespec="seconds")
+
+
+#: What a period of ``0`` days means: the day being lived, rather than the last 24 hours.
+TODAY = 0
+
+
+def period_since(days: int | None, reference: datetime | None = None) -> str | None:
+    """When a period starts, as the timestamp the answers are stored with.
+
+    ``None`` is everything, ``TODAY`` is the calendar day, and any other number is a
+    rolling window of that many days.
+
+    The two are not the same thing and cannot be read as one: at 18:00, "the last 24
+    hours" reaches back into yesterday evening, so a period labelled *Today* would count
+    answers from the previous day and its totals would not match its name. The day is the
+    local one -- the day the person reading it had -- and only the comparison is in UTC,
+    which is what the rows are written in.
+    """
+    if days is None:
+        return None
+    if days != TODAY:
+        return daily_since(days, reference)
+    local = (reference or datetime.now(timezone.utc)).astimezone()
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight.astimezone(timezone.utc).isoformat(timespec="seconds")
