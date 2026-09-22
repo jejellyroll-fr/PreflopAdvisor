@@ -394,6 +394,28 @@ def test_a_folder_that_is_not_a_simulation_leaves_the_wizard_on_its_first_page(q
     assert "Folder not found" in wizard.folder_page.report.text()
 
 
+def test_a_folder_of_solver_simulations_is_refused_with_what_the_files_are(qapp, tmp_path):
+    """The dead end a user actually meets: their own saves, which have to be exported first.
+
+    The message is the point. Before this, a folder of `.mkr` files was answered with "this
+    folder is not a simulation", which is wrong twice over: it is a simulation, and the user
+    read the refusal as their own mistake. See docs/native-import.md.
+    """
+    from .test_native_format import write, zip_bytes
+
+    write(tmp_path / "HUNL100.mkr", zip_bytes())
+    wizard = ImportWizard(make_config(tmp_path))
+
+    wizard.folder_page.folder_edit.setText(str(tmp_path))
+
+    report = wizard.folder_page.report.text()
+    assert wizard.folder_page.isComplete() is False
+    assert report.startswith("HUNL100.mkr:")
+    assert "ZIP archive" in report
+    assert "no parser" in report.lower()
+    assert "CSV tables" in report, "and the path that does work"
+
+
 def test_the_summary_page_shows_what_the_import_will_do(qapp, tmp_path):
     config = make_config(tmp_path)
     wizard = ImportWizard(config)

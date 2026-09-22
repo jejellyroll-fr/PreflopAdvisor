@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .native_format import native_files
 from .settings import ConfigSource
 
 logger = logging.getLogger(__name__)
@@ -142,9 +143,9 @@ def validate_tree(
         return False, f"folder not found: {folder}"
     if not holds_range_files(folder):
         if kind != SOURCE_CSV:
-            return False, f"folder holds no .rng files: {folder}"
+            return False, f"folder holds no .rng files: {folder}{_native_hint(folder)}"
         if not holds_csv_files(folder):
-            return False, f"folder holds no .csv files: {folder}"
+            return False, f"folder holds no .csv files: {folder}{_native_hint(folder)}"
     description = ",".join(parts[4:]).strip()
     mentions_ante = bool(re.search(r"\bantes?\b", description, re.IGNORECASE))
     denies_ante = bool(re.search(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", description, re.IGNORECASE))
@@ -153,6 +154,21 @@ def validate_tree(
     if kind != SOURCE_CSV and not _tree_seats_match_files(parts, config):
         return False, "declared player count does not match the range files"
     return True, ""
+
+
+def _native_hint(folder: str) -> str:
+    """A sentence about the solver's own files, for a folder that holds them and no export.
+
+    The shape a user gets into by pointing a tree entry at a folder of `.mkr` simulations --
+    the folder the import wizard has just refused, because the format needs an export. Naming
+    the file found there is what turns "holds no .rng files" into an explanation they can act
+    on; see ``docs/native-import.md``.
+    """
+    natives = native_files(folder)
+    if not natives:
+        return ""
+    more = f", and {len(natives) - 1} more" if len(natives) > 1 else ""
+    return f" (it holds {natives[0]}{more}, which this application cannot read directly yet)"
 
 
 def _tree_seats_match_files(parts: list[str], config: ConfigSource | None) -> bool:

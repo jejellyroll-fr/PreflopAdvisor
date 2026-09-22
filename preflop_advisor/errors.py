@@ -26,5 +26,9 @@ class InvalidRaiseSizing(PreflopAdvisorError):
     """A ``RaiseSizeList`` entry does not map to any known action code."""
 
 
+class NativeFormatError(PreflopAdvisorError):
+    """A solver's own simulation file was offered, and cannot be read by this application."""
+
+
 class RangeFilesChanging(PreflopAdvisorError):
     """The range files kept changing while their database was being built."""

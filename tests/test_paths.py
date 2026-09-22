@@ -104,6 +104,26 @@ def test_validate_tree_rejects_a_folder_with_no_ranges(tmp_path):
     assert "no .rng" in reason
 
 
+def test_validate_tree_names_the_solver_files_it_cannot_read(tmp_path):
+    """A tree entry pointed at a folder of `.mkr` saves says which file is in the way."""
+    (tmp_path / "HUNL100.mkr").write_bytes(b"PK\x03\x04" + bytes(30))
+    (tmp_path / "HUNL200.mkr").write_bytes(b"x")
+
+    ok, reason = paths.validate_tree(f"2,100,PLO,{tmp_path},no Rake", ante_declared=False)
+
+    assert not ok
+    assert "no .rng" in reason
+    assert "HUNL100.mkr, and 1 more" in reason
+    assert "cannot read directly yet" in reason
+
+
+def test_validate_tree_gives_no_hint_about_a_folder_that_holds_nothing(tmp_path):
+    ok, reason = paths.validate_tree(f"2,100,PLO,{tmp_path},no Rake", ante_declared=False)
+
+    assert not ok
+    assert reason == f"folder holds no .rng files: {tmp_path}"
+
+
 def test_validate_tree_rejects_an_unresolvable_folder():
     ok, reason = paths.validate_tree("2,100,PLO,/nowhere/tree,no Rake", ante_declared=False)
 
