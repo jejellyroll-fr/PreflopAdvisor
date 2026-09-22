@@ -60,6 +60,16 @@ class TreeReader:
         """The seat names of a table that size, honouring a ``Positions<N>`` override."""
         return seats_for(settings, num_players, default_seats)
 
+    @property
+    def chips_per_bb(self) -> float:
+        """What this tree counts one big blind in, as the simulation itself states it.
+
+        Read from the provider rather than from the display configuration: the grid and
+        the trainer show EVs of the same numbers, so they have to divide by the same
+        unit, and the source that produced them is the one that knows it.
+        """
+        return self.provider.metadata().chips_per_bb
+
     def node_results(self, line: ActionSequence, hero: str) -> list[Result]:
         """One node's strategy, in the row shape the grid draws.
 

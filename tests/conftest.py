@@ -113,6 +113,36 @@ def synthetic_hand_values():
     return (0.75, 1500.0)
 
 
+@pytest.fixture
+def two_size_tree(tmp_path):
+    """A heads-up tree where one decision offers two *different* bet sizes.
+
+    Monker writes a file per bet size, so a node whose owner asked for a pot-sized raise
+    and a hundred-percent raise holds both. Neither of the other two trees can say so:
+    the shipped one only ever raises ``40100``, and the synthetic one probes several
+    *names* for a single raise. Every action carries its own EV, so the node is also a
+    node worth grading -- the best action is the hundred-percent raise, at 2000 chips.
+    """
+    folder = tmp_path / "two-size-hu"
+    folder.mkdir()
+    folder = str(folder)
+
+    for stem, ev in (("0", 1200.0), ("1", 1400.0), ("2", 1500.0), ("40100", 2000.0)):
+        _write_range_file(folder, stem, {REFERENCE_HAND_MONKER: (1.0, ev)})
+    # The big blind's decisions behind the call and behind either raise: what makes each
+    # of those three actions lead somewhere the folder actually holds.
+    for stem in ("1.0", "2.0", "40100.0"):
+        _write_range_file(folder, stem, {REFERENCE_HAND_MONKER: (1.0, 1000.0)})
+
+    return {
+        "plrs": 2,
+        "bb": 100,
+        "game": "PLO",
+        "folder": folder,
+        "infos": "two sizes",
+    }
+
+
 @pytest.fixture(autouse=True)
 def isolated_settings(tmp_path):
     """Give every test its own settings store.

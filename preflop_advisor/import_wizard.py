@@ -86,9 +86,9 @@ class SimulationScan:
     def needs_conversion(self) -> bool:
         """Whether something this export holds would be read without full meaning.
 
-        An export with no EV cannot be graded by the trainer, and a code nobody named is
-        an action whose size the table cannot draw. Both are usable, neither is complete,
-        and the wizard says so rather than quietly importing either.
+        An export with no EV cannot be graded by the trainer, and a code no configuration
+        names is a branch of the tree nothing can read. Both are usable, neither is
+        complete, and the wizard says so rather than quietly importing either.
         """
         return not self.has_ev or bool(self.unknown_codes)
 
@@ -139,6 +139,9 @@ class ImportRequest:
     players: int
     stack_bb: str
     ante_bb: str = ""
+    #: What the table charges and anything else the export did not say, shown beside the
+    #: name on the tree's button. Part of one description, not a setting of its own.
+    rake: str = ""
     tooltip: str = ""
     #: Names for the codes the scan could not place, as ``code -> action name``.
     code_names: dict[str, str] = field(default_factory=dict)
@@ -227,14 +230,16 @@ def _duplicates(
 
 
 def _unknown_codes(codes: Iterable[str], names: dict[str, str]) -> tuple[str, ...]:
-    """Codes no sizing can be read from and no configuration names."""
-    unknown = []
-    for code in codes:
-        if code in names:
-            continue
-        if not sizing_for_code(code).known:
-            unknown.append(code)
-    return tuple(unknown)
+    """Codes no declared action name covers, in the order the files use them.
+
+    Naming is what the reader needs, and it is the *only* thing it accepts: a code the
+    sizing table can make sense of is still an action the reader cannot look up, since
+    every line of play is turned into file names through the configuration's names. So
+    knowing what a code costs is not the same as the folder being readable, and a code
+    the scan read is reported here exactly like one it could not -- what differs is only
+    what the wizard has to ask for.
+    """
+    return tuple(code for code in codes if code not in names)
 
 
 def scan_simulation(
@@ -285,10 +290,17 @@ def scan_simulation(
     if not hands:
         notes.append("The export's version could not be told apart, having no keys to read.")
     if unknown:
+        readable = [code for code in unknown if sizing_for_code(code).known]
         notes.append(
-            f"Action codes with no meaning yet: {', '.join(unknown)}. Name them below, or their nodes read "
-            "unpriced. A raise that is not listed in RaiseSizeList is not tried either, so naming one is "
-            "only half of what a tree built on it needs."
+            f"Action codes nothing in your configuration names: {', '.join(unknown)}. Until one is "
+            "named, the nodes holding it read as no decision at all."
+            + (
+                f" The size of {', '.join(readable)} can be read from the code, so a name is all they need."
+                if readable
+                else ""
+            )
+            + " Naming a raise is only half of what a tree built on it needs: a sizing that is not "
+            "listed in RaiseSizeList is never tried either."
         )
 
     same_folder, same_size = _duplicates(
@@ -325,22 +337,56 @@ def scan_simulation(
     return scan
 
 
+def description_of(request: ImportRequest) -> str:
+    """The description a request asks for: the name, with what was typed beside it.
+
+    One field in the configuration, two boxes in the wizard: the rake or the note the
+    user adds is part of the same label, because that is what a tree entry has -- the
+    folder's own text is where this application has always written its rake.
+
+    Joined by a space rather than by punctuation, and that is not a style choice: the
+    entry is comma-separated and everything after the folder *is* the description, so a
+    comma typed into either box would cut the description in half as the selector read it
+    back. One is turned into a space for the same reason, so the label the user typed is
+    the label they get rather than a truncated one.
+    """
+    return " ".join(part for part in (_label(request.name), _label(request.rake)) if part)
+
+
+def _label(text: str) -> str:
+    """One box's text, with the entry's own field separator taken out of it."""
+    return " ".join(text.replace(",", " ").split())
+
+
 def entry_value(request: ImportRequest) -> str:
     """The ``[TreeInfos]`` value a request corresponds to, as the configuration spells it."""
-    return f"{request.players},{request.stack_bb},{request.game},{request.folder},{request.name}"
+    return f"{request.players},{request.stack_bb},{request.game},{request.folder},{description_of(request)}"
 
 
-def code_name_pairs(request: ImportRequest) -> Iterator[tuple[str, str]]:
+def code_name_pairs(request: ImportRequest, tree_configs: ConfigSource | None = None) -> Iterator[tuple[str, str]]:
     """The action-code declarations a request asks for, validated.
 
+    :param request: The confirmed import, holding the code-to-name mapping typed.
+    :param tree_configs: The ``[TreeReader]`` section the import will be read under, read
+        for the names it already holds. Declaring a code under a name an existing tree
+        already uses for another code would silently change what that tree reads, so it
+        is refused here rather than discovered afterwards.
     :raises SimulationScanError: on a name that is not an action name -- one that would
         reconfigure the reader, or collide with a code already declared under the same
-        name for another value, which would silently change what an existing tree reads.
+        name for another value.
     """
+    declared = {name.lower(): code for code, name in action_code_names(tree_configs).items()} if tree_configs else {}
     for code, name in request.code_names.items():
         cleaned = name.strip()
         if not ACTION_NAME.match(cleaned):
             raise SimulationScanError(f"{name!r} is not a name an action can be declared under.")
+        existing = declared.get(cleaned.lower())
+        if existing is not None and existing != code:
+            raise SimulationScanError(
+                f"{cleaned} already names action code {existing} in your configuration. Naming "
+                f"{code} with it would change every simulation that reads {existing}; pick "
+                "another name."
+            )
         yield cleaned, code
 
 
@@ -349,21 +395,35 @@ def register_simulation(config: LayeredConfig, request: ImportRequest) -> str:
 
     The codes are declared first, so the tree entry that follows is validated against the
     configuration it will actually be read under: naming a code can be what makes a
-    folder readable, and a check run before that would refuse an import that works.
+    folder readable, and a check run before that would refuse an import that works. A
+    check that then fails takes those declarations back out again: the configuration is
+    shared and outlives the wizard, so an import that was refused must leave nothing
+    behind for a later save to pick up.
 
     :return: The ``[TreeInfos]`` key the simulation was stored under.
     :raises SimulationScanError: if the entry is not one the application can read.
     """
     key = request.table_key or next_table_key(config)
-    for name, code in code_name_pairs(request):
-        if not is_action_name(name, config.section("TreeReader")):
-            raise SimulationScanError(f"{name!r} cannot name an action: the reader uses that setting itself.")
-        config.set("TreeReader", name, code)
+    reader_section = config.section("TreeReader")
+    declared: list[tuple[str, str | None]] = []
+    try:
+        for name, code in code_name_pairs(request, reader_section):
+            if not is_action_name(name, reader_section):
+                raise SimulationScanError(f"{name!r} cannot name an action: the reader uses that setting itself.")
+            declared.append((name, config.get("TreeReader", name)))
+            config.set("TreeReader", name, code)
 
-    value = entry_value(request)
-    ok, reason = validate_tree(value, bool(request.ante_bb), config.section("TreeReader"))
-    if not ok:
-        raise SimulationScanError(f"Cannot import this simulation: {reason}")
+        value = entry_value(request)
+        ok, reason = validate_tree(value, bool(request.ante_bb), config.section("TreeReader"))
+        if not ok:
+            raise SimulationScanError(f"Cannot import this simulation: {reason}")
+    except BaseException:
+        for name, previous in reversed(declared):
+            if previous is None:
+                config.reset("TreeReader", name)
+            else:
+                config.set("TreeReader", name, previous)
+        raise
 
     config.set("TreeInfos", key, value)
     if request.ante_bb:
