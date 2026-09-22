@@ -1,0 +1,139 @@
+name: Release
+
+# Tagging v0.3 builds and publishes; running it by hand builds the same four bundles and
+# leaves them as workflow artifacts, which is how a packaging change gets tried out
+# without cutting a release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon and Intel are separate binaries: the spec does not build a
+          # universal2 bundle, so a Mac of the other kind gets nothing it can run.
+          - { os: macos-14, name: macos-arm64 }
+          # GitHub retired the macos-13 runners; macos-15-intel is the Intel image now.
+          - { os: macos-15-intel, name: macos-x86_64 }
+          # Pinned, not "latest": the glibc of the runner is the floor of what the binary
+          # runs on, and 24.04 would leave Debian 12 out.
+          - { os: ubuntu-22.04, name: linux-x86_64 }
+          - { os: windows-latest, name: windows-x86_64 }
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag and the packaged version must agree
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Linux'
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -n 1)
+          if [ "$tag" != "$version" ]; then
+            echo "Tag $tag does not match the version in pyproject.toml ($version)." >&2
+            echo "The bundle stamps itself from pyproject, so releasing would ship the wrong number." >&2
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra build
+
+      - name: Build
+        run: uv run python scripts/build.py
+
+      # ditto rather than zip: the .app carries an ad-hoc signature in its extended
+      # attributes, and an archiver that drops them produces a bundle macOS refuses to
+      # launch for a reason it does not explain.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          stage="PreflopAdvisor-${{ matrix.name }}"
+          mkdir -p "$stage"
+          ditto dist/PreflopAdvisor.app "$stage/PreflopAdvisor.app"
+          cp LICENSE README.org "$stage/"
+          ditto -c -k --sequesterRsrc --keepParent "$stage" "$stage.zip"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          stage="PreflopAdvisor-${{ matrix.name }}"
+          mkdir -p "$stage"
+          cp -R dist/PreflopAdvisor "$stage/"
+          cp LICENSE README.org "$stage/"
+          tar -czf "$stage.tar.gz" "$stage"
+
+      # A folder zipped, not a single-file exe: onedir keeps the Qt libraries as separate
+      # files, which is both what the LGPL asks for and what antivirus heuristics treat
+      # least badly.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "PreflopAdvisor-${{ matrix.name }}"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item -Recurse dist/PreflopAdvisor "$stage/"
+          Copy-Item LICENSE, README.org "$stage/"
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PreflopAdvisor-${{ matrix.name }}
+          path: PreflopAdvisor-${{ matrix.name }}.*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          body: |
+            ## Downloads
+
+            | Platform | File |
+            |---|---|
+            | macOS, Apple Silicon | `PreflopAdvisor-macos-arm64.zip` |
+            | macOS, Intel | `PreflopAdvisor-macos-x86_64.zip` |
+            | Linux x86_64 (glibc 2.35+) | `PreflopAdvisor-linux-x86_64.tar.gz` |
+            | Windows x86_64 | `PreflopAdvisor-windows-x86_64.zip` |
+
+            These bundles are **not code-signed**.
+
+            - **macOS** refuses a downloaded app that is not notarized. Move
+              `PreflopAdvisor.app` where you want it, then clear the quarantine flag:
+              `xattr -dr com.apple.quarantine /Applications/PreflopAdvisor.app`
+            - **Windows** shows a SmartScreen warning: *More info* → *Run anyway*. Some
+              antivirus products flag PyInstaller bundles generically; the build is
+              reproducible from this tag if you would rather build it yourself.
+
+            The bundles ship no range trees beyond the heads-up demonstration one. Export
+            your own from Monker and point the Configuration tab at them.
+
+            Qt is included under the LGPLv3 (see
+            [qt.io/licensing](https://www.qt.io/licensing/)); the Qt libraries are kept as
+            separate files inside the bundle so they can be replaced. Everything else is
+            MIT, as in `LICENSE`.
