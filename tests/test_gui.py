@@ -1320,6 +1320,37 @@ def test_a_difficulty_aware_mode_looks_past_the_first_spot(main_window):
     assert trainer.pool_size() == DEFAULT_POOL
 
 
+def test_the_plain_draw_reads_no_history(main_window, monkeypatch):
+    """The record is a GROUP BY over every answer ever given; a plain session pays none.
+
+    The argument used to be built on every deal whatever the mode, so the draw the trainer
+    has always done -- the cheapest one -- got slower with every answer in the file.
+    """
+    from preflop_advisor.history import TrainingHistory
+
+    reads: list[str] = []
+    original = TrainingHistory.tally
+
+    def counted(self, by: str = "node", filters=None):
+        reads.append(by)
+        return original(self, by, filters)
+
+    monkeypatch.setattr(TrainingHistory, "tally", counted)
+    trainer = main_window.trainer
+    trainer.rng.seed(5)
+    trainer.next_hand()
+
+    for mode in ("random", "frequency", "close", "mixed"):
+        trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData(mode))
+        trainer.next_hand()
+    assert reads == [], "a mode that weighs only the strategy pays no query"
+
+    trainer.sampling_choice.setCurrentIndex(trainer.sampling_choice.findData("weakness"))
+    trainer.next_hand()
+
+    assert reads == ["node"], "weighed against the history only where the mode reads it"
+
+
 def test_every_mode_still_deals_a_question_it_can_grade(main_window):
     """A preference over what to ask must never leave the session with nothing to answer."""
     trainer = main_window.trainer

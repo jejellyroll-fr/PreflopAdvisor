@@ -415,7 +415,11 @@ class TrainerPanel(QWidget):
         if not pool:
             logger.warning("No spot of %s answered", tree.get("folder"))
             return None
-        return sampler.pick(pool, self.sampling, self.chips_per_bb, self.track_record(), self.rng)
+        # The record is read only for the modes that weigh it. It is a GROUP BY over every
+        # answer ever given, and the plain draw -- what the trainer has always done, and
+        # what a session starts on -- never looks at it.
+        record = self.track_record() if sampler.reads_history(self.sampling) else None
+        return sampler.pick(pool, self.sampling, self.chips_per_bb, record, self.rng)
 
     def candidates(self, provider: StrategyProvider, spots: list[Spot], cards: int, limit: int) -> Iterator[Question]:
         """Up to ``limit`` questions this table can answer, every spot walked once.
@@ -437,8 +441,10 @@ class TrainerPanel(QWidget):
         """What the history says about the spots being sampled.
 
         Read once per deal rather than cached: the answer just given changes it, and the
-        query is one indexed GROUP BY. ``None`` when there is no history, which the modes
-        that weigh it read as "nothing known" and sample at random.
+        query is one indexed GROUP BY. Only asked for by the modes that weigh it -- see
+        :func:`~preflop_advisor.sampler.reads_history` -- so a plain session costs no
+        query at all. ``None`` when there is no history, which the modes that weigh it
+        read as "nothing known" and sample at random.
         """
         return sampler.TrackRecord.of(self.history)
 
