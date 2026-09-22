@@ -472,10 +472,14 @@ def test_a_table_is_fingerprinted_to_the_nanosecond(tmp_path):
     """
     path = write_table(tmp_path, rows=TABLE[:1])
     files = csv_files(str(tmp_path))
+    # A microsecond apart inside the same whole second, which is the smallest step every
+    # filesystem in play can hold: a nanosecond would be rounded away on one of them and
+    # the test would pass by measuring nothing.
     os.utime(path, ns=(1_000_000_000, 1_000_000_000))
     first = fingerprint(files, {}, 100.0, "auto")
 
-    os.utime(path, ns=(1_000_000_001, 1_000_000_001))
+    os.utime(path, ns=(1_000_001_000, 1_000_001_000))
+    assert int(os.stat(path).st_mtime) == 1, "the two have to share a second to be a subsecond test"
 
     assert fingerprint(files, {}, 100.0, "auto") != first
 
