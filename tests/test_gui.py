@@ -1238,6 +1238,65 @@ def test_choosing_a_situation_yourself_drops_the_pinned_node(main_window):
     assert trainer.pinned_spot is None
 
 
+def test_the_chooser_itself_shows_the_pinned_node(main_window):
+    """A pin the chooser does not show cannot be let go of.
+
+    Selecting the entry a combo box already displays emits nothing, so a pin hidden
+    behind "Any situation" outlived every attempt to leave it while the chooser claimed
+    the whole catalogue was being asked.
+    """
+    trainer = main_window.trainer
+    pinned = "BB: SB raise 100%"
+
+    trainer.train_spot(Spot(pinned, "BB", [("SB", "Raise100")]))
+
+    assert trainer.spot_choice.currentText() == pinned
+
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.next_hand()
+
+    assert trainer.pinned_spot is None
+    assert trainer.question is not None
+    assert trainer.question.spot.label != pinned
+
+
+def test_a_node_that_was_drilled_stays_selectable_as_a_situation(main_window):
+    """The catalogue has no family for a squeeze off a limp, so the entry is kept."""
+    trainer = main_window.trainer
+    pinned = "BB: SB raise 100%"
+    trainer.train_spot(Spot(pinned, "BB", [("SB", "Raise100")]))
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.next_hand()
+
+    trainer.spot_choice.setCurrentText(pinned)
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert trainer.question.spot.label == pinned, "the entry still names the decision"
+
+
+def test_a_node_the_trainer_cannot_grade_is_not_offered_for_drilling(tmp_path, main_window):
+    """An enabled button on such a node deals nothing and reports that nothing answered.
+
+    What the user sees is the application failing, rather than a decision the trainer
+    cannot ask about -- so the button stays off and the pane says why.
+    """
+    folder = tmp_path / "HU-no-ev"
+    folder.mkdir()
+    for name in ("0", "1", "40100"):
+        (folder / f"{name}.rng").write_text("(3K)(4A)\n1.0;\n")
+    explorer = open_explorer(main_window)
+    explorer.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "PLO", "folder": str(folder), "infos": "no ev"}
+    explorer.refresh()
+    root = explorer.tree.topLevelItem(0)
+    root.setExpanded(True)
+
+    explorer.tree.setCurrentItem(root)
+
+    assert explorer.train_button.isEnabled() is False
+    assert "not drilled" in explorer.notes.text()
+
+
 def test_the_explorer_says_so_when_there_is_nothing_to_walk(main_window):
     explorer = main_window.explorer
     explorer.tree_source = lambda: None

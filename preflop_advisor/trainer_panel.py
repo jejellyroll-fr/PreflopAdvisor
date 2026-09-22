@@ -31,7 +31,7 @@ from .settings import ConfigSource, get
 from .sizings import Sizing
 from .strategy import StrategyProvider, StrategyResult, node_for, provider_for
 from .table_state import table_state
-from .trainer import Question, Session, Spot, deal, grade, hand_for_key, spots_for
+from .trainer import Question, Session, Spot, deal, gradable, grade, hand_for_key, spots_for
 from .trainer_table import TrainerTable
 from .types import ActionSequence
 
@@ -74,6 +74,9 @@ class TrainerPanel(QWidget):
         #: One decision to drill, when the Explorer asked for it. Set instead of the
         #: catalogue, and dropped as soon as the user picks a situation for themselves.
         self.pinned_spot: Spot | None = None
+        #: Spots the chooser offers that the catalogue has no family for, by their label:
+        #: a drilled node, which stays selectable after its pin is released.
+        self.extra_spots: dict[str, Spot] = {}
         #: True while the chooser is being rebuilt, so its own rebuild does not look like
         #: the user choosing something.
         self._filling_choice = False
@@ -177,8 +180,15 @@ class TrainerPanel(QWidget):
         The spot carries the node's own line of play, already explicit, so the provider
         resolves it to the decision the explorer showed -- and dealing again asks that
         node another hand, which is the point of drilling it.
+
+        The chooser is left to say so as well; see :meth:`offer_spots`. Hiding the pin
+        behind a chooser that reads "Any situation" leaves no way out of it: the entry it
+        already displays emits nothing when picked again.
         """
         self.pinned_spot = spot
+        # Remembered by its label, so the entry the chooser shows keeps meaning the same
+        # decision after the pin is released and the catalogue is asked for again.
+        self.extra_spots[spot.label] = spot
         self.next_hand()
 
     def on_spot_choice_changed(self, _label: str) -> None:
@@ -313,28 +323,29 @@ class TrainerPanel(QWidget):
         )
         return Question(spot, hand, results, state)
 
-    @staticmethod
-    def gradable(results: tuple[StrategyResult, ...]) -> bool:
-        """Whether a node's entries can be scored against one another.
-
-        Monker omits the EV for a hand the board makes impossible -- for the hand, so
-        across the node -- and a node with an unknown EV has nothing to grade the answer
-        by: the best action is unknown, and an action whose EV is missing has no cost to
-        measure. Such a spot is passed over like one that answered nothing, rather than
-        asked and then refused.
-        """
-        return bool(results) and all(result.ev is not None for result in results)
+    #: The trainer's own reading of "this node can be graded", which the node explorer
+    #: gates its Train button on. Kept as an attribute of the panel as well because a
+    #: spot is passed over here like one that answered nothing.
+    gradable = staticmethod(gradable)
 
     def offer_spots(self, seats: list[str]) -> None:
         """Fill the chooser with the situations a table of these seats has.
 
-        Rebuilt only when the seats change, so choosing a situation survives dealing the
-        next hand -- which is the point of choosing one.
+        Rebuilt only when the entries or the selection have to change, so choosing a
+        situation survives dealing the next hand -- which is the point of choosing one.
+
+        A pinned node is one of the entries, wherever it came from: the explorer drills
+        decisions the catalogue has no family for (a squeeze off a limp is not one), and a
+        pin the chooser does not show is a pin the user cannot leave -- picking the entry
+        it already displays emits nothing at all.
         """
         labels = [ANY_SPOT] + [spot.label for spot in spots_for(seats)]
-        if labels == [self.spot_choice.itemText(index) for index in range(self.spot_choice.count())]:
+        labels.extend(label for label in self.extra_spots if label not in labels)
+        pinned = None if self.pinned_spot is None else self.pinned_spot.label
+        chosen = pinned if pinned is not None else self.spot_choice.currentText()
+        shown = [self.spot_choice.itemText(index) for index in range(self.spot_choice.count())]
+        if labels == shown and chosen == self.spot_choice.currentText():
             return
-        chosen = self.spot_choice.currentText()
         self._filling_choice = True
         try:
             self.spot_choice.clear()
@@ -350,6 +361,8 @@ class TrainerPanel(QWidget):
         chosen = self.spot_choice.currentText()
         if chosen == ANY_SPOT:
             return catalogue
+        if chosen in self.extra_spots:
+            return [self.extra_spots[chosen]]
         return [spot for spot in catalogue if spot.label == chosen] or catalogue
 
     def nothing_to_ask(self) -> str:
