@@ -355,14 +355,18 @@ class TrainerPanel(QWidget):
             self._filling_filters = False
 
     def on_spot_choice_changed(self, _label: str) -> None:
-        """A situation the user chose for themselves abandons a pinned node.
+        """A situation the user chose for themselves abandons whatever was being drilled.
 
         Left pinned, the trainer would go on asking the node while the chooser said
         something else -- and the chooser is how a user says they are done with it. The
         pinned line leaves the filter with it: kept, it would narrow the very catalogue
         the user is choosing from to the one node they just walked away from.
+
+        A review session is the same thing wearing the queue instead of the pin: the user
+        choosing a situation is done with the session, which is what stops the next deals
+        from going on rotating through spots they did not ask for.
         """
-        if self._filling_choice or self.pinned_spot is None:
+        if self._filling_choice or (self.pinned_spot is None and not self.session_spots):
             return
         self.pinned_spot = None
         self.session_spots = []

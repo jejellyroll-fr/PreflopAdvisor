@@ -1537,8 +1537,13 @@ def review(main_window, tmp_path):
         encoding="utf-8",
     )
     panel = main_window.review
+    #: The tree the window already has selected, named the way the selector names it. A review
+    #: compares against configured simulations, and the simulation a decision matched is what
+    #: the window selects before drilling it -- so the key has to be one it can select.
+    selected = main_window.tree_selector.get_tree_infos() or {}
     panel.trees_source = lambda: [
         {
+            "table_key": selected.get("table_key", "Table12"),
             "plrs": 2,
             "bb": 100,
             "game": "PLO",
@@ -1611,6 +1616,74 @@ def test_train_my_mistakes_starts_one_session_over_the_worst_decisions(review):
     assert trainer.question is not None
     assert trainer.question.spot.hero == "SB", "the 1.7bb mistake is asked before the 0.1bb one"
     assert trainer.question.spot.line == [], "and it is the root node, not the real hand"
+
+
+def test_drilling_a_reviewed_decision_moves_the_window_to_the_simulation_it_matched(review):
+    """A decision matched on another tree has to be drilled on that tree.
+
+    The spot alone is not enough: resolved against whichever simulation happened to be
+    selected, it reports a strategy from a solution that never played this hand -- and a node
+    that looks the same in two solutions is not the same node.
+    """
+    window = review.window()
+    selector = window.tree_selector
+    config = window.configs
+    #: A second entry over the same folder: what is being pinned is that the window *moves*,
+    #: so the two have to be distinguishable by key and selectable.
+    section = config.section("TreeInfos")
+    elsewhere = next(key for key in section if "." not in key)
+    config.set("TreeInfos", "Table13", section[elsewhere])
+    selector.refresh_trees(config.section("TreeInfos"), config.section("TreeToolTips"))
+    matched = "table13"
+    review.trees_source = lambda: [tree for tree in selector.trees if tree["table_key"] == matched]
+    review.load(review.review.path)
+    assert selector.select(elsewhere) is True, "the other tree is on screen to begin with"
+    review.table.selectRow(0)
+
+    review.train_selected()
+
+    assert selector.get_tree_infos()["table_key"] == matched
+    assert window.trainer.pinned_spot is not None
+    assert window.trainer.question is not None, "the session runs on the tree it matched"
+
+
+def test_a_matched_simulation_that_is_gone_is_reported_rather_than_drilled(review):
+    """A tree the document matched and the configuration no longer offers has nothing to drill.
+
+    Drilling it anyway would read the node against whichever tree is on screen, which is the
+    one answer that is worse than no answer.
+    """
+    window = review.window()
+    configured = review.trees_source
+    review.trees_source = lambda: [dict(tree, table_key="Table99") for tree in configured()]
+    review.load(review.review.path)
+    review.table.selectRow(0)
+
+    review.train_selected()
+
+    assert "Table99 is not configured any more" in window.trainer.spot_label.text()
+    assert window.trainer.pinned_spot is None, "nothing was drilled against the wrong tree"
+
+
+def test_choosing_a_situation_ends_a_review_session(main_window):
+    """The chooser is how a user says they are done with a session, queue or pin.
+
+    A multi-spot session holds no pin, so left alone it went on rotating through the spots
+    the review asked for while the chooser said the user had picked one for themselves.
+    """
+    trainer = main_window.trainer
+    trainer.next_hand()
+    spots = [Spot("SB first in", "SB", []), Spot("BB first in", "BB", [])]
+    trainer.train_spots(spots, source="reviewed")
+    assert trainer.session_spots
+
+    trainer.spot_choice.setCurrentText("Any situation")
+    trainer.spot_choice.setCurrentText("SB first in")
+    trainer.next_hand()
+
+    assert trainer.session_spots == [], "the queue is gone"
+    assert trainer.source == "", "and the session no longer claims a reviewed hand"
+    assert trainer.question is not None
 
 
 def test_an_answer_drilled_for_a_reviewed_hand_keeps_the_link(review):
