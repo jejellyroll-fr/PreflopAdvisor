@@ -43,10 +43,6 @@ logger = logging.getLogger(__name__)
 
 #: Cards per hand, by the game a tree declares. Matches what the card selector offers.
 CARDS_PER_GAME = {"NL": 2, "PLO": 4, "PLO8": 4, "PLO5": 5}
-#: How many of a node's own hands to try when a randomly dealt one was not in it. Drawn
-#: from what the node holds, so the first realisable one answers; the rest is headroom for
-#: a key the converter cannot deal back out.
-NODE_SAMPLES = 8
 #: Height of the revealed strategy tiles. They read at a glance; they do not need the
 #: whole panel, and the room below is where the tally sits.
 TILE_HEIGHT = 120
@@ -289,6 +285,11 @@ class TrainerPanel(QWidget):
                 combo.setCurrentIndex(max(index, 0))
         finally:
             self._filling_filters = False
+        # The bar just changed under the filter: a selection this table or this game does
+        # not offer has been reset to "any", and suppressing the change signal left the
+        # filter holding the value the bar no longer shows -- a PLO hand class applied to
+        # a hold'em tree, which matches nothing while the label claims there is no filter.
+        self.on_filter_changed()
 
     def on_spot_choice_changed(self, _label: str) -> None:
         """A situation the user chose for themselves abandons a pinned node.
@@ -364,7 +365,11 @@ class TrainerPanel(QWidget):
         self.update_filter_options(list(metadata.seats), metadata.game)
         if self.pinned_spot is not None:
             # One decision, asked for by name: there is nothing to shuffle it against.
-            spots = [self.pinned_spot]
+            # Unless the filters exclude it -- the pin is held while the bar narrows, and
+            # drilling a seat or a line the bar says is filtered out contradicts it. The
+            # session then reports what it cannot match, which is what an empty filter
+            # state already reads as.
+            spots = [self.pinned_spot] if self.filter.allows_spot(self.pinned_spot) else []
         else:
             spots = self.chosen_spots(list(metadata.seats))
             self.rng.shuffle(spots)
@@ -410,7 +415,13 @@ class TrainerPanel(QWidget):
         keys = provider.hands_at(node)
         if not keys:
             return None
-        for key in self.rng.sample(keys, min(len(keys), NODE_SAMPLES)):
+        # Every key is looked at, not a sample of them. A class filter narrows sixteen
+        # thousand hands to a few hundred, and eight arbitrary draws would report "nothing
+        # matches" while the node holds plenty -- sampling cannot witness an absence.
+        # Shuffled, so the hand asked still varies from deal to deal.
+        order = list(keys)
+        self.rng.shuffle(order)
+        for key in order:
             held = hand_for_key(key, self.rng)
             if held is None or not self.filter.allows_hand(held):
                 continue

@@ -173,15 +173,36 @@ def classes_for(game: str) -> tuple[str, ...]:
     return tuple(names)
 
 
+#: A concrete hold'em hand: rank, suit, rank, suit, as the card selector deals it.
+HOLDEM_CONCRETE = re.compile(r"^[AKQJT98765432][cdhs][AKQJT98765432][cdhs]$")
+
+
+def as_key(hand: str) -> str:
+    """A hand as the key the taxonomy reads.
+
+    The converter tells a concrete hand from a key by its length, which is right for every
+    form but one: four characters is a hold'em hand (``"AhKs"``) *and* a key of four ranks
+    (``"JT98"``). Read as the first, the second has its second and fourth characters taken
+    for suits -- ``"JT98"`` becoming ``"J9o"`` -- which drops two of its ranks and
+    classifies a hand the caller never asked about. So a four-character string is only
+    converted when it really is a concrete hold'em hand.
+    """
+    stripped = hand.replace(" ", "")
+    if len(stripped) == 4 and not HOLDEM_CONCRETE.match(stripped):
+        return stripped
+    return convert_hand(hand)
+
+
 def classify(hand: str, game: str = "PLO") -> tuple[str, ...]:
     """Every class a hand belongs to, most specific first.
 
     :param hand: A concrete hand as the card selector deals it (``"AhKs4h3s"``), or a key
-        already in canonical form. Both are read the same way, through the converter, so a
-        filter means the same thing whichever side of the trainer asks it.
+        already in canonical form (``"(3K)(4A)"``, ``"AKs"``, ``"JT98"``). Both are read
+        the same way, through the converter, so a filter means the same thing whichever
+        side of the trainer asks it.
     """
     try:
-        key = convert_hand(hand)
+        key = as_key(hand)
     except (AttributeError, IndexError, KeyError):
         return ()
     if not key or not ranks_of(key):  # nothing that converted into a hand

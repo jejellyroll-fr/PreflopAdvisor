@@ -1320,6 +1320,74 @@ def test_a_pinned_node_is_part_of_the_filter(main_window):
     assert trainer.filter.exact_line == (("SB", "Raise100"),)
 
 
+def test_a_class_filter_finds_a_node_that_holds_only_a_few_of_the_class(tmp_path, main_window):
+    """One eligible hand among forty: a sample of eight reported that nothing matched.
+
+    Sampling cannot witness an absence, and a class filter is exactly the case that makes
+    that matter -- double-suited hands are a fifth of a real node, and a small export can
+    hold one. The session must walk what the node holds before saying there is nothing.
+    """
+    folder = tmp_path / "HU-few-double-suited"
+    folder.mkdir()
+    ranks = "23456789TJQKA"
+    keys = ["(3K)(4A)", *(ranks[index : index + 4] for index in range(38))]
+    body = "".join(f"{key}\n1.0;2000.0\n" for key in keys)
+    for stem in ("0", "1", "40100"):
+        (folder / f"{stem}.rng").write_text(body)
+    trainer = main_window.trainer
+    trainer.tree_source = lambda: {
+        "plrs": 2,
+        "bb": 100,
+        "game": "PLO",
+        "folder": str(folder),
+        "infos": "few double-suited",
+    }
+    trainer.next_hand()
+    trainer.class_filter.setCurrentIndex(trainer.class_filter.findData("double-suited"))
+
+    trainer.next_hand()
+
+    assert trainer.question is not None
+    assert "double-suited" in classify(trainer.question.hand, "PLO")
+
+
+def test_switching_to_a_tree_the_filter_cannot_express_reads_the_bar_again(tmp_path, main_window):
+    """A hold'em tree offers no hand class of Omaha's, so the bar resets -- and the filter must.
+
+    The class list is rebuilt under a guard that keeps the combs from looking like user
+    choices, so a filter left holding ``double-suited`` matched nothing while the label
+    said the session was unrestricted.
+    """
+    folder = tmp_path / "NL-hu"
+    folder.mkdir()
+    for stem in ("0", "1", "40100"):
+        (folder / f"{stem}.rng").write_text("AKs\n1.0;2000.0\n")
+    trainer = main_window.trainer
+    trainer.next_hand()
+    trainer.class_filter.setCurrentIndex(trainer.class_filter.findData("double-suited"))
+    assert trainer.filter.hand_class == "double-suited"
+
+    trainer.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "NL", "folder": str(folder), "infos": "nl"}
+    trainer.next_hand()
+
+    assert trainer.class_filter.currentData() is None, "the bar shows no class"
+    assert trainer.filter.hand_class is None, "and the filter agrees with it"
+
+
+def test_a_pinned_node_is_not_drilled_when_the_filter_excludes_it(main_window):
+    """The pin is not silently dropped, and the session says what it cannot match."""
+    trainer = main_window.trainer
+    trainer.train_spot(Spot("BB: SB raise 100%", "BB", [("SB", "Raise100")]))
+    assert trainer.question is not None
+
+    trainer.hero_filter.setCurrentIndex(trainer.hero_filter.findData("SB"))
+    trainer.next_hand()
+
+    assert trainer.pinned_spot is not None, "still pinned"
+    assert trainer.question is None
+    assert "Nothing matches" in trainer.spot_label.text()
+
+
 def test_the_chooser_only_offers_what_the_filter_leaves(main_window):
     trainer = main_window.trainer
     trainer.next_hand()
