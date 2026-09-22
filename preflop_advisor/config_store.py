@@ -22,6 +22,7 @@ examples. Any test that writes a user override and then asserts the shipped
 import configparser
 import logging
 import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -72,6 +73,25 @@ KNOWN_KEYS: dict[str, set[str]] = {
 }
 
 
+def next_table_key(config: "LayeredConfig") -> str:
+    """The next free ``Table<N>`` key for a simulation being added.
+
+    Lives here rather than beside the one editor that used to hold it, because a sim now
+    arrives through more than one door -- the configuration tab and the import wizard --
+    and two generators would eventually hand out the same key.
+    """
+    existing = {key.lower() for key in config.tree_keys("TreeInfos")}
+    highest = 0
+    for key in existing:
+        match = re.search(r"table(\d+)", key)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    number = highest + 1 if highest > 0 else 1
+    while f"table{number}" in existing:
+        number += 1
+    return f"Table{number}"
+
+
 def user_config_path() -> Path:
     """Where the user's overrides are kept.
 
@@ -95,7 +115,11 @@ def _read_layer(path: Path) -> configparser.ConfigParser:
     must start, so the parse errors are swallowed into the log and an empty
     parser returned.
     """
-    parser = configparser.ConfigParser()
+    # No interpolation: these values are labels, paths and numbers, and a description
+    # saying what a table charges is written with a percent sign -- ``5% capped 3bb`` is
+    # the wizard's own example. Interpolating would refuse that value on the way in and
+    # read a doubled sign back out again.
+    parser = configparser.ConfigParser(interpolation=None)
     if not path.exists():
         return parser
     try:

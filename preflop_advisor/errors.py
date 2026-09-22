@@ -14,6 +14,10 @@ class RangeFolderNotFound(PreflopAdvisorError):
     """The range folder of a tree could not be located."""
 
 
+class SimulationScanError(PreflopAdvisorError):
+    """A folder could not be read as a simulation, or cannot be imported as one."""
+
+
 class InvalidRaiseSizing(PreflopAdvisorError):
     """A ``RaiseSizeList`` entry does not map to any known action code."""
 

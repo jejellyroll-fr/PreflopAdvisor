@@ -7,9 +7,11 @@ exactly where the interesting regressions live. These tests click real buttons w
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
+from preflop_advisor import gui as gui_module
 from preflop_advisor.card_selector import CardSelector
+from preflop_advisor.config_store import LayeredConfig
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
 from preflop_advisor.hand_convert_helper import convert_hand
 from preflop_advisor.outputframe import short_action_label
@@ -19,7 +21,7 @@ from preflop_advisor.trainer import Spot
 from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import TreeSelector, ante_of
 
-from .conftest import REFERENCE_HAND
+from .conftest import PACKAGE_CONFIG, REFERENCE_HAND
 
 # Grid coordinates of the card buttons: column 0 is hearts, rows are A, K, Q, J.
 # Seats of a table that size, in acting order, as the reader hands them to the selector.
@@ -1059,3 +1061,76 @@ def test_an_ante_declaration_is_read_whatever_its_casing():
     section = {"Table5": "PLO,6,100,folder", "Table5.ante": "0.125"}
 
     assert ante_of("Table5", "6-max ante PLO", section) == 0.125
+
+
+# --------------------------------------------------------------------------------------
+# Importing a simulation from the Advisor tab
+# --------------------------------------------------------------------------------------
+
+
+#: The key the fake wizard below imports under, capitalised the way the importer mints
+#: one -- and read back lower-cased, because that is what ConfigParser does to it.
+IMPORTED_KEY = "Table9000"
+
+
+class FakeImportWizard:
+    """Stands in for the dialog, writing the simulation it claims to have confirmed."""
+
+    def __init__(self, config, parent=None) -> None:
+        self.config = config
+        self.parent = parent
+        self.imported_key: str | None = None
+
+    def exec(self) -> int:
+        self.config.set("TreeInfos", IMPORTED_KEY, "2,100,PLO,ranges/HU-100bb-with-limp,Fake import")
+        self.config.save()
+        self.imported_key = IMPORTED_KEY
+        return QDialog.DialogCode.Accepted
+
+
+def test_the_window_selects_the_simulation_it_just_imported(qtbot, main_window, tmp_path, monkeypatch):
+    """An import that leaves the previous sim on screen looks like it did nothing."""
+    main_window.configs = LayeredConfig(PACKAGE_CONFIG, user_path=tmp_path / "config.ini")
+    monkeypatch.setattr(gui_module, "ImportWizard", FakeImportWizard)
+
+    main_window.import_simulation()
+
+    keys = [tree["table_key"] for tree in main_window.tree_selector.trees]
+    assert IMPORTED_KEY.lower() in keys, "the selector was rebuilt from the new configuration"
+    selected = main_window.tree_selector.current_tree
+    assert selected is not None
+    assert selected["table_key"].lower() == IMPORTED_KEY.lower(), "and the import is the sim on screen"
+    assert f"Imported {IMPORTED_KEY}" in main_window.statusBar().currentMessage()
+
+
+def test_an_import_the_selector_does_not_know_leaves_the_selection_alone(main_window, tmp_path, monkeypatch):
+    """A key the selector cannot find is not a reason to crash on the way back."""
+
+    class VanishingWizard(FakeImportWizard):
+        def exec(self) -> int:
+            self.imported_key = "Table99"
+            return QDialog.DialogCode.Accepted
+
+    main_window.configs = LayeredConfig(PACKAGE_CONFIG, user_path=tmp_path / "config.ini")
+    monkeypatch.setattr(gui_module, "ImportWizard", VanishingWizard)
+    before = main_window.tree_selector.get_tree_infos()
+
+    main_window.import_simulation()
+
+    assert main_window.tree_selector.get_tree_infos() == before
+
+
+def test_a_cancelled_import_changes_nothing(main_window, monkeypatch):
+    class CancellingWizard:
+        def __init__(self, config, parent=None) -> None:
+            self.imported_key = None
+
+        def exec(self) -> int:
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(gui_module, "ImportWizard", CancellingWizard)
+    before = main_window.tree_selector.get_tree_infos()
+
+    main_window.import_simulation()
+
+    assert main_window.tree_selector.get_tree_infos() == before
