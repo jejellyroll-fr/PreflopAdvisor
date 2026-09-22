@@ -646,6 +646,12 @@ def test_the_trainer_grades_in_the_unit_the_tree_declares(qtbot, two_size_tree, 
     panel = TrainerPanel(lambda: two_size_tree, configs, output_configs)
     qtbot.addWidget(panel)
 
+    # Pin the spot: a deal walks a shuffled catalogue, so which node answers is a roll of
+    # the dice, and this test is about the numbers of one known node. The chooser is
+    # filled first -- it holds nothing but "Any situation" until a tree fills it, and a
+    # non-editable combo box cannot be set to an entry it does not have.
+    panel.refresh_spots()
+    panel.spot_choice.setCurrentText("SB first in")
     panel.next_hand()
     question = panel.question
 
@@ -656,6 +662,8 @@ def test_the_trainer_grades_in_the_unit_the_tree_declares(qtbot, two_size_tree, 
     panel.answer(best.action)
 
     assert panel.verdict_label.text() == "Correct"
+    # The hundred-percent raise is worth +2.00bb this way and +1.00bb divided by the
+    # display default, so the doubling is the whole of what is being asserted.
     assert [(tile.action_label.text(), tile.ev_label.text()) for tile in panel.tiles] == [
         ("Fold", "+1.20"),
         ("Call", "+1.40"),
