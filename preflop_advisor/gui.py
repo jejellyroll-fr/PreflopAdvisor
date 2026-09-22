@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import sqlite_store
+from .analytics_panel import AnalyticsPanel
 from .card_selector import CardSelector
 from .config_store import LayeredConfig, user_config_path
 from .config_tab import ConfigTab
@@ -37,6 +38,7 @@ from .paths import package_file
 from .position_selector import PositionSelector
 from .randomizer import RandomButton
 from .settings import ConfigSource, Settings, normalize
+from .strategy import Node, node_identity
 from .trainer import Spot
 from .trainer_panel import TrainerPanel
 from .tree_reader import TreeReader
@@ -221,6 +223,17 @@ class MainWindow(QMainWindow):
         self.review = HandReviewPanel(lambda: self.tree_selector.trees, tree_reader_settings)
         self.review.trainRequested.connect(self.train_spots)
 
+        # The dashboard reads the selected tree the way the Explorer does, one bounded survey
+        # of it, and reads the history the way the trainer writes it. Both handoffs are the
+        # same two the other panels make: a node to walk, and decisions to drill.
+        self.analytics = AnalyticsPanel(
+            self.tree_selector.get_tree_infos,
+            tree_reader_settings,
+            history=self.history,
+        )
+        self.analytics.trainRequested.connect(self.train_spots)
+        self.analytics.openRequested.connect(self.open_node)
+
         # The configuration tab edits the user layer of the config and, on save, asks the
         # window to redraw with the new values and rebuild the sim list if it changed.
         self.config_tab = ConfigTab(self.configs)
@@ -231,6 +244,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.trainer, "Trainer")
         self.tabs.addTab(self.explorer, "Explorer")
         self.tabs.addTab(self.review, "Review Hands")
+        self.tabs.addTab(self.analytics, "Analytics")
         self.tabs.addTab(self.config_tab, "Configuration")
         main_layout.addWidget(self.tabs, 0, 0)
 
@@ -336,6 +350,20 @@ class MainWindow(QMainWindow):
         self.trainer.train_spot(spot, source=source)
         self.tabs.setCurrentWidget(self.trainer)
 
+    def open_node(self, node: object) -> None:
+        """Walk one exact decision in the Explorer, from wherever it was found.
+
+        The dashboard and the review screen find decisions the spot catalogue cannot name, so
+        what they hand over is a node rather than a family: the Explorer opens on that line,
+        expanding it action by action, and a node the selected tree does not hold is reported
+        instead of being shown as the nearest thing to it.
+        """
+        if not isinstance(node, Node):  # pragma: no cover - the signal only ever carries one
+            return
+        self.tabs.setCurrentWidget(self.explorer)
+        if not self.explorer.reveal(node):
+            self.report_error(f"The selected tree holds no decision at {node_identity(node)}.")
+
     def train_spots(self, spots: object, source: str = "") -> None:
         """Drill one decision the review asked for, or several in turn.
 
@@ -387,6 +415,10 @@ class MainWindow(QMainWindow):
         apply to the next sim load, which is also covered here.
         """
         self.tree_selector.refresh_trees(self.configs.section("TreeInfos"), self.configs.section("TreeToolTips"))
+        # A survey is remembered by the folder it read, and a saved setting can change what
+        # that folder means -- another stack, another kind, another column mapping. Forgotten
+        # here so the next opening of the tab reads it as it is now.
+        self.analytics.forget()
         self.update_output_frame()
 
     def update_output_frame(self) -> None:

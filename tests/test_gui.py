@@ -13,12 +13,13 @@ from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import QApplication, QDialog
 
 from preflop_advisor import gui as gui_module
+from preflop_advisor.analytics_panel import EMPTY_STATE as ANALYTICS_EMPTY_STATE
 from preflop_advisor.card_selector import CardSelector
 from preflop_advisor.config_store import LayeredConfig
 from preflop_advisor.gui import DEFAULT_WINDOW_SIZE, DatabaseProgress, MainWindow
 from preflop_advisor.hand_classes import classify
 from preflop_advisor.hand_convert_helper import convert_hand
-from preflop_advisor.history import default_path
+from preflop_advisor.history import TrainingAnswer, default_path
 from preflop_advisor.node_explorer_panel import EMPTY_STATE
 from preflop_advisor.outputframe import short_action_label
 from preflop_advisor.position_selector import PositionSelector
@@ -581,7 +582,7 @@ def test_showing_the_window_trims_it(qtbot, main_window):
 def test_the_window_offers_the_advisor_the_trainer_and_the_explorer(main_window):
     tabs = [main_window.tabs.tabText(index) for index in range(main_window.tabs.count())]
 
-    assert tabs == ["Advisor", "Trainer", "Explorer", "Review Hands", "Configuration"]
+    assert tabs == ["Advisor", "Trainer", "Explorer", "Review Hands", "Analytics", "Configuration"]
 
 
 def test_dealing_asks_a_spot_the_selected_tree_can_answer(main_window):
@@ -1148,6 +1149,25 @@ def test_a_node_with_nothing_behind_it_says_so(main_window):
     assert closing.child(0).text(0) == "no decision follows"
 
 
+def test_the_explorer_opens_on_the_decision_it_is_given(main_window):
+    """The dashboard hands a decision over, and the Explorer opens on exactly that line."""
+    explorer = open_explorer(main_window)
+    decision = Node(hero="SB", path=(("SB", "Call"), ("BB", "Raise100")))
+
+    assert explorer.reveal(decision) is True
+
+    assert explorer.current == decision
+    assert explorer.tree.currentItem().data(0, Qt.ItemDataRole.UserRole) == decision
+    assert "SB Call" in explorer.detail_labels["Line"].text()
+
+
+def test_the_explorer_refuses_a_decision_the_selected_tree_does_not_hold(main_window):
+    """A node of another simulation is reported, not shown as the nearest thing to it."""
+    explorer = open_explorer(main_window)
+
+    assert explorer.reveal(Node(hero="CO", path=())) is False
+
+
 def test_selecting_a_node_shows_what_it_is(main_window):
     explorer = open_explorer(main_window)
     root = explorer.tree.topLevelItem(0)
@@ -1642,3 +1662,214 @@ def test_an_unreadable_document_is_reported_rather_than_raised(review, tmp_path)
 
     assert review.review is None
     assert "could not be read" in review.heading.text()
+
+
+# --------------------------------------------------------------------------------------
+# Analytics
+
+#: The table the dashboard is surveyed over: the small blind's open -- a real mix, with a
+#: 0.1 bb gap between its two best actions -- and the big blind's answer to the raise.
+ANALYTICS_TABLE = (
+    "Line,Hero,Hand,Action,Freq,EV (bb),Pot\n"
+    ",SB,AhKs4h3s,raise 75%,60,1.20,1.5\n"
+    ",SB,AhKs4h3s,call,30,1.10,1.5\n"
+    ",SB,AhKs4h3s,fold,10,-0.50,1.5\n"
+    "SB:raise 75%,BB,AhKs4h3s,raise 2.5bb,90,0.90,4.0\n"
+    "SB:raise 75%,BB,AhKs4h3s,call,10,0.80,4.0\n"
+)
+
+
+def analytics_tree(folder):
+    """One CSV simulation, configured the way the import wizard configures one."""
+    return {
+        "plrs": 2,
+        "bb": 100,
+        "game": "PLO",
+        "folder": str(folder),
+        "infos": "a table",
+        "ante": 0.0,
+        "kind": "csv",
+        "columns": {},
+    }
+
+
+@pytest.fixture
+def analytics(main_window, tmp_path):
+    """The window's Analytics tab, over a simulation of this test's own.
+
+    The tree source of the tab *and* of the Explorer is replaced: the dashboard hands a
+    decision over to the Explorer, so both have to be looking at the same tree for that
+    handoff to mean anything.
+    """
+    (tmp_path / "solution.csv").write_text(ANALYTICS_TABLE, encoding="utf-8")
+    tree = analytics_tree(tmp_path)
+    panel = main_window.analytics
+    panel.tree_source = lambda: tree
+    main_window.explorer.tree_source = lambda: tree
+    panel.survey_tree()
+    return panel
+
+
+ANALYTICS_OPEN = "SB:"
+ANALYTICS_DEFEND = "BB:SB Raise75"
+
+
+def test_the_dashboard_surveys_the_selected_simulation(analytics):
+    assert "PLO 2-max 100bb" in analytics.heading.text()
+    assert analytics.survey is not None
+    assert [reading.identity for reading in analytics.survey.readings] == [ANALYTICS_OPEN, ANALYTICS_DEFEND]
+    assert "2 decisions" in analytics.overview.text()
+    assert "mixed" in analytics.overview.text().lower()
+    assert analytics.action_table.rowCount() == 4, "the open's three, the big blind's raise, and the shared call"
+    assert analytics.action_table.item(0, 0).text() == "Call", "the most offered action leads the table"
+
+
+def test_the_dashboard_lists_the_decisions_it_ranked(analytics):
+    """The table is drawn from the one list a selection is read back through."""
+    shown = analytics.shown()
+
+    assert [reading.identity for reading in shown] == [ANALYTICS_OPEN, ANALYTICS_DEFEND]
+    assert shown[0].gap_bb == pytest.approx(0.10)
+    assert analytics.table.rowCount() == 2
+    assert analytics.table.item(0, 1).text() == "SB", "the seat of the first row is the first reading's"
+    assert analytics.table.item(0, 5).text() == "0.100"
+
+
+def test_the_dashboard_narrows_its_list_with_the_filter_bar(analytics):
+    analytics.seat_choice.setCurrentIndex(analytics.seat_choice.findData("BB"))
+
+    assert [reading.identity for reading in analytics.shown()] == [ANALYTICS_DEFEND]
+    assert analytics.table.rowCount() == 1
+    assert "1 of 2 surveyed decisions shown" in analytics.problems.text()
+
+
+def test_a_filter_that_leaves_nothing_says_so(analytics):
+    """Both decisions of this table are a tenth of a big blind apart, and neither is closer."""
+    analytics.gap_filter.setValue(0.01)
+
+    assert analytics.shown() == ()
+    assert analytics.table.rowCount() == 0
+    assert "no decision of the 2 surveyed" in analytics.problems.text()
+    assert analytics.train_button.isEnabled() is False
+
+
+def test_the_ranking_can_be_asked_for_another_order(analytics):
+    """Both nodes hold one hand, so the order falls back to identity -- which is stable."""
+    analytics.ranking_choice.setCurrentIndex(analytics.ranking_choice.findData("hands"))
+
+    assert [reading.identity for reading in analytics.shown()] == [ANALYTICS_DEFEND, ANALYTICS_OPEN]
+    assert analytics.table.isSortingEnabled() is False, "Qt must not reorder the rows behind shown()"
+
+
+def test_a_selected_decision_opens_in_the_explorer(qtbot, analytics):
+    analytics.table.selectRow(1)
+
+    qtbot.mouseClick(analytics.open_button, Qt.LeftButton)
+
+    window = analytics.window()
+    assert window.tabs.currentWidget() is window.explorer
+    assert window.explorer.current == Node(hero="BB", path=(("SB", "Raise75"),))
+    assert "SB raise 75%" in window.explorer.detail_labels["Line"].text()
+
+
+def test_opening_is_offered_only_for_one_decision_at_a_time(analytics):
+    analytics.table.selectAll()
+
+    assert analytics.open_button.isEnabled() is False
+    assert analytics.train_button.isEnabled() is True
+
+
+def test_training_the_selected_decisions_sends_their_nodes_to_the_trainer(qtbot, analytics):
+    analytics.table.selectRow(0)
+
+    qtbot.mouseClick(analytics.train_button, Qt.LeftButton)
+
+    window = analytics.window()
+    trainer = window.trainer
+    assert window.tabs.currentWidget() is trainer
+    assert trainer.pinned_spot is not None
+    assert list(trainer.pinned_spot.line) == [], "the root decision of the open, not a family"
+    assert trainer.question is not None
+
+
+def test_the_training_section_reads_the_history(analytics):
+    window = analytics.window()
+    window.history.record(
+        TrainingAnswer(
+            hero="BB",
+            line=[("SB", "Raise75")],
+            hand=REFERENCE_HAND,
+            chosen="Call",
+            best="Raise2.5bb",
+            ev_loss=0.40,
+            verdict="Mistake",
+            simulation=str(analytics.tree_source()["folder"]),
+            pot=4.0,
+        )
+    )
+
+    analytics.refresh_performance()
+
+    assert "1 hands in 1 sessions" in analytics.training_summary.text()
+    assert "0.400 bb lost per hand" in analytics.training_summary.text()
+    assert analytics.breakdown_table.rowCount() == 1
+    assert analytics.breakdown_table.item(0, 0).text() == "BB"
+    assert analytics.trend_table.rowCount() == 1
+    assert analytics.simulation_choice.itemText(0) == "Every simulation"
+    assert analytics.simulation_choice.itemText(1) == str(analytics.tree_source()["folder"])
+
+
+def test_the_training_section_can_be_read_for_one_simulation(analytics):
+    window = analytics.window()
+    for name, loss in (("one-tree", 0.10), ("another-tree", 2.00)):
+        window.history.record(
+            TrainingAnswer(
+                hero="SB",
+                line=[],
+                hand=REFERENCE_HAND,
+                chosen="Call",
+                best="Raise75",
+                ev_loss=loss,
+                verdict="Mistake",
+                simulation=name,
+                pot=1.5,
+            )
+        )
+    analytics.refresh_performance()
+
+    analytics.simulation_choice.setCurrentIndex(analytics.simulation_choice.findData("one-tree"))
+    analytics.refresh_performance()
+
+    assert "1 hands in 1 sessions" in analytics.training_summary.text()
+    assert "0.100 bb lost per hand" in analytics.training_summary.text()
+
+
+def test_the_dashboard_says_so_when_there_is_nothing_to_study(main_window):
+    panel = main_window.analytics
+    panel.tree_source = lambda: None
+
+    panel.survey_tree()
+
+    assert panel.heading.text() == ANALYTICS_EMPTY_STATE
+    assert panel.table.rowCount() == 0
+    assert panel.survey is None
+
+
+def test_the_dashboard_reports_a_tree_it_cannot_read(main_window):
+    panel = main_window.analytics
+    panel.tree_source = lambda: {"plrs": 2, "bb": 100, "game": "PLO", "folder": "no/such/tree"}
+
+    panel.survey_tree()
+
+    assert "not found" in panel.heading.text()
+    assert panel.table.rowCount() == 0
+
+
+def test_a_saved_setting_makes_the_dashboard_survey_again(main_window):
+    """A stack depth or a column mapping can change what a folder means, so it is re-read."""
+    panel = main_window.analytics
+    panel._surveyed = "ranges/HU-100bb-with-limp"
+
+    main_window.on_configuration_changed()
+
+    assert panel._surveyed is None
