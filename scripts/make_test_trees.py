@@ -34,7 +34,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # This script lives outside the package, so make the repository importable.
 sys.path.insert(0, PROJECT_ROOT)
 
-from preflop_advisor.sizings import Sizing, sizings_for
+from preflop_advisor.sizings import Sizing
 from preflop_advisor.table_state import table_state
 from preflop_advisor.trainer import spots_for
 from preflop_advisor.tree_reader import TreeReader
@@ -225,7 +225,7 @@ def build(players: int, hands: list[str], out: str, configs: Any) -> str:
 
     nodes = discover(players, configs, folder)
     seats = TreeReader("AhKsQd2c", "", {"plrs": players, "bb": 100, "game": "PLO", "folder": folder}, configs)
-    sizings = sizings_for(seats.action_processor.action_codes, dict(configs))
+    sizings = seats.provider.sizings()
 
     for names in families(nodes).values():
         write_family(folder, names, nodes, hands, seats.position_list, sizings)

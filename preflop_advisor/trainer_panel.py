@@ -28,12 +28,12 @@ from . import theme
 from .errors import PreflopAdvisorError
 from .outputframe import CHIPS_PER_BB, ActionTile, short_action_label
 from .settings import ConfigSource, get
-from .sizings import Sizing, sizings_for
+from .sizings import Sizing
+from .strategy import StrategyProvider, StrategyResult, node_for, provider_for
 from .table_state import table_state
-from .trainer import Question, Session, Spot, deal, grade, hand_for_key, playable, spots_for
+from .trainer import Question, Session, Spot, deal, grade, hand_for_key, spots_for
 from .trainer_table import TrainerTable
-from .tree_reader import TreeReader
-from .tree_reader_helpers import ActionProcessor
+from .types import ActionSequence
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +158,11 @@ class TrainerPanel(QWidget):
         if tree is None:
             return
         try:
-            reader = TreeReader("", "", tree, self.tree_reader_configs)
+            provider = provider_for(tree, self.tree_reader_configs)
         except PreflopAdvisorError as error:
             logger.debug("No situations to offer: %s", error)
             return
-        self.offer_spots(reader.position_list)
+        self.offer_spots(list(provider.metadata().seats))
 
     def next_hand(self) -> None:
         """Deal a new spot and hand, or say why it could not be done."""
@@ -209,52 +209,68 @@ class TrainerPanel(QWidget):
         A spot whose node exists but did not hold the hand dealt is asked which hands it
         does hold, and one of those is dealt back out. Dealing again at random would not
         do: a node of a truncated export may hold a handful of the sixteen thousand, and
-        five more draws would miss them as surely as the first. A spot with no node at all
-        is left after one look, since no hand can conjure a file.
+        five more draws would miss them as surely as the first. A spot the tree holds no
+        node for is passed over without dealing at all, since no hand can conjure a file.
         """
-        reader = TreeReader("", "", tree, self.tree_reader_configs)
-        cards = CARDS_PER_GAME.get(str(tree.get("game", "PLO")).upper(), 4)
-        self.offer_spots(reader.position_list)
-        spots = self.chosen_spots(reader.position_list)
+        provider = provider_for(tree, self.tree_reader_configs)
+        metadata = provider.metadata()
+        cards = CARDS_PER_GAME.get(metadata.game.upper(), 4)
+        self.offer_spots(list(metadata.seats))
+        spots = self.chosen_spots(list(metadata.seats))
         self.rng.shuffle(spots)
 
-        processor = reader.action_processor
-        self.sizings = sizings_for(processor.action_codes, self.tree_reader_configs)
-        self.stack = float(tree.get("bb", 100))
-        self.game = str(tree.get("game", "PLO"))
-        self.ante = tree.get("ante", 0.0)
-        self.seats = reader.position_list
+        self.sizings = provider.sizings()
+        # The EV unit belongs to the simulation that answered, not to this panel: a tree
+        # declaring another one -- ``ChipsPerBB`` under ``[TreeReader]`` -- would have
+        # every verdict, loss and displayed EV divided by the wrong number otherwise.
+        self.chips_per_bb = metadata.chips_per_bb
+        self.stack = metadata.stack_bb
+        self.game = metadata.game
+        self.ante = metadata.ante_bb
+        self.seats = list(metadata.seats)
         for spot in spots:
+            node = provider.resolve(node_for(spot.hero, spot.line))
+            if node is None or not provider.has_node(node):
+                # Nothing behind this line at all: no hand would find anything.
+                continue
+
             hand = deal(cards, self.rng)
-            results = playable(processor.get_results(hand, spot.line, spot.hero))
+            results = provider.strategy(node, hand)
             if self.gradable(results):
-                return self.question_for(processor, spot, hand, results)
+                return self.question_for(provider, spot, hand, results)
 
             # The spot did not answer for that hand. Rather than deal again and hope, ask
-            # what its files hold and deal one of those back out.
-            keys = self.hands_of(processor, spot)
+            # what the node holds and deal one of those back out. A node whose files are
+            # all empty -- a truncated export can leave one -- has nothing to draw from
+            # and is left after this one look.
+            keys = provider.hands_at(node)
             if not keys:
-                # Nothing behind this line at all: no hand would find anything.
                 continue
 
             for key in self.rng.sample(keys, min(len(keys), NODE_SAMPLES)):
                 held = hand_for_key(key, self.rng)
                 if held is None:
                     continue
-                results = playable(processor.get_results(held, spot.line, spot.hero))
+                results = provider.strategy(node, held)
                 if self.gradable(results):
-                    return self.question_for(processor, spot, held, results)
+                    return self.question_for(provider, spot, held, results)
         logger.warning("No spot of %s answered", tree.get("folder"))
         return None
 
-    def question_for(self, processor: ActionProcessor, spot: Spot, hand: str, results: list[Any]) -> Question:
+    def question_for(
+        self,
+        provider: StrategyProvider,
+        spot: Spot,
+        hand: str,
+        results: tuple[StrategyResult, ...],
+    ) -> Question:
         """A question, with the table the line of play left."""
-        # Expanded through the hero, then with the hero's own turn dropped: the folds that
-        # had to happen to reach them sit between the last action of the line and the hero,
-        # and the reader only fills those in when it is told who acts next. Without it, a
-        # cutoff opening first in was drawn with everyone before it still to act.
-        played = processor.get_action_sequence([*spot.line, (spot.hero, "Fold")])[:-1]
-        sequence = processor.find_valid_raise_sizes(played)
+        # The provider fills the line in through the hero -- the folds that had to happen
+        # to reach them, and the sizings this tree actually holds. That is the same
+        # resolution the node was read by, so the table drawn and the strategy graded
+        # cannot disagree about what happened before the hero acts.
+        node = provider.resolve(node_for(spot.hero, spot.line))
+        sequence: ActionSequence = [] if node is None else [(seat, action) for seat, action in node.path]
         state = table_state(
             self.seats,
             sequence,
@@ -267,7 +283,7 @@ class TrainerPanel(QWidget):
         return Question(spot, hand, results, state)
 
     @staticmethod
-    def gradable(results: list[Any]) -> bool:
+    def gradable(results: tuple[StrategyResult, ...]) -> bool:
         """Whether a node's entries can be scored against one another.
 
         Monker omits the EV for a hand the board makes impossible -- for the hand, so
@@ -276,7 +292,7 @@ class TrainerPanel(QWidget):
         measure. Such a spot is passed over like one that answered nothing, rather than
         asked and then refused.
         """
-        return bool(results) and all(entry[2] is not None for entry in results)
+        return bool(results) and all(result.ev is not None for result in results)
 
     def offer_spots(self, seats: list[str]) -> None:
         """Fill the chooser with the situations a table of these seats has.
@@ -307,24 +323,6 @@ class TrainerPanel(QWidget):
         if chosen != ANY_SPOT:
             return f"{chosen} has no ranges in this tree."
         return "No situation in this tree answered; try another tree."
-
-    @staticmethod
-    def hands_of(processor: ActionProcessor, spot: Spot) -> list[str]:
-        """Every hand any of this spot's action files holds.
-
-        All of them, not the first that exists: a spot is one file per action, and a
-        truncated export can leave an empty Fold beside a Call full of hands. Stopping at
-        the first would let the empty one hide the other, and the spot would be passed
-        over as though the tree had nothing for it.
-        """
-        keys: set[str] = set()
-        for action in processor.valid_actions:
-            sequence = processor.find_valid_raise_sizes(
-                processor.get_action_sequence([*spot.line, (spot.hero, action)])
-            )
-            if processor.test_action_sequence(sequence):
-                keys.update(processor.hands_at(sequence))
-        return sorted(keys)
 
     def render_hand(self, hand: str) -> str:
         """The dealt hand, with each suit in its own colour."""
@@ -379,13 +377,13 @@ class TrainerPanel(QWidget):
 
     def reveal(self, question: Question, chosen: str) -> None:
         """Show what the solver does with this hand, marking what was answered."""
-        for action, frequency, ev in question.results:
+        for result in question.results:
             tile = ActionTile(self)
             tile.set_action(
-                str(action),
-                f"{float(frequency) * 100:.0f}",
-                f"{float(ev) / self.chips_per_bb:.2f}" if ev is not None else None,
-                selected=action == chosen,
+                result.action,
+                f"{result.frequency * 100:.0f}",
+                f"{result.ev / self.chips_per_bb:.2f}" if result.ev is not None else None,
+                selected=result.action == chosen,
             )
             tile.setMaximumHeight(TILE_HEIGHT)
             tile.apply_fonts(TILE_HEIGHT, 120)

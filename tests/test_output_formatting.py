@@ -8,6 +8,7 @@ baseline and the chips-to-big-blinds conversion.
 import pytest
 
 from preflop_advisor.outputframe import CHIPS_PER_BB, OutputFrame
+from preflop_advisor.strategy import node_for
 from preflop_advisor.tree_reader import TreeReader
 
 from .conftest import REFERENCE_HAND
@@ -97,10 +98,13 @@ def test_folding_the_big_blind_costs_one_big_blind(hu_tree, tree_configs):
 
     BB posts one big blind; folding to a raise forfeits exactly that.
     """
-    processor = TreeReader(REFERENCE_HAND, "BB", hu_tree, tree_configs).action_processor
-    results = processor.get_results(REFERENCE_HAND, [("SB", "Raise")], "BB")
+    provider = TreeReader(REFERENCE_HAND, "BB", hu_tree, tree_configs).provider
+    node = provider.resolve(node_for("BB", [("SB", "Raise")]))
+    assert node is not None
+    results = provider.strategy(node, REFERENCE_HAND)
 
-    fold_ev = next(entry[2] for entry in results if entry[0] == "Fold")
+    fold_ev = next(result.ev for result in results if result.action == "Fold")
+    assert fold_ev is not None
     assert fold_ev / CHIPS_PER_BB == pytest.approx(-1.0, abs=0.01)
 
 

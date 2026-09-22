@@ -2,8 +2,8 @@
 """Drilling preflop decisions against the solver, without any of the display.
 
 A question is a spot and a hand; an answer is one of the actions the node offers. What
-makes it gradable is that the reader already returns, for every action, both how often the
-solver takes it and what it is worth -- so the answer is scored on the EV it gives up,
+makes it gradable is that the provider already returns, for every action, both how often
+the solver takes it and what it is worth -- so the answer is scored on the EV it gives up,
 never on the frequency.
 
 That distinction is the whole design. A node played 65% call and 35% raise has no single
@@ -15,10 +15,12 @@ best one, in big blinds, and that is what a player can act on.
 import logging
 import random
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from .strategy import StrategyResult
 from .table_state import TableState
-from .types import ActionSequence, Result
+from .types import ActionSequence
 
 logger = logging.getLogger(__name__)
 
@@ -51,18 +53,21 @@ class Spot:
 class Question:
     """A spot dealt to a hand, with the solver's answer already read.
 
-    ``table`` is what the line of play left on the table, when it could be worked out; a
-    tree whose sizings cannot be read still asks its question, without the numbers.
+    ``results`` is what the strategy provider answered, already stripped of the actions
+    the tree does not hold: a node whose files do not carry the hand is an empty answer,
+    not a nameless action to press. ``table`` is what the line of play left on the table,
+    when it could be worked out; a tree whose sizings cannot be read still asks its
+    question, without the numbers.
     """
 
     spot: Spot
     hand: str
-    results: list[Result]
+    results: tuple[StrategyResult, ...]
     table: TableState | None = None
 
     def actions(self) -> list[str]:
         """The actions this node offers, which are the only answers to allow."""
-        return [str(entry[0]) for entry in self.results]
+        return [result.action for result in self.results]
 
 
 @dataclass(frozen=True)
@@ -221,40 +226,34 @@ def holdem_hand_for_key(key: str, source: random.Random) -> str | None:
     return hand if convert_hand(hand) == key else None
 
 
-def playable(results: list[Result]) -> list[Result]:
-    """The entries of a node that actually name an action.
-
-    A range file that exists but does not hold the hand dealt comes back as
-    ``["", 0.0, 0.0]``: a placeholder for "not found", not a strategy. It is a list, and a
-    non-empty one, so a question built from it looks answerable -- with a nameless button,
-    and every answer costing nothing against a best action that is also nothing. Asked at
-    all, it would be scored Correct whatever the player pressed.
-    """
-    return [entry for entry in results if str(entry[0])]
-
-
-def grade(results: list[Result], chosen: str, chips_per_bb: float) -> Verdict:
+def grade(results: Sequence[StrategyResult], chosen: str, chips_per_bb: float) -> Verdict:
     """Score an answer by what it gives up against the best action of the node.
 
-    :param results: The node, as ``[action, frequency, ev]`` per action; an entry whose
-        EV the solver omitted (a hand the board makes impossible) has ``None`` and cannot
-        be scored.
+    :param results: The node, as the provider answered it; an entry whose EV the source
+        omitted (a hand the board makes impossible) has ``None`` and cannot be scored.
     :param chosen: The action answered.
     :param chips_per_bb: What the solver's EV unit is worth in big blinds.
     :return: The verdict, with the loss in big blinds.
     :raises ValueError: if the node holds nothing this can score -- every entry's EV is
         absent, or the answered action's is. Callers skip such a node before asking.
     """
-    scored = [entry for entry in results if entry[2] is not None]
+    scored = [entry for entry in results if entry.ev is not None]
     if not scored:
         raise ValueError("No entry of this node carries an EV to grade against")
-    best = max(scored, key=lambda entry: float(entry[2]))
-    answered = next((entry for entry in scored if entry[0] == chosen), None)
-    if answered is None:  # pragma: no cover - the buttons are built from the node itself
+    best = max(scored, key=_ev)
+    answered = next((entry for entry in scored if entry.action == chosen), None)
+    if answered is None:
         raise ValueError(f"{chosen} is not an action of this node")
 
-    loss = (float(best[2]) - float(answered[2])) / chips_per_bb
+    loss = (_ev(best) - _ev(answered)) / chips_per_bb
     for limit, label in DEFAULT_THRESHOLDS:
         if loss <= limit:
-            return Verdict(label, loss, chosen, str(best[0]))
-    return Verdict(BLUNDER, loss, chosen, str(best[0]))
+            return Verdict(label, loss, chosen, best.action)
+    return Verdict(BLUNDER, loss, chosen, best.action)
+
+
+def _ev(result: StrategyResult) -> float:
+    """The EV of an entry the caller has already found to carry one."""
+    if result.ev is None:  # pragma: no cover - grade filters these out first
+        raise ValueError("An entry without an EV has no cost")
+    return result.ev

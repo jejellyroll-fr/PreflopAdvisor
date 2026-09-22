@@ -11,6 +11,7 @@ import random
 import pytest
 
 from preflop_advisor.hand_convert_helper import convert_hand
+from preflop_advisor.strategy import StrategyResult, node_for, provider_for
 from preflop_advisor.trainer import (
     DECK,
     Question,
@@ -19,17 +20,21 @@ from preflop_advisor.trainer import (
     deal,
     grade,
     hand_for_key,
-    playable,
     spots_for,
 )
-from preflop_advisor.tree_reader import TreeReader
 
 from .conftest import REFERENCE_HAND
 
 CHIPS_PER_BB = 2000.0
 
+
+def node(*entries: tuple[str, float, float | None]) -> tuple[StrategyResult, ...]:
+    """A node's strategy as the provider hands it over, from ``(action, freq, ev)``."""
+    return tuple(StrategyResult(action, frequency, ev) for action, frequency, ev in entries)
+
+
 # A node the solver plays two ways, with the raise worth marginally more.
-MIXED = [["Fold", 0.0, -2000.0], ["Call", 0.65, 400.0], ["Raise100", 0.35, 500.0]]
+MIXED = node(("Fold", 0.0, -2000.0), ("Call", 0.65, 400.0), ("Raise100", 0.35, 500.0))
 
 
 # --------------------------------------------------------------------------------------
@@ -76,9 +81,9 @@ def test_folding_a_hand_the_solver_plays_is_graded_on_what_it_gives_up():
     ],
 )
 def test_the_verdict_follows_the_size_of_the_loss(ev, expected):
-    node = [["Raise100", 0.5, 500.0], ["Call", 0.5, ev]]
+    graded = node(("Raise100", 0.5, 500.0), ("Call", 0.5, ev))
 
-    assert grade(node, "Call", CHIPS_PER_BB).label == expected
+    assert grade(graded, "Call", CHIPS_PER_BB).label == expected
 
 
 def test_an_action_the_node_does_not_have_is_refused():
@@ -92,7 +97,7 @@ def test_a_node_without_evs_cannot_be_graded():
     Without an EV there is no best action to measure against, so the node is refused
     rather than scored as though everything were worth nothing.
     """
-    ungraded = [["Raise100", 0.5, None], ["Call", 0.5, None]]
+    ungraded = node(("Raise100", 0.5, None), ("Call", 0.5, None))
 
     with pytest.raises(ValueError):
         grade(ungraded, "Call", CHIPS_PER_BB)
@@ -100,7 +105,7 @@ def test_a_node_without_evs_cannot_be_graded():
 
 def test_an_action_without_an_ev_cannot_be_scored():
     """A mixed node where only one entry lost its EV: that answer has no cost."""
-    mixed = [["Raise100", 0.5, 500.0], ["Call", 0.5, None]]
+    mixed = node(("Raise100", 0.5, 500.0), ("Call", 0.5, None))
 
     with pytest.raises(ValueError):
         grade(mixed, "Call", CHIPS_PER_BB)
@@ -186,43 +191,31 @@ def test_an_empty_session_reports_zero_rather_than_dividing_by_it():
 
 
 def test_every_spot_of_the_shipped_tree_can_be_asked_and_graded(hu_tree, tree_configs):
-    """End to end on real ranges: each spot yields a node, and each node grades."""
-    reader = TreeReader(REFERENCE_HAND, "SB", hu_tree, tree_configs)
+    """End to end on real ranges: each spot yields a node, and each node grades.
+
+    Read through the provider, exactly as the panel does -- so this also pins that the
+    nodes the trainer identifies are the ones the strategy reads come back from.
+    """
+    provider = provider_for(hu_tree, tree_configs)
     rng = random.Random(20240710)
 
     asked = 0
-    for spot in spots_for(reader.position_list):
-        results = reader.action_processor.get_results(deal(4, rng), spot.line, spot.hero)
+    for spot in spots_for(list(provider.metadata().seats)):
+        spot_node = provider.resolve(node_for(spot.hero, spot.line))
+        if spot_node is None:
+            continue
+        results = provider.strategy(spot_node, deal(4, rng))
         if not results:
             continue
         asked += 1
         question = Question(spot, REFERENCE_HAND, results)
+        assert question.actions(), "a question may only offer named actions"
         for action in question.actions():
             verdict = grade(results, action, CHIPS_PER_BB)
             assert verdict.loss >= 0
             assert verdict.label in ("Correct", "Inaccuracy", "Mistake", "Blunder")
 
     assert asked >= 3, "the heads-up tree should answer at least open, defend and 3bet"
-
-
-# --------------------------------------------------------------------------------------
-# Placeholders are not a strategy
-# --------------------------------------------------------------------------------------
-
-
-def test_a_not_found_placeholder_is_not_a_playable_action():
-    """A file that exists without the hand in it answers ["", 0.0, 0.0].
-
-    It is a non-empty list, so a question built from it looks answerable: a button with no
-    name, and every answer costing nothing against a best action that is also nothing.
-    """
-    assert playable([["", 0.0, 0.0]]) == []
-
-
-def test_the_real_actions_of_a_half_answered_node_are_kept():
-    node = [["", 0.0, 0.0], ["Call", 1.0, 400.0]]
-
-    assert playable(node) == [["Call", 1.0, 400.0]]
 
 
 # --------------------------------------------------------------------------------------
