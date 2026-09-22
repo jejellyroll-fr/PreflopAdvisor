@@ -355,6 +355,10 @@ class OutputFrame(QWidget):
         logger.debug("Initializing OutputFrame")
         self.output_configs = output_configs
         self.tree_reader_configs = tree_reader_configs
+        # The unit EVs are divided by. The display setting is only the fallback for a
+        # grid that has not been read yet: once a tree answers, the unit is the one that
+        # tree states, so the number shown and the number graded cannot disagree.
+        self.chips_per_bb = float(self.output_configs.get("ChipsPerBB", CHIPS_PER_BB))
 
         # Info frame
         self.info_frame = QWidget(self)
@@ -456,6 +460,7 @@ class OutputFrame(QWidget):
     def update_output_frame(self, hand: str, position: str, tree: dict[str, Any]) -> None:
         logger.debug("Updating output frame")
         tree_reader = TreeReader(hand, position, tree, self.tree_reader_configs)
+        self.chips_per_bb = tree_reader.chips_per_bb
         results = tree_reader.get_results()
 
         tree_infos = f"{tree['plrs']}-max {tree['bb']}bb {tree['game']} {tree['infos']}"
@@ -584,7 +589,7 @@ class OutputFrame(QWidget):
                 0.0,
             )
 
-        chips_per_bb = float(self.output_configs.get("ChipsPerBB", CHIPS_PER_BB))
+        chips_per_bb = self.chips_per_bb
         displayed = [entry for entry in results if entry[0] != "Fold"]
         if len(displayed) > MAX_DISPLAYED_ACTIONS:
             logger.debug(

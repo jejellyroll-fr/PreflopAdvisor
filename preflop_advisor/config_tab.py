@@ -48,6 +48,7 @@ from .config_store import LayeredConfig, next_table_key
 from .paths import inspect_range_folder, resolve_range_folder, validate_tree
 from .sizings import sizing_for_code
 from .theme import ACCENT, EV_NEGATIVE, EV_POSITIVE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY
+from .tree_selector import kind_of
 
 logger = logging.getLogger(__name__)
 
@@ -329,7 +330,11 @@ class SimEditDialog(QDialog):
     def _validate_and_accept(self) -> None:
         res = self.get_result()
         raw_val = f"{res['players']},{res['bb']},{res['game']},{res['folder']},{res['description']}"
-        ok, reason = validate_tree(raw_val, bool(res["ante"]), self.config.section("TreeReader"))
+        # The declared reader, read the way every other screen reads it. Without it a folder
+        # of tables is held to the range-file check and refused with "holds no .rng files",
+        # which is the one thing a table was never going to have.
+        kind = kind_of(self.table_key, self.config.section("TreeInfos"))
+        ok, reason = validate_tree(raw_val, bool(res["ante"]), self.config.section("TreeReader"), kind)
         if not ok:
             QMessageBox.warning(self, "Invalid Simulation", f"Cannot save this simulation:\n{reason}")
             return
@@ -865,7 +870,10 @@ class SimsPanel(_Panel):
             value = f"{players},{bb},{game},{folder},{desc}"
 
             ante_declared = bool(config.tree_metadata("TreeInfos", key).get("ante"))
-            ok, reason = validate_tree(value, ante_declared, config.section("TreeReader"))
+            # Saving the tab must not be the thing that refuses an entry the application
+            # reads: a table's folder is asked for tables, exactly as the selector asks.
+            kind = kind_of(key, config.section("TreeInfos"))
+            ok, reason = validate_tree(value, ante_declared, config.section("TreeReader"), kind)
             if not ok:
                 raise ValueError(f"{key}: {reason}")
             config.set("TreeInfos", key, value)
