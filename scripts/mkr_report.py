@@ -46,32 +46,45 @@ SEATS = {"positions": "BB,SB,BU,CO,MP,UTG", "positions7": "BB,SB,BU,CO,HJ,MP,UTG
 
 def describe(structure: MkrStructure) -> None:
     """The archive, the tree and the scalars, as the file states them."""
-    tree = structure.tree
-    print(f"file      {structure.path} ({os.path.getsize(structure.path):,} bytes)")
-    print(f"entries   {len(structure.archive.entries)}")
-    for entry in structure.archive.entries:
-        mark = "" if entry.utf16 else "  (name not UTF-16BE)"
-        print(f"          {entry.name:<22} {entry.size:>9,} bytes{mark}")
-    print(
-        f"tree      signature {tree.signature}, format {tree.internal_format}, "
-        f"{tree.num_players} players, opens on player {tree.first_to_act}, street {tree.street}"
-    )
-    print(f"          committed {tree.committed}, dead money {tree.dead_money}, stacks {tree.stacks}")
-    print(
-        f"          {len(tree.nodes)} nodes, {len(tree.decisions)} decisions, "
-        f"action codes {', '.join(f'{code}={action_name(code) or chr(63)}' for code in tree.action_codes)}"
-    )
-    print(f"          ranges block: {'present' if tree.has_ranges else 'absent'}")
-    print(f"strategy  {structure.class_count} hand classes, {structure.cards_per_hand} cards per hand")
-    for name, strategy in structure.strategies.items():
-        held = sum(1 for slot in strategy.slots if slot.present)
-        print(f"          {name:<16} {strategy.bucket_count} buckets, {held}/{len(strategy.slots)} slots held")
+    describe_archive(structure)
+    describe_tree(structure)
+    describe_strategies(structure)
     print("scalars")
     for name in sorted(structure.scalars):
         print(f"          {name:<22} {structure.scalars[name]!r}")
     print("checks")
     for check in structure.checks:
         print(f"          [{'pass' if check.passed else 'FAIL'}] {check.name}: {check.detail}")
+
+
+def describe_archive(structure: MkrStructure) -> None:
+    """The file and its members, with the names that were not UTF-16BE marked."""
+    print(f"file      {structure.path} ({os.path.getsize(structure.path):,} bytes)")
+    print(f"entries   {len(structure.archive.entries)}")
+    for entry in structure.archive.entries:
+        mark = "" if entry.utf16 else "  (name not UTF-16BE)"
+        print(f"          {entry.name:<22} {entry.size:>9,} bytes{mark}")
+
+
+def describe_tree(structure: MkrStructure) -> None:
+    """The tree entry's fields and the shape of its node stream."""
+    tree = structure.tree
+    codes = ", ".join(f"{code}={action_name(code) or chr(63)}" for code in tree.action_codes)
+    print(
+        f"tree      signature {tree.signature}, format {tree.internal_format}, "
+        f"{tree.num_players} players, opens on player {tree.first_to_act}, street {tree.street}"
+    )
+    print(f"          committed {tree.committed}, dead money {tree.dead_money}, stacks {tree.stacks}")
+    print(f"          {len(tree.nodes)} nodes, {len(tree.decisions)} decisions, action codes {codes}")
+    print(f"          ranges block: {'present' if tree.has_ranges else 'absent'}")
+
+
+def describe_strategies(structure: MkrStructure) -> None:
+    """The hand axis and how many slots each stored strategy holds."""
+    print(f"strategy  {structure.class_count} hand classes, {structure.cards_per_hand} cards per hand")
+    for name, strategy in structure.strategies.items():
+        held = sum(1 for slot in strategy.slots if slot.present)
+        print(f"          {name:<16} {strategy.bucket_count} buckets, {held}/{len(strategy.slots)} slots held")
 
 
 def describe_model(provider: MkrStrategyProvider, hands: list[str]) -> None:

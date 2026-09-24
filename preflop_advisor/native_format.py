@@ -252,34 +252,10 @@ def probe(path: str | os.PathLike[str]) -> NativeProbe:
         raise NativeFormatError(f"{os.path.basename(source)} could not be read: {error}") from error
 
     found = container_of(prefix)
-    diagnostics: list[str] = []
+    name, diagnostics = _identify(found, prefix)
     members: tuple[str, ...] = ()
-    name = found.name if found is not None else UNKNOWN
-
-    if found is not None:
-        diagnostics.append(found.note)
-    elif not prefix:
-        name = "empty file"
-        diagnostics.append("The file holds no bytes at all, so it is a failed save rather than a simulation.")
-    else:
-        diagnostics.append(
-            f"The first bytes ({' '.join(f'{byte:02x}' for byte in prefix[:8])}) match no container this "
-            "application knows, so nothing can be said about what it holds."
-        )
-
     if found is not None and found.magic == ZIP_LOCAL_HEADER:
-        members, archive_note = _archive_members(source)
-        if archive_note:
-            diagnostics.append(archive_note)
-            name = f"{name} (index unreadable)"
-        elif SIMULATION_ENTRY in members:
-            name = "saved simulation archive"
-            diagnostics.append(
-                f"The archive holds a {SIMULATION_ENTRY} member, which is where a saved simulation keeps "
-                "its game tree: its structure is read by preflop_advisor.mkr_format and reported by "
-                "scripts/mkr_report.py. That reader is a prototype and is not selectable as a strategy "
-                "source, so the import still asks for an export."
-            )
+        members, name = _describe_archive(source, name, diagnostics)
 
     diagnostics.insert(
         0,
@@ -300,6 +276,36 @@ def probe(path: str | os.PathLike[str]) -> NativeProbe:
         members=members,
         diagnostics=tuple(diagnostics),
     )
+
+
+def _identify(found: Container | None, prefix: bytes) -> tuple[str, list[str]]:
+    """What a file's first bytes say it is, and the diagnostic that says so."""
+    if found is not None:
+        return found.name, [found.note]
+    if not prefix:
+        return "empty file", ["The file holds no bytes at all, so it is a failed save rather than a simulation."]
+    shown = " ".join(f"{byte:02x}" for byte in prefix[:8])
+    return UNKNOWN, [
+        f"The first bytes ({shown}) match no container this application knows, so nothing can be said "
+        + "about what it holds."
+    ]
+
+
+def _describe_archive(source: str, name: str, diagnostics: list[str]) -> tuple[tuple[str, ...], str]:
+    """An archive's members and the name it is reported under, adding to its diagnostics."""
+    members, archive_note = _archive_members(source)
+    if archive_note:
+        diagnostics.append(archive_note)
+        return members, f"{name} (index unreadable)"
+    if SIMULATION_ENTRY in members:
+        diagnostics.append(
+            f"The archive holds a {SIMULATION_ENTRY} member, which is where a saved simulation keeps "
+            "its game tree: its structure is read by preflop_advisor.mkr_format and reported by "
+            "scripts/mkr_report.py. That reader is a prototype and is not selectable as a strategy "
+            "source, so the import still asks for an export."
+        )
+        return members, "saved simulation archive"
+    return members, name
 
 
 def _archive_members(source: str) -> tuple[tuple[str, ...], str]:

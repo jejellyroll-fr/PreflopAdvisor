@@ -266,20 +266,18 @@ class MkrStrategyProvider:
 
     def _child_for(self, children: tuple[int, ...], action: str) -> int | None:
         """The child an action names: by its own name, or the one raise a generic names."""
-        tree = self.structure.tree
         wanted = action.strip().lower()
-        for child in children:
-            name = action_name(tree.nodes[child].action or 0)
-            if name is not None and name.lower() == wanted:
-                return child
+        named = {self._child_name(child): child for child in children}
+        if wanted in named:
+            return named[wanted]
         if wanted != GENERIC_RAISE.lower():
             return None
-        raises = [
-            child
-            for child in children
-            if (action_name(tree.nodes[child].action or 0) or "").lower() not in ("fold", "call")
-        ]
+        raises = [child for name, child in named.items() if name not in ("fold", "call")]
         return raises[0] if len(raises) == 1 else None
+
+    def _child_name(self, child: int) -> str:
+        """The lower-case name of the action leading to a child, empty when it has none."""
+        return (action_name(self.structure.tree.nodes[child].action or 0) or "").lower()
 
     def children(self, node: Node) -> list[Node]:
         """The decisions that follow this one, in the tree's own action order."""
@@ -308,34 +306,44 @@ class MkrStrategyProvider:
         an answer, and a uniform strategy is not it.
         """
         index = self._index_of(node)
-        strategy = self.structure.strategy
-        if index is None or strategy is None:
+        hand_class = self._class_of(hand)
+        if index is None or hand_class is None:
             return EMPTY_NODE
-        try:
-            hand_class = class_of_hand(hand)
-        except (ValueError, KeyError, NativeFormatError):
-            logger.debug("%s is not a hand this simulation is indexed by", hand)
-            return EMPTY_NODE
-        if len(hand) // 2 != self.structure.cards_per_hand:
-            return EMPTY_NODE
-
-        tree = self.structure.tree
-        slot = strategy.slots[tree.slot_order.index(index)]
-        frequencies = slot.frequencies
-        if frequencies is None:  # pragma: no cover - a decision node always has one
-            return EMPTY_NODE
-        children = tree.nodes[index].children
-        row = frequencies[hand_class * len(children) : (hand_class + 1) * len(children)]
+        row = self._stored_row(index, hand_class)
         total = sum(row)
         if total == 0:
             return EMPTY_NODE
+        tree = self.structure.tree
         results: list[StrategyResult] = []
-        for child, value in zip(children, row, strict=True):
+        for child, value in zip(tree.nodes[index].children, row, strict=True):
             name = action_name(tree.nodes[child].action or 0)
             if name is None:  # pragma: no cover - refused by the action-code check
                 return EMPTY_NODE
             results.append(StrategyResult(action=name, frequency=value / total, ev=None))
         return tuple(results)
+
+    def _class_of(self, hand: str) -> int | None:
+        """The hand class a dealt hand belongs to, or ``None`` for one this file is not indexed by."""
+        try:
+            hand_class = class_of_hand(hand)
+        except (ValueError, KeyError, NativeFormatError):
+            logger.debug("%s is not a hand this simulation is indexed by", hand)
+            return None
+        if len(hand) // 2 != self.structure.cards_per_hand:
+            return None
+        return hand_class
+
+    def _stored_row(self, index: int, hand_class: int) -> bytes:
+        """A decision node's frequency bytes for one hand class, empty when nothing is stored."""
+        strategy = self.structure.strategy
+        if strategy is None:  # pragma: no cover - the constructor refuses such a save
+            return b""
+        tree = self.structure.tree
+        frequencies = strategy.slots[tree.slot_order.index(index)].frequencies
+        if frequencies is None:  # pragma: no cover - a decision node always has one
+            return b""
+        actions = len(tree.nodes[index].children)
+        return frequencies[hand_class * actions : (hand_class + 1) * actions]
 
     def raw_frequencies(self, node: Node, hand: str) -> tuple[int, ...]:
         """The stored bytes behind a hand, unnormalised, for a reader checking this one.
@@ -346,15 +354,9 @@ class MkrStrategyProvider:
         file's, not this module's.
         """
         index = self._index_of(node)
-        strategy = self.structure.strategy
-        if index is None or strategy is None:
+        if index is None:
             return ()
-        slot = strategy.slots[self.structure.tree.slot_order.index(index)]
-        if slot.frequencies is None:  # pragma: no cover - a decision node always has one
-            return ()
-        actions = len(self.structure.tree.nodes[index].children)
-        hand_class = class_of_hand(hand)
-        return tuple(slot.frequencies[hand_class * actions : (hand_class + 1) * actions])
+        return tuple(self._stored_row(index, class_of_hand(hand)))
 
     def hands_at(self, node: Node) -> list[str]:
         """The hands this simulation holds behind a node, as its own keys.

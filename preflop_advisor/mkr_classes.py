@@ -95,14 +95,9 @@ def hand_indices(hand: str) -> tuple[int, ...]:
 
 def canonical(cards: tuple[int, ...]) -> tuple[int, ...]:
     """The smallest suit relabelling of a hand: the form its whole class shares."""
-    best: tuple[int, ...] | None = None
-    for permutation in _SUIT_PERMUTATIONS:
-        relabelled = tuple(sorted(permutation[card // 13] * 13 + card % 13 for card in cards))
-        if best is None or relabelled < best:
-            best = relabelled
-    # Unreachable: there are always 24 permutations to minimise over.
-    assert best is not None
-    return best
+    return min(
+        tuple(sorted(permutation[card // 13] * 13 + card % 13 for card in cards)) for permutation in _SUIT_PERMUTATIONS
+    )
 
 
 @dataclass(frozen=True)

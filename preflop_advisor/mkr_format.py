@@ -626,78 +626,27 @@ def read_tree(data: bytes) -> MkrTree:
     :raises NativeFormatError: if the signature is not one this reads, or the stream does
         not account for the entry exactly.
     """
-    offset = 0
-
-    def i64() -> int:
-        nonlocal offset
-        value = int(struct.unpack_from(">q", data, offset)[0])
-        offset += 8
-        return value
-
-    def i32() -> int:
-        nonlocal offset
-        value = int(struct.unpack_from(">i", data, offset)[0])
-        offset += 4
-        return value
-
-    def u16() -> int:
-        nonlocal offset
-        value = int(struct.unpack_from(">H", data, offset)[0])
-        offset += 2
-        return value
-
+    cursor = _TreeCursor(data)
     try:
-        signature = i64()
-        if signature not in TREE_SIGNATURES:
-            raise NativeFormatError(
-                f"The tree entry carries signature {signature}, and this reader knows "
-                f"{', '.join(str(known) for known in TREE_SIGNATURES)}: a save written in another "
-                "format version is refused rather than read as this one."
-            )
-        internal_format = i32()
-        num_players = i32()
+        signature = cursor.i64()
+        _require_signature(signature)
+        internal_format = cursor.i32()
+        num_players = cursor.i32()
         if not 2 <= num_players <= 10:
             raise NativeFormatError(f"The tree entry declares {num_players} players, which is not a table.")
-        first_to_act = i32()
-        street = i32()
-        committed = tuple(i32() for _ in range(num_players)) if street == 0 else ()
-        dead_money = i32()
-        stacks = tuple(i32() for _ in range(num_players))
-
-        nodes: list[MkrNode] = []
-
-        def walk(parent: int, action: int | None, depth: int) -> int:
-            if depth > MAX_DEPTH:
-                raise NativeFormatError(f"The tree entry nests more than {MAX_DEPTH} deep.")
-            if len(nodes) >= MAX_NODES:
-                raise NativeFormatError(f"The tree entry holds more than {MAX_NODES} nodes.")
-            index = len(nodes)
-            child_count = u16()
-            nodes.append(MkrNode(index=index, parent=parent, action=action, children=(), depth=depth))
-            children: list[int] = []
-            for _ in range(child_count):
-                children.append(walk(index, u16(), depth + 1))
-            nodes[index] = MkrNode(index=index, parent=parent, action=action, children=tuple(children), depth=depth)
-            return index
-
-        walk(-1, None, 0)
-        has_ranges = bool(data[offset])
-        offset += 1
-        if has_ranges:
-            raise NativeFormatError(
-                "The tree entry carries a range block after its node stream -- a tree solved from "
-                "given starting ranges -- and that block's layout is not established here, so the "
-                "save is refused rather than read around it. Save the simulation without starting "
-                "ranges, or export its ranges instead."
-            )
+        first_to_act = cursor.i32()
+        street = cursor.i32()
+        committed = tuple(cursor.i32() for _ in range(num_players)) if street == 0 else ()
+        dead_money = cursor.i32()
+        stacks = tuple(cursor.i32() for _ in range(num_players))
+        nodes = _read_nodes(cursor)
+        has_ranges = _read_range_flag(cursor)
     except struct.error as error:
         raise NativeFormatError(f"The tree entry ends in the middle of a field ({error}).") from error
-    except IndexError as error:
-        raise NativeFormatError("The tree entry ends before its range flag.") from error
 
-    if offset != len(data):
+    if cursor.offset != len(data):
         raise NativeFormatError(
-            f"The tree entry is {len(data)} bytes and its fields account for {offset}: the layout this "
+            f"The tree entry is {len(data)} bytes and its fields account for {cursor.offset}: the layout this "
             "reader uses is not the layout the file was written in."
         )
     if not 0 <= first_to_act < num_players:
@@ -711,9 +660,80 @@ def read_tree(data: bytes) -> MkrTree:
         committed=committed,
         dead_money=dead_money,
         stacks=stacks,
-        nodes=tuple(nodes),
+        nodes=nodes,
         has_ranges=has_ranges,
     )
+
+
+class _TreeCursor:
+    """Big-endian ``DataOutputStream`` fields, read one after another from the tree entry."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.offset = 0
+
+    def _unpack(self, code: str, size: int) -> int:
+        value = int(struct.unpack_from(code, self.data, self.offset)[0])
+        self.offset += size
+        return value
+
+    def i64(self) -> int:
+        return self._unpack(">q", 8)
+
+    def i32(self) -> int:
+        return self._unpack(">i", 4)
+
+    def u16(self) -> int:
+        return self._unpack(">H", 2)
+
+    def byte(self) -> int:
+        if self.offset >= len(self.data):
+            raise NativeFormatError("The tree entry ends before its range flag.")
+        value = self.data[self.offset]
+        self.offset += 1
+        return value
+
+
+def _require_signature(signature: int) -> None:
+    if signature not in TREE_SIGNATURES:
+        raise NativeFormatError(
+            f"The tree entry carries signature {signature}, and this reader knows "
+            f"{', '.join(str(known) for known in TREE_SIGNATURES)}: a save written in another "
+            "format version is refused rather than read as this one."
+        )
+
+
+def _read_nodes(cursor: _TreeCursor) -> tuple[MkrNode, ...]:
+    """The preorder node stream: a child count per node, an action code per edge."""
+    nodes: list[MkrNode] = []
+
+    def walk(parent: int, action: int | None, depth: int) -> int:
+        if depth > MAX_DEPTH:
+            raise NativeFormatError(f"The tree entry nests more than {MAX_DEPTH} deep.")
+        if len(nodes) >= MAX_NODES:
+            raise NativeFormatError(f"The tree entry holds more than {MAX_NODES} nodes.")
+        index = len(nodes)
+        child_count = cursor.u16()
+        nodes.append(MkrNode(index=index, parent=parent, action=action, children=(), depth=depth))
+        children = [walk(index, cursor.u16(), depth + 1) for _ in range(child_count)]
+        nodes[index] = MkrNode(index=index, parent=parent, action=action, children=tuple(children), depth=depth)
+        return index
+
+    walk(-1, None, 0)
+    return tuple(nodes)
+
+
+def _read_range_flag(cursor: _TreeCursor) -> bool:
+    """The flag for the optional range block, which is refused when it is set."""
+    has_ranges = bool(cursor.byte())
+    if has_ranges:
+        raise NativeFormatError(
+            "The tree entry carries a range block after its node stream -- a tree solved from "
+            "given starting ranges -- and that block's layout is not established here, so the "
+            "save is refused rather than read around it. Save the simulation without starting "
+            "ranges, or export its ranges instead."
+        )
+    return has_ranges
 
 
 def chips_per_bb(tree: MkrTree) -> float | None:
