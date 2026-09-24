@@ -83,6 +83,12 @@ class _JavaStream:
         return self._offset >= len(self._data)
 
     def _take(self, count: int) -> bytes:
+        # A negative length would move the offset backwards: a block that rewinds onto its
+        # own tag is read again forever.
+        if count < 0:
+            raise NativeFormatError(
+                f"The {self._entry} entry declares a length of {count}, which no serialized value has."
+            )
         if self._offset + count > len(self._data):
             raise NativeFormatError(
                 f"The {self._entry} entry ends after {len(self._data)} bytes, in the middle of a value: "

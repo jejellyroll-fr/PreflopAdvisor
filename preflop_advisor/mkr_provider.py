@@ -84,8 +84,9 @@ class MkrStrategyProvider:
     its seat names, since everything else a tree entry would declare is in the file.
 
     :raises NativeFormatError: if the file is not a saved simulation this reads, if its own
-        numbers contradict each other, if it is not a preflop tree, or if it uses an action
-        code that has no reading. Each of those is a refusal rather than a partial read:
+        numbers contradict each other, if it is not a preflop tree, if it declares a game
+        this does not read or one its hand axis contradicts, or if it uses an action code
+        that has no reading. Each of those is a refusal rather than a partial read:
         a node whose seat or sizing is guessed is a node that cannot be keyed on.
     """
 
@@ -93,6 +94,9 @@ class MkrStrategyProvider:
         self.path = path
         self.structure = read_structure(path)
         self._require_readable(self.structure)
+        # Checked here rather than on the first metadata() call, so a file whose game is
+        # unknown is refused when it is opened, like every other refusal.
+        self.game = self._game_name()
         settings = normalize(configs)
         self.seats = self._seat_names(settings, self.structure.tree.num_players)
         self._spelling = {seat.lower(): seat for seat in self.seats}
@@ -173,7 +177,7 @@ class MkrStrategyProvider:
         stacks = sorted(set(tree.stacks))
         spread = "" if len(stacks) == 1 else f", stacks {min(stacks) / unit:g}-{max(stacks) / unit:g}bb"
         return SimulationMetadata(
-            game=self._game_name(),
+            game=self.game,
             num_players=tree.num_players,
             stack_bb=max(tree.stacks) / unit,
             seats=self.seats,

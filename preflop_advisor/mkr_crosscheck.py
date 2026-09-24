@@ -44,6 +44,7 @@ difference is visible rather than collapsed into one boolean.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -210,6 +211,12 @@ def read_export_action(path: str) -> dict[str, float]:
             if pending is not None:
                 logger.debug("Skipping line %d of %s: a hand with no values after it", position, path)
             pending = line
+            continue
+        if not math.isfinite(values[0]):
+            # A NaN differs from nothing by more than the tolerance, so it would count as
+            # compared and agreeing. Left out, it is a row the file is missing instead.
+            logger.debug("Skipping %r in %s: its frequency %r is not a number", pending, path, values[0])
+            pending = None
             continue
         try:
             frequencies[normalize_monker_hand(pending)] = values[0]

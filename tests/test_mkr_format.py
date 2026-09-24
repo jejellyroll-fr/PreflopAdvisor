@@ -421,6 +421,11 @@ def test_a_tag_the_reader_does_not_read_is_named():
         read_java_value(MAGIC + b"\x7b", "game")
 
 
+def test_a_block_with_a_negative_length_is_refused_rather_than_read_forever():
+    with pytest.raises(NativeFormatError, match="length of -5"):
+        read_java_value(MAGIC + b"\x7a" + struct.pack(">i", -5), "storedstrategy0")
+
+
 def test_a_reference_to_a_value_never_written_is_refused():
     with pytest.raises(NativeFormatError, match="refers to a value it never wrote"):
         read_java_value(MAGIC + b"\x71\x7e\x00\x00\x00", "game")
@@ -858,10 +863,10 @@ def test_a_postflop_run_is_refused_because_its_nodes_have_no_seats(tmp_path):
         MkrStrategyProvider(path, SEATS)
 
 
-def test_a_game_the_reader_does_not_know_is_refused(tmp_path):
+def test_a_game_the_reader_does_not_know_is_refused_when_the_file_is_opened(tmp_path):
     path = write_mkr(tmp_path / "other-game.mkr", saved_run(game=java_int(9)))
     with pytest.raises(NativeFormatError, match="declares game 9"):
-        MkrStrategyProvider(path, SEATS).metadata()
+        MkrStrategyProvider(path, SEATS)
 
 
 def test_a_game_that_disagrees_with_its_own_hand_size_is_refused(tmp_path):

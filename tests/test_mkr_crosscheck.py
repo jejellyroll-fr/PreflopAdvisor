@@ -242,6 +242,20 @@ def test_an_action_file_missing_a_hand_another_file_holds_does_not_agree(structu
     assert "1 missing from an action file" in report.summary()
 
 
+def test_a_frequency_that_is_not_a_number_cannot_agree(structure, export):
+    folder = export()
+    path = os.path.join(folder, "0.rng")
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text.replace("AA\n0.25;0.0\n", "AA\nnan;0.0\n", 1))
+
+    assert "AA" not in read_export_action(path)
+    report = crosscheck(structure, folder)
+    assert report.missing == 1
+    assert not report.values_agree
+
+
 def test_a_tolerance_the_caller_sets_is_the_one_used(structure, export):
     nudged = {**SAME_RUN, "0": {**SAME_RUN["0"], "AA": 0.30}}
 
