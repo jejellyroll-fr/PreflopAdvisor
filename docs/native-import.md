@@ -114,7 +114,7 @@ check instead of returning a frequency. They are reported per file by
 | --- | --- | --- |
 | infoset count | the archive's `iscount` scalar against decisions × classes | 230 048 = 14 × 16432 |
 | slot lengths | each stored array's length against its own node's action count | every array 16432 hands long per action |
-| frequency sums | each hand's bytes against 256 | 229 887 × 256, 74 × 257, 87 × 0 |
+| frequency sums | each hand's bytes against 256, within half a byte of rounding per action of its node (0 for an unstored class) | 229 887 × 256, 74 × 257, 87 × 0 |
 | big blind | the largest committed amount against the seating rotation | 2000, posted by the last seat to act |
 | action codes | the tree's codes against the codes that have a reading | 0, 1, 3 |
 
@@ -176,6 +176,8 @@ a `.mkr` can give, and it is a reason to keep the export path rather than replac
 | A file whose own numbers contradict each other is refused | **Supported** | same file, one test per check |
 | A run still being solved is refused by name | **Supported** | same |
 | A postflop run is refused with why | **Supported** | same |
+| A tree saved with a starting-range block is refused by name | **Supported** | `test_a_tree_with_a_range_block_is_refused_by_name_rather_than_as_a_wrong_layout` |
+| An entry that inflates past `MAX_ENTRY_BYTES` is refused rather than held in memory | **Supported** | `tests/test_mkr_format.py` |
 | An unknown action code, game, class count or signature is refused | **Supported** | same |
 | The source file is never written to | **Supported** | asserted by size, mtime and sha256, on the synthetic and real fixtures both |
 | A save's tree and hand axis match the solver's own export of that tree | **Supported** | `tests/test_mkr_crosscheck.py`, opt-in on a real pair |

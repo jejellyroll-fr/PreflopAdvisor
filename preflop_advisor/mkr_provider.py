@@ -151,13 +151,14 @@ class MkrStrategyProvider:
         """The model's name for one tree node: its line of play, seat by seat."""
         tree = self.structure.tree
         line = tree.line_to(index)
+        actors = tree.actors_to(index)
         path: list[tuple[str, str]] = []
         for step, code in enumerate(line):
             name = action_name(code)
             if name is None:  # pragma: no cover - refused by the action-code check
                 raise NativeFormatError(f"Action code {code} of {self.path} has no reading.")
-            path.append((self.seats[step % len(self.seats)], name))
-        hero = self.seats[tree.actor_of(tree.nodes[index]) % len(self.seats)]
+            path.append((self.seats[actors[step]], name))
+        hero = self.seats[actors[-1]]
         return Node(hero=hero, path=tuple(path))
 
     # ------------------------------------------------------------------
@@ -243,12 +244,12 @@ class MkrStrategyProvider:
         tree = self.structure.tree
         index = 0
         walked: list[tuple[str, str]] = []
-        for step, (seat, action) in enumerate(node.path):
+        for seat, action in node.path:
             current = tree.nodes[index]
             if not current.decision:
                 return None
             spelled_seat = self._spelling.get(seat.lower(), seat)
-            if spelled_seat != self.seats[step % len(self.seats)]:
+            if spelled_seat != self.seats[tree.actor_of(current)]:
                 return None
             chosen = self._child_for(current.children, action)
             if chosen is None:
@@ -259,7 +260,7 @@ class MkrStrategyProvider:
             walked.append((spelled_seat, name))
             index = chosen
         hero = self._spelling.get(node.hero.lower(), node.hero)
-        if hero != self.seats[tree.actor_of(tree.nodes[index]) % len(self.seats)]:
+        if hero != self.seats[tree.actor_of(tree.nodes[index])]:
             return None
         return Node(hero=hero, path=tuple(walked))
 

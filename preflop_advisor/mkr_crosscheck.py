@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .errors import NativeFormatError
 from .hand_convert_helper import normalize_monker_hand
@@ -104,6 +104,9 @@ class Crosscheck:
     not_stored: int
     #: Every differing hand is counted; the first :data:`MISMATCH_LIMIT` are kept.
     differing: int
+    #: ``(action, hand)`` pairs the export's hand axis names but one action file lacks: a
+    #: truncated or partial file, whose absent rows cannot be counted as agreement.
+    missing: int
     mismatches: tuple[Mismatch, ...]
     largest: float
 
@@ -117,7 +120,7 @@ class Crosscheck:
 
     @property
     def values_agree(self) -> bool:
-        return self.differing == 0 and self.compared > 0
+        return self.differing == 0 and self.missing == 0 and self.compared > 0
 
     @property
     def agrees(self) -> bool:
@@ -134,6 +137,7 @@ class Crosscheck:
             f"({len(self.hands_only_in_save)} / {len(self.hands_only_in_export)} unmatched); "
             f"values: {_verdict(self.values_agree)} "
             f"({self.compared} compared within {self.tolerance:.5f}, {self.differing} differing, "
+            f"{self.missing} missing from an action file, "
             f"{self.not_stored} skipped as unstored, largest difference {self.largest:.5f})"
         )
 
@@ -193,13 +197,25 @@ def read_export_action(path: str) -> dict[str, float]:
             lines = handle.read().splitlines()
     except OSError as error:
         raise NativeFormatError(f"{path} could not be read ({error}).") from error
-    for position in range(0, len(lines) - 1, 2):
-        hand = lines[position].strip()
-        values = parse_values(lines[position + 1])
-        if not hand or values is None:
-            logger.debug("Skipping line %d of %s: neither a hand nor a pair of values", position, path)
+    # Paired the way the store's range reader pairs them: a line that does not read as
+    # values is the pending hand, so a header or a stray line resynchronises the pairing
+    # at the next hand instead of shifting every record behind it.
+    pending: str | None = None
+    for position, raw in enumerate(lines):
+        line = raw.strip()
+        if not line:
             continue
-        frequencies[normalize_monker_hand(hand)] = values[0]
+        values = parse_values(line) if pending is not None else None
+        if pending is None or values is None:
+            if pending is not None:
+                logger.debug("Skipping line %d of %s: a hand with no values after it", position, path)
+            pending = line
+            continue
+        try:
+            frequencies[normalize_monker_hand(pending)] = values[0]
+        except (AttributeError, IndexError, KeyError):
+            logger.debug("Skipping unreadable hand %r in %s", pending, path)
+        pending = None
     return frequencies
 
 
@@ -235,6 +251,46 @@ def _node_and_action(structure: MkrStructure, codes: tuple[int, ...]) -> tuple[i
     return None
 
 
+@dataclass
+class _Tally:
+    """The running counts of a comparison, action file by action file."""
+
+    compared: int = 0
+    not_stored: int = 0
+    differing: int = 0
+    largest: float = 0.0
+    mismatches: list[Mismatch] = field(default_factory=list)
+    hands_by_stem: dict[str, set[str]] = field(default_factory=dict)
+
+
+def _compare_action(
+    tally: _Tally,
+    structure: MkrStructure,
+    stem: str,
+    located: tuple[int, int],
+    frequencies: dict[str, float],
+    tolerance: float,
+) -> None:
+    """Compare one exported action file with the stored frequencies of the action it names."""
+    node, action = located
+    index_of_key = class_table(structure.cards_per_hand).index_of_key
+    for hand, exported_frequency in frequencies.items():
+        hand_class = index_of_key.get(hand)
+        if hand_class is None:
+            continue
+        row = _stored_row(structure, node, hand_class)
+        if not row:
+            tally.not_stored += 1
+            continue
+        tally.compared += 1
+        difference = abs(row[action] - exported_frequency)
+        tally.largest = max(tally.largest, difference)
+        if difference > tolerance:
+            tally.differing += 1
+            if len(tally.mismatches) < MISMATCH_LIMIT:
+                tally.mismatches.append(Mismatch(stem=stem, hand=hand, stored=row[action], exported=exported_frequency))
+
+
 def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_TOLERANCE) -> Crosscheck:
     """Compare a read save against an exported folder, action by action and hand by hand.
 
@@ -255,41 +311,19 @@ def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_
     exported = set(stems)
     shared = sorted(save_edges & exported, key=_codes_of)
 
-    keys = class_table(structure.cards_per_hand).key
-    index_of_key = class_table(structure.cards_per_hand).index_of_key
-    save_hands = set(keys)
-    export_hands: set[str] = set()
-
-    compared = 0
-    not_stored = 0
-    differing = 0
-    largest = 0.0
-    mismatches: list[Mismatch] = []
-
+    save_hands = set(class_table(structure.cards_per_hand).key)
+    tally = _Tally()
     for stem in shared:
-        codes = _codes_of(stem)
-        located = _node_and_action(structure, codes)
+        located = _node_and_action(structure, _codes_of(stem))
         if located is None:  # pragma: no cover - a shared stem is a path of this tree
             continue
-        node, action = located
         frequencies = read_export_action(os.path.join(folder, f"{stem}{RANGE_ENDING}"))
-        export_hands |= set(frequencies)
-        for hand, exported_frequency in frequencies.items():
-            hand_class = index_of_key.get(hand)
-            if hand_class is None:
-                continue
-            row = _stored_row(structure, node, hand_class)
-            if not row:
-                not_stored += 1
-                continue
-            compared += 1
-            difference = abs(row[action] - exported_frequency)
-            largest = max(largest, difference)
-            if difference > tolerance:
-                differing += 1
-                if len(mismatches) < MISMATCH_LIMIT:
-                    mismatches.append(Mismatch(stem=stem, hand=hand, stored=row[action], exported=exported_frequency))
+        tally.hands_by_stem[stem] = set(frequencies)
+        _compare_action(tally, structure, stem, located, frequencies, tolerance)
+    export_hands = set().union(*tally.hands_by_stem.values())
 
+    # Every action file is held to the whole axis the export names, not only to the rows it
+    # happens to hold: a file missing ``AA`` while another file has it is incomplete.
     return Crosscheck(
         save=structure.path,
         folder=folder,
@@ -299,9 +333,10 @@ def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_
         edges_only_in_export=tuple(sorted(exported - save_edges, key=_codes_of)),
         hands_only_in_save=tuple(sorted(save_hands - export_hands)) if export_hands else (),
         hands_only_in_export=tuple(sorted(export_hands - save_hands)),
-        compared=compared,
-        not_stored=not_stored,
-        differing=differing,
-        mismatches=tuple(mismatches),
-        largest=largest,
+        compared=tally.compared,
+        not_stored=tally.not_stored,
+        differing=tally.differing,
+        missing=sum(len(export_hands - hands) for hands in tally.hands_by_stem.values()),
+        mismatches=tuple(tally.mismatches),
+        largest=tally.largest,
     )

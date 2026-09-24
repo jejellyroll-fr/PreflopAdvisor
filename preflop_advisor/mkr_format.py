@@ -103,18 +103,36 @@ STRATEGY_ENTRIES: tuple[str, ...] = ("storedstrategy0", "storedstrategy1", "stor
 IN_PROGRESS_ENTRIES: tuple[str, ...] = ("reg", "iavg")
 #: A frequency byte is this many two-hundred-fifty-sixths.
 FREQUENCY_SCALE = 256
-#: What a hand's frequency bytes are allowed to sum to. 256 is the strategy; 257 happens
-#: when each action is rounded to a byte on its own, and 0 is a class with no strategy at
-#: all. Measured over the 230048 hand rows of the save read for this module: 229887 sum to
-#: 256, 74 to 257, 87 to 0.
-FREQUENCY_SUMS: tuple[int, ...] = (0, 256, 257)
+#: What an unstored class's frequency bytes sum to: a class the run kept no strategy for.
+UNSTORED_SUM = 0
+#: The largest single entry, inflated, this reader will hold in memory. The real save's
+#: largest entry inflates to a few megabytes; a member claiming more than this is refused
+#: rather than inflated, so a crafted archive cannot exhaust memory.
+MAX_ENTRY_BYTES = 256 * 1024 * 1024
 #: Raises are coded as this plus their percentage of the pot, the same base
 #: :mod:`preflop_advisor.sizings` reads an exported folder's action names by.
 PERCENT_BASE = 40000
+
+
+def frequency_sum_allowed(total: int, actions: int) -> bool:
+    """Whether a hand's frequency bytes, over a node of ``actions`` actions, are a strategy.
+
+    Each action is rounded to a byte on its own, so each carries at most half a byte of
+    rounding and the row can land up to ``actions // 2`` either side of
+    :data:`FREQUENCY_SCALE` -- three equal thirds are ``85 + 85 + 85 = 255``. A total of
+    :data:`UNSTORED_SUM` is a class with no strategy at all. Measured over the 230048 hand
+    rows of the save read for this module: 229887 sum to 256, 74 to 257, 87 to 0.
+    """
+    return total == UNSTORED_SUM or abs(total - FREQUENCY_SCALE) <= actions // 2
+
+
 #: The action codes that carry their own name, and what this reader calls them. The names
 #: are the generic ones :mod:`preflop_advisor.strategy` uses for a line of play, so a node
 #: read out of a simulation file is spelled the way a node read out of an export is.
 ACTION_NAMES: dict[int, str] = {0: "Fold", 1: "Call", 2: "Pot", 3: "Allin"}
+#: The codes after which a seat takes no further part in the betting.
+FOLD_CODE = 0
+ALLIN_CODE = 3
 #: How deep a node stream is followed before it is called malformed rather than deep.
 MAX_DEPTH = 256
 #: How many nodes a tree may hold before the same is said of it.
@@ -406,11 +424,19 @@ class MkrArchive:
         found = self.entry(name)
         if found is None:
             raise NativeFormatError(f"{self.path} holds no {name} entry.")
+        if found.size > MAX_ENTRY_BYTES:
+            raise NativeFormatError(
+                f"The {name} entry of {self.path} declares {found.size} bytes, more than the "
+                f"{MAX_ENTRY_BYTES} a saved simulation's entry is read up to."
+            )
         try:
-            with zipfile.ZipFile(self.path) as archive:
-                return archive.read(archive.infolist()[found.position])
+            with zipfile.ZipFile(self.path) as archive, archive.open(archive.infolist()[found.position]) as member:
+                data = member.read(MAX_ENTRY_BYTES + 1)
         except (zipfile.BadZipFile, OSError, ValueError, RuntimeError) as error:
             raise NativeFormatError(f"The {name} entry of {self.path} could not be read ({error}).") from error
+        if len(data) > MAX_ENTRY_BYTES:  # pragma: no cover - only a header that understates its size
+            raise NativeFormatError(f"The {name} entry of {self.path} inflates past {MAX_ENTRY_BYTES} bytes.")
+        return data
 
 
 def decode_entry_name(info: zipfile.ZipInfo) -> tuple[str, bool]:
@@ -524,14 +550,36 @@ class MkrTree:
         return (index - self.first_to_act) % self.num_players
 
     def actor_of(self, node: MkrNode) -> int:
-        """The seat to act at a node, counting from the first to act.
+        """The seat to act at a node, counting from the first to act."""
+        return self.actors_to(node.index)[-1]
 
-        A preflop tree seats its players in turn down every line, so a node's actor is its
-        depth: the root is the opener, its children are the next seat, and so on. That is
-        only true while no chance node intervenes, which is why
-        :attr:`MkrStructure.preflop_only` is a condition of reading a node at all.
+    def actors_to(self, index: int) -> tuple[int, ...]:
+        """The seat that took each action on the line to a node, then the seat to act there.
+
+        Seats are counted from the first to act and take turns in that order, except that a
+        seat which has folded or is all in is past: after UTG folds and the blinds raise and
+        re-raise, the next to act is the small blind, not UTG again. Depth alone says that
+        only for as long as nobody has left the hand. It is only true while no chance node
+        intervenes, which is why :attr:`MkrStructure.preflop_only` is a condition of
+        reading a node at all.
         """
-        return node.depth % self.num_players
+        out: set[int] = set()
+        actor = 0
+        actors = [actor]
+        for code in self.line_to(index):
+            if code in (FOLD_CODE, ALLIN_CODE):
+                out.add(actor)
+            actor = self._next_in_hand(actor, out)
+            actors.append(actor)
+        return tuple(actors)
+
+    def _next_in_hand(self, actor: int, out: set[int]) -> int:
+        """The next seat after ``actor`` still able to act, or the next seat if none is."""
+        for offset in range(1, self.num_players + 1):
+            seat = (actor + offset) % self.num_players
+            if seat not in out:
+                return seat
+        return (actor + 1) % self.num_players
 
     def line_to(self, index: int) -> tuple[int, ...]:
         """The action codes from the root down to a node, which is its line of play."""
@@ -635,6 +683,13 @@ def read_tree(data: bytes) -> MkrTree:
         walk(-1, None, 0)
         has_ranges = bool(data[offset])
         offset += 1
+        if has_ranges:
+            raise NativeFormatError(
+                "The tree entry carries a range block after its node stream -- a tree solved from "
+                "given starting ranges -- and that block's layout is not established here, so the "
+                "save is refused rather than read around it. Save the simulation without starting "
+                "ranges, or export its ranges instead."
+            )
     except struct.error as error:
         raise NativeFormatError(f"The tree entry ends in the middle of a field ({error}).") from error
     except IndexError as error:
@@ -748,32 +803,50 @@ def read_strategy(archive: MkrArchive, entry: str) -> MkrStrategy:
     :raises NativeFormatError: if the entry is not the compressed stream expected, or holds
         anything but arrays and nulls after its count.
     """
-    payload = archive.read(entry)
-    try:
-        data = zlib.decompress(payload)
-    except zlib.error as error:
-        raise NativeFormatError(
-            f"The {entry} entry of {archive.path} is not the zlib stream a stored strategy is ({error})."
-        ) from error
-
-    stream = _JavaStream(data, entry)
+    stream = _JavaStream(_inflate(archive, entry), entry)
     header = stream.read_value()
     if not isinstance(header, bytes) or len(header) != 4:
         raise NativeFormatError(f"The {entry} entry does not begin with the four bytes of its bucket count.")
     bucket_count = int(struct.unpack(">i", header)[0])
+    slots = _pair_slots(_read_arrays(stream, entry), entry)
+    return MkrStrategy(entry=entry, bucket_count=bucket_count, slots=slots)
 
+
+def _inflate(archive: MkrArchive, entry: str) -> bytes:
+    """A stored-strategy entry's zlib payload, inflated up to :data:`MAX_ENTRY_BYTES`."""
+    payload = archive.read(entry)
+    inflater = zlib.decompressobj()
+    try:
+        data = inflater.decompress(payload, MAX_ENTRY_BYTES + 1)
+    except zlib.error as error:
+        raise NativeFormatError(
+            f"The {entry} entry of {archive.path} is not the zlib stream a stored strategy is ({error})."
+        ) from error
+    if len(data) > MAX_ENTRY_BYTES or inflater.unconsumed_tail:
+        raise NativeFormatError(f"The {entry} entry of {archive.path} inflates past {MAX_ENTRY_BYTES} bytes.")
+    if not inflater.eof:
+        raise NativeFormatError(
+            f"The {entry} entry of {archive.path} is not the zlib stream a stored strategy is (truncated)."
+        )
+    return data
+
+
+def _read_arrays(stream: _JavaStream, entry: str) -> list[bytes | tuple[int, ...] | None]:
+    """Every value after the bucket count, each an array or a null."""
     arrays: list[bytes | tuple[int, ...] | None] = []
     while not stream.exhausted:
         value = stream.read_value()
-        if value is None:
-            arrays.append(None)
-        elif isinstance(value, bytes):
+        if value is None or isinstance(value, bytes):
             arrays.append(value)
         elif isinstance(value, list) and all(isinstance(item, int) for item in value):
             arrays.append(tuple(int(item) for item in value))
         else:
             raise NativeFormatError(f"The {entry} entry holds a {type(value).__name__} where a strategy array belongs.")
+    return arrays
 
+
+def _pair_slots(arrays: list[bytes | tuple[int, ...] | None], entry: str) -> tuple[MkrSlot, ...]:
+    """The first half's frequency arrays paired with the second half's regret arrays."""
     if len(arrays) % 2:
         raise NativeFormatError(
             f"The {entry} entry holds {len(arrays)} arrays, an odd number: a stored strategy writes "
@@ -798,7 +871,7 @@ def read_strategy(archive: MkrArchive, entry: str) -> MkrStrategy:
                 "which are meant to run in parallel."
             )
         slots.append(MkrSlot(frequencies=head, regrets=tail))
-    return MkrStrategy(entry=entry, bucket_count=bucket_count, slots=tuple(slots))
+    return tuple(slots)
 
 
 def bind_slots(tree: MkrTree, strategy: MkrStrategy) -> tuple[int, ...]:
@@ -1032,107 +1105,117 @@ def run_checks(structure: MkrStructure) -> tuple[MkrCheck, ...]:
     strategy and not an index; the blind check is what the money unit is derived from. A
     reading that mislays the arrays fails them.
     """
-    tree = structure.tree
-    decisions = len(tree.decisions)
-    checks: list[MkrCheck] = []
-
-    stated = structure.iscount
-    product = decisions * structure.class_count
-    checks.append(
-        MkrCheck(
-            name="infoset count",
-            passed=stated == product,
-            detail=(
-                f"the archive states {stated} infosets and its {decisions} decisions over "
-                f"{structure.class_count} hand classes make {product}"
-            ),
-        )
-    )
-
+    checks = [_infoset_check(structure)]
     strategy = structure.strategy
     if strategy is not None:
-        order = tree.slot_order
-        lengths_agree = all(
-            len(slot.frequencies or b"") == structure.class_count * len(tree.nodes[order[position]].children)
-            for position, slot in enumerate(strategy.slots)
-            if slot.present
-        )
-        checks.append(
-            MkrCheck(
-                name="slot lengths",
-                passed=lengths_agree,
-                detail=(
-                    f"every stored array of {strategy.entry} is {structure.class_count} hands long per "
-                    "action of the node it binds to"
-                ),
-            )
-        )
-        sums = _frequency_sums(tree, strategy, structure.class_count)
-        stray = {total: count for total, count in sums.items() if total not in FREQUENCY_SUMS}
-        checks.append(
-            MkrCheck(
-                name="frequency sums",
-                passed=not stray,
-                detail=(
-                    f"{sum(sums.values())} hand rows sum to "
-                    f"{', '.join(f'{total} ({count})' for total, count in sorted(sums.items()))}"
-                    + (f"; unexpected: {sorted(stray)}" if stray else "")
-                ),
-            )
-        )
-
+        checks.append(_slot_length_check(structure, strategy))
+        checks.append(_frequency_sum_check(structure, strategy))
     # Only a preflop tree posts blinds, so only a preflop tree can be checked against
     # them. A check that does not apply is left out rather than recorded as passed: the
     # list is what this reading was able to confirm, not a score.
-    if tree.street == 0:
-        unit = structure.chips_per_bb
-        checks.append(
-            MkrCheck(
-                name="big blind",
-                passed=unit is not None,
-                detail=(
-                    f"the largest committed amount is {unit:.0f} and its seat is the last to act"
-                    if unit is not None
-                    else "no committed amount identifies the big blind, so the money unit is not derived"
-                ),
-            )
-        )
-
-    version = structure.version
-    checks.append(
-        MkrCheck(
-            name="format version",
-            passed=version in KNOWN_VERSIONS,
-            detail=(
-                f"the save was written by build {version}, which has been read end to end"
-                if version in KNOWN_VERSIONS
-                else (
-                    f"build {version} is not one this reader has read end to end "
-                    f"({', '.join(str(known) for known in KNOWN_VERSIONS)}); its entries may differ "
-                    "in ways nothing here would notice"
-                )
-            ),
-        )
-    )
-
-    unnamed = structure.unnamed_action_codes
-    checks.append(
-        MkrCheck(
-            name="action codes",
-            passed=not unnamed,
-            detail=(
-                f"every action code of the tree has a reading ({', '.join(str(code) for code in tree.action_codes)})"
-                if not unnamed
-                else f"no reading for action code {', '.join(str(code) for code in unnamed)}"
-            ),
-        )
-    )
+    if structure.tree.street == 0:
+        checks.append(_big_blind_check(structure))
+    checks.append(_version_check(structure))
+    checks.append(_action_code_check(structure))
     return tuple(checks)
 
 
-def _frequency_sums(tree: MkrTree, strategy: MkrStrategy, class_count: int) -> dict[int, int]:
-    """How many hand rows of a stored strategy sum to each total, over every node."""
+def _infoset_check(structure: MkrStructure) -> MkrCheck:
+    decisions = len(structure.tree.decisions)
+    stated = structure.iscount
+    product = decisions * structure.class_count
+    return MkrCheck(
+        name="infoset count",
+        passed=stated == product,
+        detail=(
+            f"the archive states {stated} infosets and its {decisions} decisions over "
+            f"{structure.class_count} hand classes make {product}"
+        ),
+    )
+
+
+def _slot_length_check(structure: MkrStructure, strategy: MkrStrategy) -> MkrCheck:
+    tree = structure.tree
+    order = tree.slot_order
+    lengths_agree = all(
+        len(slot.frequencies or b"") == structure.class_count * len(tree.nodes[order[position]].children)
+        for position, slot in enumerate(strategy.slots)
+        if slot.present
+    )
+    return MkrCheck(
+        name="slot lengths",
+        passed=lengths_agree,
+        detail=(
+            f"every stored array of {strategy.entry} is {structure.class_count} hands long per "
+            "action of the node it binds to"
+        ),
+    )
+
+
+def _frequency_sum_check(structure: MkrStructure, strategy: MkrStrategy) -> MkrCheck:
+    sums, stray = _frequency_sums(structure.tree, strategy, structure.class_count)
+    return MkrCheck(
+        name="frequency sums",
+        passed=not stray,
+        detail=(
+            f"{sum(sums.values())} hand rows sum to "
+            f"{', '.join(f'{total} ({count})' for total, count in sorted(sums.items()))}"
+            + (f"; unexpected: {sorted(stray)}" if stray else "")
+        ),
+    )
+
+
+def _big_blind_check(structure: MkrStructure) -> MkrCheck:
+    unit = structure.chips_per_bb
+    return MkrCheck(
+        name="big blind",
+        passed=unit is not None,
+        detail=(
+            f"the largest committed amount is {unit:.0f} and its seat is the last to act"
+            if unit is not None
+            else "no committed amount identifies the big blind, so the money unit is not derived"
+        ),
+    )
+
+
+def _version_check(structure: MkrStructure) -> MkrCheck:
+    version = structure.version
+    known = version in KNOWN_VERSIONS
+    return MkrCheck(
+        name="format version",
+        passed=known,
+        detail=(
+            f"the save was written by build {version}, which has been read end to end"
+            if known
+            else (
+                f"build {version} is not one this reader has read end to end "
+                f"({', '.join(str(read) for read in KNOWN_VERSIONS)}); its entries may differ "
+                "in ways nothing here would notice"
+            )
+        ),
+    )
+
+
+def _action_code_check(structure: MkrStructure) -> MkrCheck:
+    unnamed = structure.unnamed_action_codes
+    codes = ", ".join(str(code) for code in (unnamed or structure.tree.action_codes))
+    return MkrCheck(
+        name="action codes",
+        passed=not unnamed,
+        detail=f"every action code of the tree has a reading ({codes})"
+        if not unnamed
+        else f"no reading for action code {codes}",
+    )
+
+
+def _frequency_sums(tree: MkrTree, strategy: MkrStrategy, class_count: int) -> tuple[dict[int, int], set[int]]:
+    """How many hand rows sum to each total, over every node, and the totals no node allows.
+
+    A total is judged against its own node's action count (:func:`frequency_sum_allowed`),
+    since the rounding a row can carry grows with the number of actions it rounds.
+    """
     totals: dict[int, int] = {}
+    stray: set[int] = set()
     order = tree.slot_order
     for position, slot in enumerate(strategy.slots):
         frequencies = slot.frequencies
@@ -1142,4 +1225,6 @@ def _frequency_sums(tree: MkrTree, strategy: MkrStrategy, class_count: int) -> d
         for hand in range(class_count):
             total = sum(frequencies[hand * actions : (hand + 1) * actions])
             totals[total] = totals.get(total, 0) + 1
-    return totals
+            if not frequency_sum_allowed(total, actions):
+                stray.add(total)
+    return totals, stray

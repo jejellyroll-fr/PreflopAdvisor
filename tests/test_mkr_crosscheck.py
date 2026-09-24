@@ -117,6 +117,18 @@ def test_a_malformed_line_pair_is_skipped_rather_than_fatal(tmp_path):
     assert read_export_action(str(path)) == {"AA": 0.25, "32o": 0.75}
 
 
+def test_a_header_or_stray_line_does_not_shift_the_pairing_behind_it(tmp_path):
+    path = tmp_path / "0.rng"
+    path.write_text("Hand\nAA\n0.25;0.0\n\nstray\n32o\n0.75;0.0\nKK\n0.5\n", encoding="utf-8")
+    assert read_export_action(str(path)) == {"AA": 0.25, "32o": 0.75, "KK": 0.5}
+
+
+def test_a_hand_that_cannot_be_normalised_is_skipped(tmp_path):
+    path = tmp_path / "0.rng"
+    path.write_text("AAAA)\n0.5;0.0\nAA\n0.25;0.0\n", encoding="utf-8")
+    assert read_export_action(str(path)) == {"AA": 0.25}
+
+
 def test_an_export_file_that_cannot_be_read_is_named(tmp_path):
     with pytest.raises(NativeFormatError, match="could not be read"):
         read_export_action(str(tmp_path / "absent.rng"))
@@ -208,6 +220,26 @@ def test_a_hand_the_export_holds_and_the_numbering_does_not_is_reported(structur
     assert report.hands_only_in_export == ("not a hand",)
     assert report.hands_only_in_save == ()
     assert report.values_agree, "a stranger in the export is not a disagreement about a hand"
+
+
+def test_an_action_file_missing_a_hand_another_file_holds_does_not_agree(structure, export):
+    folder = export()
+    path = os.path.join(folder, "3.1.rng")
+    with open(path, encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    position = lines.index("AA")
+    del lines[position : position + 2]
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+    report = crosscheck(structure, folder)
+
+    assert report.axis_agrees
+    assert report.differing == 0
+    assert report.missing == 1
+    assert not report.values_agree
+    assert not report.agrees
+    assert "1 missing from an action file" in report.summary()
 
 
 def test_a_tolerance_the_caller_sets_is_the_one_used(structure, export):

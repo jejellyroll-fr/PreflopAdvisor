@@ -38,14 +38,15 @@ from preflop_advisor.mkr_classes import (
     hand_indices,
 )
 from preflop_advisor.mkr_format import (
-    FREQUENCY_SUMS,
     MAX_DEPTH,
+    MAX_ENTRY_BYTES,
     MkrSlot,
     MkrStrategy,
     action_name,
     bind_slots,
     chips_per_bb,
     class_count_of,
+    frequency_sum_allowed,
     read_entries,
     read_java_value,
     read_strategy,
@@ -482,6 +483,49 @@ def test_a_tree_that_ends_before_its_range_flag_is_refused():
         read_tree(tree_entry()[:-1])
 
 
+def test_a_tree_with_a_range_block_is_refused_by_name_rather_than_as_a_wrong_layout():
+    with pytest.raises(NativeFormatError, match="range block"):
+        read_tree(tree_entry(has_ranges=1, tail=b"\x00" * 16))
+
+
+def test_a_seat_that_folded_is_skipped_when_the_action_comes_back_around():
+    """UTG folds, the blinds raise and re-raise: the small blind acts next, not UTG."""
+    # root -[fold]-> SB -[raise 50%]-> BB -[raise 100%]-> SB -[fold]-> terminal
+    nodes = struct.pack(">9H", 1, 0, 1, 40050, 1, 40100, 1, 0, 0)
+    tree = read_tree(tree_entry(players=3, committed=(0, 1000, 2000), stacks=(10000, 10000, 10000), nodes=nodes))
+    assert tree.actors_to(3) == (0, 1, 2, 1)
+    assert tree.actor_of(tree.nodes[3]) == 1
+
+
+def test_a_seat_that_is_all_in_is_past_as_well():
+    # root -[allin]-> P1 -[call]-> P2 -[raise]-> P1: P0 cannot act again.
+    nodes = struct.pack(">9H", 1, 3, 1, 1, 1, 40050, 1, 0, 0)
+    tree = read_tree(tree_entry(players=3, committed=(0, 1000, 2000), stacks=(10000, 10000, 10000), nodes=nodes))
+    assert tree.actors_to(3) == (0, 1, 2, 1)
+
+
+def test_a_member_declaring_more_than_the_reader_holds_is_refused(run_path, monkeypatch):
+    monkeypatch.setattr("preflop_advisor.mkr_format.MAX_ENTRY_BYTES", 8)
+    with pytest.raises(NativeFormatError, match="declares"):
+        read_entries(run_path).read("tree")
+    assert MAX_ENTRY_BYTES > 8
+
+
+def test_a_strategy_that_inflates_past_the_limit_is_refused(run_path, monkeypatch):
+    archive = read_entries(run_path)
+    payload_size = archive.entry("storedstrategy0").size
+    monkeypatch.setattr("preflop_advisor.mkr_format.MAX_ENTRY_BYTES", payload_size + 1)
+    with pytest.raises(NativeFormatError, match="inflates past"):
+        read_strategy(archive, "storedstrategy0")
+
+
+def test_a_strategy_whose_zlib_stream_is_cut_short_is_refused(tmp_path):
+    entry = saved_run()["storedstrategy0"]
+    path = write_mkr(tmp_path / "cut.mkr", saved_run(storedstrategy0=entry[: len(entry) // 2]))
+    with pytest.raises(NativeFormatError, match="truncated"):
+        read_strategy(read_entries(path), "storedstrategy0")
+
+
 def test_a_player_count_that_is_not_a_table_is_refused():
     with pytest.raises(NativeFormatError, match="which is not a table"):
         read_tree(tree_entry(players=1, committed=(0,), stacks=(1,)))
@@ -641,7 +685,20 @@ def test_frequency_bytes_that_do_not_sum_to_a_strategy_are_reported(tmp_path):
     )
     structure = read_structure(path)
     assert {check.name for check in structure.failures} == {"frequency sums"}
-    assert 20 not in FREQUENCY_SUMS
+    assert not frequency_sum_allowed(20, ACTIONS)
+
+
+def test_the_rounding_a_frequency_sum_may_carry_grows_with_the_node_s_actions():
+    """Each action is rounded to a byte on its own, so a row is off by at most half a byte per action."""
+    assert frequency_sum_allowed(0, 2)
+    assert frequency_sum_allowed(256, 2)
+    assert frequency_sum_allowed(257, 2)
+    assert frequency_sum_allowed(255, 2)
+    assert not frequency_sum_allowed(258, 2)
+    # Three equal thirds: 85 + 85 + 85.
+    assert frequency_sum_allowed(255, 3)
+    assert frequency_sum_allowed(254, 4)
+    assert not frequency_sum_allowed(253, 4)
 
 
 def test_an_action_code_with_no_reading_fails_a_check_rather_than_being_named(tmp_path):
