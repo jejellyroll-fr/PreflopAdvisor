@@ -38,22 +38,19 @@ from preflop_advisor.mkr_classes import (
     hand_indices,
 )
 from preflop_advisor.mkr_format import (
-    MAX_DEPTH,
     MAX_ENTRY_BYTES,
     MkrSlot,
     MkrStrategy,
-    action_name,
     bind_slots,
-    chips_per_bb,
     class_count_of,
     frequency_sum_allowed,
     read_entries,
-    read_java_value,
     read_strategy,
     read_structure,
-    read_tree,
 )
+from preflop_advisor.mkr_java import read_java_value
 from preflop_advisor.mkr_provider import MkrStrategyProvider, version_name
+from preflop_advisor.mkr_tree import MAX_DEPTH, action_name, chips_per_bb, read_tree
 from preflop_advisor.native_format import probe
 from preflop_advisor.strategy import Node, StrategyProvider, node_identity
 

@@ -35,8 +35,9 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from preflop_advisor.errors import NativeFormatError
 from preflop_advisor.mkr_crosscheck import crosscheck
-from preflop_advisor.mkr_format import MkrStructure, action_name, read_structure
+from preflop_advisor.mkr_format import MkrStructure, read_structure
 from preflop_advisor.mkr_provider import MkrStrategyProvider
+from preflop_advisor.mkr_tree import action_name
 from preflop_advisor.strategy import node_identity
 
 #: The seat names a report uses, which are only names: the reader rotates them onto the

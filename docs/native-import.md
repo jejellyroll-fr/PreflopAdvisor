@@ -10,7 +10,7 @@ undocumented guesses without fixture-based validation*.
 | Phase | State |
 | --- | --- |
 | 1 — research / format characterization | **Complete.** The container, the tree, the scalars, the stored strategy and the hand-class numbering are read from a real save and written down below, each row marked as measured, derived or `UNKNOWN`. |
-| 2 — feasibility prototype | **Delivered, behind a gate.** `preflop_advisor/mkr_format.py` reads the structure; `preflop_advisor/mkr_provider.py` answers the `StrategyProvider` questions of #15 from it; `scripts/mkr_report.py` runs both over a file of your own. |
+| 2 — feasibility prototype | **Delivered, behind a gate.** `preflop_advisor/mkr_format.py` reads the structure (the `tree` entry through `mkr_tree.py`, the Java-serialized entries through `mkr_java.py`); `preflop_advisor/mkr_provider.py` answers the `StrategyProvider` questions of #15 from it; `scripts/mkr_report.py` runs both over a file of your own. |
 | 3 — production integration | **Not met.** Three of the promotion gates below are open, the first of them being the one that matters: no `.mkr` and export of *the same* simulation exist side by side, so no extracted number has been checked against an independently produced one. |
 
 The prototype is therefore **not reachable from `strategy.provider_for`**, no tree entry
@@ -149,7 +149,7 @@ answer is arrived at from:
 | `metadata().ante_bb` | dead money, when it is zero | otherwise `None`: "numbers unknown", not "no ante" |
 | `metadata().chips_per_bb` | derived from the blinds | 2000 on the save at hand, which is the export convention arrived at independently |
 | `resolve` / `has_node` / `children` | the node stream | a saved preflop tree writes every seat's action as an edge, so a line is explicit already: there are no implied folds to fill in, unlike an export. What `resolve` completes is spelling, and a generic `Raise` when the tree holds exactly one raise there |
-| `Node.path` | the action codes root-to-node, named by `mkr_format.action_name` | `CO Allin;BU Call;SB Fold` — the same shape the CSV and Monker providers produce, so `node_identity` keys history on it unchanged |
+| `Node.path` | the action codes root-to-node, named by `mkr_tree.action_name` | `CO Allin;BU Call;SB Fold` — the same shape the CSV and Monker providers produce, so `node_identity` keys history on it unchanged |
 | `strategy` | the stored byte over the row's sum | renormalised because the format rounds each action on its own; a class the run stored nothing for is an **empty node**, not a uniform strategy |
 | `StrategyResult.ev` | nothing | always `None`. The model already reads that as "the source does not report one" |
 | `hands_at` | the class table's keys | the whole axis minus the classes stored nothing for, not a sample: a simulation file is not a truncated export |

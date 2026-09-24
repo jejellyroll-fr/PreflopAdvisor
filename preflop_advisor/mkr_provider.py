@@ -27,9 +27,9 @@ Model                       Where it comes from
                             seats by which player it says opens.
 ``metadata().stack_bb``     the tree's stacks over ``chips_per_bb``.
 ``metadata().chips_per_bb`` derived from the blinds the tree posts, not assumed; see
-                            :func:`~preflop_advisor.mkr_format.chips_per_bb`.
+                            :func:`~preflop_advisor.mkr_tree.chips_per_bb`.
 ``Node.path``               the action codes from the root to the node, named by
-                            :func:`~preflop_advisor.mkr_format.action_name`, one seat
+                            :func:`~preflop_advisor.mkr_tree.action_name`, one seat
                             per step. A saved preflop tree writes every seat's action as
                             an edge, so a path is explicit already -- there are no
                             implied folds to fill in, which is the one way this is
@@ -60,7 +60,8 @@ from typing import Any
 from .errors import NativeFormatError
 from .hand_classes import CARDS_PER_GAME
 from .mkr_classes import class_of_hand, class_table
-from .mkr_format import MkrStructure, action_name, read_structure
+from .mkr_format import MkrStructure, read_structure
+from .mkr_tree import action_name
 from .settings import ConfigSource, normalize, seats_for
 from .sizings import Sizing, sizing_for_code
 from .strategy import EMPTY_NODE, Node, SimulationMetadata, StrategyResult
@@ -135,7 +136,7 @@ class MkrStrategyProvider:
         reversed is acting order, the order the tree itself is written in. The tree says
         which of its players opens, and that is where the rotation is checked rather than
         here: the big blind has to come out last, and
-        :func:`~preflop_advisor.mkr_format.chips_per_bb` refuses the file when it does not.
+        :func:`~preflop_advisor.mkr_tree.chips_per_bb` refuses the file when it does not.
         """
         declared = [seat.strip() for seat in str(settings.get("positions", "")).split(",") if seat.strip()]
         named = seats_for(settings, players, declared)[:players]
