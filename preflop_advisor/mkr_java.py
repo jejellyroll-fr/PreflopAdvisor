@@ -38,7 +38,8 @@ _BASE_HANDLE = 0x7E0000
 #: ``TC_ENDBLOCKDATA``; without it the field values simply stop.
 _SC_WRITE_METHOD = 0x01
 
-#: How many elements an array of objects or of booleans -- the two kept as lists -- may declare. The largest a save writes is one row
+#: How many elements an array of objects or of booleans -- the two kept as lists -- or pairs
+#: a map may declare. The largest a save writes is one row
 #: per hand class, 16432; a count far past that is a crafted stream, and every element --
 #: even a one-byte null -- would cost a list slot before anything else could be checked.
 MAX_OBJECT_ELEMENTS = 1_000_000
@@ -213,6 +214,12 @@ class _JavaStream:
         chain: list[_ClassDesc] = []
         current: _ClassDesc | None = description
         while current is not None:
+            # A reference can name a class as its own ancestor; the chain is followed no
+            # deeper than values nest, and never through the same class twice.
+            if len(chain) >= MAX_NESTING or any(level is current for level in chain):
+                raise NativeFormatError(
+                    f"The {self._entry} entry describes a class hierarchy that loops or never ends."
+                )
             chain.append(current)
             current = current.parent
         for level in reversed(chain):
@@ -236,7 +243,9 @@ class _JavaStream:
         if not isinstance(header, bytes) or len(header) < 8:
             raise NativeFormatError(f"The {self._entry} entry holds a map without its capacity and size.")
         size = int(struct.unpack(">i", header[4:8])[0])
-        if size < 0:
+        # Every pair is at least two one-byte values, so a size past half the bytes left, or
+        # past the element limit, is a crafted count rather than a map.
+        if not 0 <= size <= min(MAX_OBJECT_ELEMENTS, (len(self._data) - self._offset) // 2):
             raise NativeFormatError(f"The {self._entry} entry holds a map of {size} entries.")
         contents: dict[object, object] = {}
         for _ in range(size):

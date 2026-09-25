@@ -1630,6 +1630,29 @@ def test_a_boolean_array_longer_than_any_save_writes_is_refused():
         read_java_value(stream, "hasEv")
 
 
+def test_a_class_that_is_its_own_superclass_is_refused():
+    """A reference back to the class being described would otherwise be followed forever."""
+    stream = (
+        MAGIC
+        + b"\x73\x72"
+        + utf("Loop")
+        + bytes(8)
+        + b"\x02"
+        + struct.pack(">H", 0)
+        + b"\x78"
+        + b"\x71"
+        + struct.pack(">i", 0x7E0000)
+    )
+    with pytest.raises(NativeFormatError, match="class hierarchy that loops"):
+        read_java_value(stream, "presetsmap")
+
+
+def test_a_map_declaring_more_pairs_than_its_bytes_hold_is_refused():
+    stream = java_hash_map({}).replace(struct.pack(">ii", 16, 0), struct.pack(">ii", 16, 100_000_000))
+    with pytest.raises(NativeFormatError, match="map of 100000000 entries"):
+        read_java_value(stream, "presetsmap")
+
+
 def test_an_empty_object_array_is_an_empty_list():
     assert read_java_value(MAGIC + nested("[Ljava.lang.Object;", []), "bountymaps") == []
 
