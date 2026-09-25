@@ -657,6 +657,19 @@ def test_a_seat_whose_call_takes_its_whole_stack_is_past():
     assert deep.actors_to(4) == (0, 1, 2, 0, 1)
 
 
+def test_a_blind_that_is_the_whole_stack_is_all_in_before_anyone_acts():
+    """UTG folds, and the small blind -- all in with its blind -- does not act: the big blind does."""
+    nodes = struct.pack(">5H", 1, 0, 1, 1, 0)
+    tree = read_tree(tree_entry(players=3, committed=(0, 1000, 2000), stacks=(10000, 1000, 10000), nodes=nodes))
+    assert tree.actors_to(1) == (0, 2)
+
+
+def test_a_straddled_tree_names_no_big_blind():
+    """Three forced bets: the largest is the straddle, and nothing in the tree says which is the blind."""
+    straddled = tree_entry(players=3, committed=(1000, 2000, 4000), stacks=(10000, 10000, 10000))
+    assert chips_per_bb(read_tree(straddled)) is None
+
+
 def test_a_code_with_no_known_cost_leaves_the_contribution_alone():
     nodes = struct.pack(">7H", 1, 5, 1, 1, 1, 0, 0)
     tree = read_tree(tree_entry(players=3, committed=(0, 1000, 2000), stacks=(10000, 10000, 10000), nodes=nodes))
@@ -1702,6 +1715,18 @@ def test_a_slot_whose_evs_do_not_run_parallel_is_refused(archive_of):
     row = frequency_rows({})
     stream = MAGIC + b"\x77\x04" + struct.pack(">i", 2) + java_bytes_array(row) + java_ints_array([0, 0])
     with pytest.raises(NativeFormatError, match="which are meant to run in parallel"):
+        read_strategy(archive_of(stream), "storedstrategy0")
+
+
+def test_more_arrays_than_the_node_count_allows_are_refused_before_they_are_held(archive_of):
+    stream = MAGIC + b"\x77\x04" + struct.pack(">i", 2) + b"\x70" * 1000
+    with pytest.raises(NativeFormatError, match="more than the 2 arrays its node count allows"):
+        read_strategy(archive_of(stream), "storedstrategy0")
+
+
+def test_a_node_count_no_tree_has_is_refused(archive_of):
+    stream = MAGIC + b"\x77\x04" + struct.pack(">i", 0)
+    with pytest.raises(NativeFormatError, match="counts 0 nodes"):
         read_strategy(archive_of(stream), "storedstrategy0")
 
 

@@ -129,8 +129,9 @@ class MkrTree:
         the table view uses. It is only true while no chance node intervenes, which is why
         :attr:`MkrStructure.preflop_only` is a condition of reading a node at all.
         """
-        out: set[int] = set()
         put_in: list[float] = [float(self._posted(seat)) for seat in range(self.num_players)]
+        # A blind that is the whole stack is all in before anyone acts.
+        out = {seat for seat in range(self.num_players) if put_in[seat] >= self._stack(seat)}
         actor = 0
         actors = [actor]
         for code in self.line_to(index):
@@ -374,6 +375,11 @@ def chips_per_bb(tree: MkrTree) -> float | None:
         return None
     largest = max(tree.committed)
     if largest <= 0:
+        return None
+    # Two forced bets are a small and a big blind; a third -- a straddle -- would be the
+    # largest and the last to act as well, and the tree does not say which is the blind.
+    if sum(1 for amount in tree.committed if amount > 0) > 2:
+        logger.debug("More than two seats post before anyone acts; the big blind is not identified")
         return None
     posted = [seat for seat, amount in enumerate(tree.committed) if amount == largest]
     if len(posted) != 1 or tree.seat_of(posted[0]) != tree.num_players - 1:

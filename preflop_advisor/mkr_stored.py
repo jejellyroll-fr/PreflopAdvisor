@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from .errors import NativeFormatError
 from .mkr_archive import MkrArchive, MkrCheck
 from .mkr_java import _JavaStream
-from .mkr_tree import MkrTree
+from .mkr_tree import MAX_NODES, MkrTree
 
 #: The entries a save made for storage keeps its strategy in, one per street.
 STRATEGY_ENTRIES: tuple[str, ...] = ("storedstrategy0", "storedstrategy1", "storedstrategy2", "storedstrategy3")
@@ -117,14 +117,24 @@ def read_strategy(archive: MkrArchive, entry: str) -> MkrStrategy:
     if not isinstance(header, bytes) or len(header) != 4:
         raise NativeFormatError(f"The {entry} entry does not begin with the four bytes of its node count.")
     node_count = int(struct.unpack(">i", header)[0])
-    slots = _pair_slots(_read_arrays(stream, entry), entry)
+    if not 1 <= node_count <= MAX_NODES + 1:
+        raise NativeFormatError(f"The {entry} entry counts {node_count} nodes, which no tree this reads has.")
+    slots = _pair_slots(_read_arrays(stream, entry, 2 * (node_count - 1)), entry)
     return MkrStrategy(entry=entry, node_count=node_count, slots=slots)
 
 
-def _read_arrays(stream: _JavaStream, entry: str) -> list[bytes | array[int] | None]:
-    """Every value after the node count, each a ``byte[]``, an ``int[]`` or a null."""
+def _read_arrays(stream: _JavaStream, entry: str, limit: int) -> list[bytes | array[int] | None]:
+    """Every value after the node count, each a ``byte[]``, an ``int[]`` or a null.
+
+    No more than ``limit`` of them -- two per node the entry counts -- are read, so a stream
+    of nulls far longer than its tree is refused before it is held in memory.
+    """
     arrays: list[bytes | array[int] | None] = []
     while not stream.exhausted:
+        if len(arrays) >= limit:
+            raise NativeFormatError(
+                f"The {entry} entry holds more than the {limit} arrays its node count allows, two per node."
+            )
         value = stream.read_value()
         if value is None or isinstance(value, bytes) or (isinstance(value, array) and value.typecode == "i"):
             arrays.append(value)
