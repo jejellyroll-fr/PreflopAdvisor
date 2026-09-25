@@ -264,20 +264,19 @@ class CalcSource:
         rows = self.ev_rows[place.group] if place is not None and place.group < len(self.ev_rows) else None
         if place is None or rows is None or not self.widths_agree:
             return None
-        row = rows[hand_class]
+        return self._block_evs(rows[hand_class], place)
+
+    def _block_evs(self, row: Sequence[int], place: GroupLayout) -> tuple[float | None, ...]:
+        """One node's EVs out of its ``[R_0 .. R_n-1, W, V]`` block, in child order."""
         start, actions = place.ev_offset, place.actions
         weight, value = row[start + actions], row[start + actions + 1]
-        if weight <= 0:
-            # Zero is a hand never weighted; below zero is no weight at all, which the
-            # "EV weights" check reports.
-            return (None,) * actions
         denominator = weight * self.scale
-        if not math.isfinite(denominator):
-            # A weight times a large scale can overflow, and dividing by the infinity would
-            # turn every EV into a plausible zero.
+        # Zero is a hand never weighted and below zero no weight at all, which the "EV
+        # weights" check reports; a weight times a large scale can overflow, and dividing
+        # by the infinity would turn every EV into a plausible zero.
+        if weight <= 0 or not math.isfinite(denominator):
             return (None,) * actions
-        regrets = row[start : start + actions]
-        evs = ((regret + value) / denominator for regret in reversed(regrets))
+        evs = ((regret + value) / denominator for regret in reversed(row[start : start + actions]))
         return tuple(ev if math.isfinite(ev) else None for ev in evs)
 
     def describe(self) -> str:
