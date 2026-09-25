@@ -321,9 +321,17 @@ def _compare_action(
 
 
 def _compare_ev(tally: _Tally, stored: tuple[float | None, ...] | None, action: int, exported: float | None) -> None:
-    """One hand's EV of one action, when both the save and the export hold one."""
+    """One hand's EV of one action, when both the save and the export hold one.
+
+    An export that writes an EV which is not a number has not omitted one: it has stated
+    something no save could agree with, and it counts as a difference.
+    """
+    if exported is not None and not math.isfinite(exported):
+        tally.ev_compared += 1
+        tally.ev_differing += 1
+        return
     value = stored[action] if stored is not None else None
-    if value is None or exported is None or not math.isfinite(exported):
+    if value is None or exported is None:
         return
     tally.ev_compared += 1
     difference = abs(value - exported)

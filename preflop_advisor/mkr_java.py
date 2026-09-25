@@ -38,7 +38,7 @@ _BASE_HANDLE = 0x7E0000
 #: ``TC_ENDBLOCKDATA``; without it the field values simply stop.
 _SC_WRITE_METHOD = 0x01
 
-#: How many elements an array of objects may declare. The largest a save writes is one row
+#: How many elements an array of objects or of booleans -- the two kept as lists -- may declare. The largest a save writes is one row
 #: per hand class, 16432; a count far past that is a crafted stream, and every element --
 #: even a one-byte null -- would cost a list slot before anything else could be checked.
 MAX_OBJECT_ELEMENTS = 1_000_000
@@ -257,6 +257,8 @@ class _JavaStream:
         if element == "B":
             values = self._take(length)
         elif element == "Z":
+            if length > MAX_OBJECT_ELEMENTS:
+                raise NativeFormatError(f"The {self._entry} entry declares an array of {length} elements.")
             values = [bool(flag) for flag in self._take(length)]
         elif element in _ARRAY_TYPES:
             values = self._numbers(element, length)

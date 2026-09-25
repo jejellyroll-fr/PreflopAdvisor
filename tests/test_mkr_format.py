@@ -1624,6 +1624,12 @@ def test_an_object_array_longer_than_any_save_writes_is_refused():
         read_java_value(stream, "reg")
 
 
+def test_a_boolean_array_longer_than_any_save_writes_is_refused():
+    stream = MAGIC + array_body("[Z", struct.pack(">i", 2_000_000) + bytes(16))
+    with pytest.raises(NativeFormatError, match="array of 2000000 elements"):
+        read_java_value(stream, "hasEv")
+
+
 def test_an_empty_object_array_is_an_empty_list():
     assert read_java_value(MAGIC + nested("[Ljava.lang.Object;", []), "bountymaps") == []
 

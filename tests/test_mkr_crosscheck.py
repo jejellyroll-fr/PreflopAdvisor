@@ -184,6 +184,16 @@ def test_an_ev_the_export_states_differently_is_counted(structure, export):
     assert "EVs: DIFFER" in report.summary()
 
 
+def test_an_ev_the_export_writes_as_not_a_number_is_a_difference(structure, export):
+    """``nan`` is not an omitted EV: it is one no save could agree with."""
+    evs = {**SAME_RUN_EVS, "3": (500.0, {"AA": float("nan"), "32o": -1500.0})}
+    report = crosscheck(structure, export(evs=evs))
+    assert report.values_agree
+    assert report.ev_differing == 1
+    assert not report.evs_agree
+    assert not report.agrees
+
+
 def test_an_export_without_evs_compares_frequencies_only(structure, export):
     report = crosscheck(structure, export(evs={}))
     assert report.ev_compared == 0
