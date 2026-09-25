@@ -236,18 +236,27 @@ def read_export_rows(path: str) -> dict[str, tuple[float, float | None]]:
                 logger.debug("Skipping line %d of %s: a hand with no values after it", position, path)
             pending = line
             continue
-        if not math.isfinite(values[0]):
-            # A NaN differs from nothing by more than the tolerance, so it would count as
-            # compared and agreeing. Left out, it is a row the file is missing instead.
-            logger.debug("Skipping %r in %s: its frequency %r is not a number", pending, path, values[0])
-            pending = None
-            continue
-        try:
-            rows[normalize_monker_hand(pending)] = values
-        except (AttributeError, IndexError, KeyError):
-            logger.debug("Skipping unreadable hand %r in %s", pending, path)
+        _add_row(rows, pending, values, path)
         pending = None
     return rows
+
+
+def _add_row(
+    rows: dict[str, tuple[float, float | None]], hand: str, values: tuple[float, float | None], path: str
+) -> None:
+    """Keep one exported row under its normalised hand, unless its frequency is no probability.
+
+    A NaN differs from nothing by more than the tolerance, and a 1.001 sits within it of a
+    stored 1.0: either would count as compared and agreeing. Left out, it is a row the
+    file is missing instead.
+    """
+    if not (math.isfinite(values[0]) and 0.0 <= values[0] <= 1.0):
+        logger.debug("Skipping %r in %s: its frequency %r is not a probability", hand, path, values[0])
+        return
+    try:
+        rows[normalize_monker_hand(hand)] = values
+    except (AttributeError, IndexError, KeyError):
+        logger.debug("Skipping unreadable hand %r in %s", hand, path)
 
 
 def _stored_row(structure: MkrStructure, node: int, hand_class: int) -> tuple[float, ...]:

@@ -145,6 +145,13 @@ def test_a_hand_that_cannot_be_normalised_is_skipped(tmp_path):
     assert read_export_action(str(path)) == {"AA": 0.25}
 
 
+def test_a_frequency_outside_zero_to_one_is_no_frequency(tmp_path):
+    """1.001 would agree with a stored 1.0 inside the tolerance, and no probability is 1.001."""
+    path = tmp_path / "0.rng"
+    path.write_text("AA\n1.001;0.0\nKK\n-0.001;0.0\n32o\n1.0;0.0\n", encoding="utf-8")
+    assert read_export_action(str(path)) == {"32o": 1.0}
+
+
 def test_an_export_file_that_cannot_be_read_is_named(tmp_path):
     with pytest.raises(NativeFormatError, match="could not be read"):
         read_export_action(str(tmp_path / "absent.rng"))

@@ -577,6 +577,12 @@ def test_a_range_block_is_read_as_one_weight_per_player_and_combo():
     assert tree.starting_range(1)[-1] == pytest.approx(0.5)
 
 
+def test_a_range_block_holding_a_negative_weight_is_refused():
+    weights = [0] * 2651 + [-1]
+    with pytest.raises(NativeFormatError, match="negative weight"):
+        read_tree(tree_entry(has_ranges=1, tail=struct.pack(">2652i", *weights)))
+
+
 def test_a_range_block_of_no_known_size_is_refused():
     with pytest.raises(NativeFormatError, match="no whole number of weights"):
         read_tree(tree_entry(has_ranges=1, tail=b"\x00" * 16))

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import struct
+import sys
+from array import array
 from dataclasses import dataclass, field
 from functools import cached_property
 
@@ -342,6 +344,16 @@ def _read_nodes(cursor: _TreeCursor) -> tuple[MkrNode, ...]:
     return tuple(nodes)
 
 
+def _require_weights(block: bytes) -> None:
+    """Refuse a range block holding a negative weight, which no starting range has."""
+    weights = array("i")
+    weights.frombytes(block)
+    if sys.byteorder == "little":
+        weights.byteswap()
+    if weights and min(weights) < 0:
+        raise NativeFormatError(f"The tree entry's range block holds a negative weight ({min(weights)}).")
+
+
 def _read_ranges(cursor: _TreeCursor, players: int) -> tuple[int, bytes]:
     """The range block: every player's weight for every starting combo of the game.
 
@@ -354,6 +366,7 @@ def _read_ranges(cursor: _TreeCursor, players: int) -> tuple[int, bytes]:
         if left == players * combos * 4:
             block = cursor.data[cursor.offset :]
             cursor.offset = len(cursor.data)
+            _require_weights(block)
             return combos, block
     raise NativeFormatError(
         f"The tree entry carries a range block of {left} bytes, which is no whole number of weights for "
