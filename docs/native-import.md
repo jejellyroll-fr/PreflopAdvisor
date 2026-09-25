@@ -26,8 +26,8 @@ and a second implementation of the same format to disagree with.
 
 | Source | What it establishes | Bearing |
 | --- | --- | --- |
-| One real save, `ggpoker-aof-plo.mkr`, 807 234 bytes, written by MonkerSolver 2.1.9, read 2026-09-22 | A save made **for storage**: a four-handed all-in-or-fold PLO4 preflop tree with 29 nodes, 14 of them decisions, and a stored strategy of 230 048 hand rows. | Primary for the storage rows below. |
-| A second save, `validated-holdem.mkr`, 1.9 MB, `game = 0`, `iscount = 2366` | A save made **for further calculation**: `reg`/`iavg`/`hasEv` instead of `storedstrategy0`, a hold'em hand axis of 169 classes (2366 = 14 × 169), EV rows for groups 0, 4, 8 and 12 and nowhere else. | Primary for the calculation rows below. |
+| One real save, `ggpoker-aof-plo.mkr`, 807 234 bytes, written by MonkerSolver 2.1.9, read 2026-09-22 and read through by this reader 2026-09-25 | A save made **for storage**: a four-handed all-in-or-fold PLO4 preflop tree with 29 nodes, 14 of them decisions, and a stored strategy of 230 048 hand rows. | Primary for the storage rows below. |
+| A second save, `validated-holdem.mkr`, 1 972 581 bytes, `game = 0`, `iscount = 2366`, read through by this reader 2026-09-25 | A save made **for further calculation**: `reg`/`iavg`/`hasEv` instead of `storedstrategy0`, a hold'em hand axis of 169 classes (2366 = 14 × 169), EV rows for groups 0, 4, 8 and 12 and nowhere else. | Primary for the calculation rows below. |
 | `mcp-monkersolver`'s `docs/MKR_FORMAT.md`, revised 2026-09-25 | A characterization of both kinds of save, checked on the two saves above: the stored strategy's layout (a node count, then a frequency array and an EV array per node), frequencies as signed bytes, the reversed action order, the calculation store's groups and EV formula, `evs` / `eviters` as a sum over its samples, the range block, the locks. | The description this reader now follows. Every part of it that the file can check is checked here — see the cross-checks — rather than taken on trust. |
 | `poker-eval`'s `pe_monker` reader (`include/poker_eval/solver/pe_monker*.h`, `src/solver/adapters/monker_*.c`) | An independent C implementation of the same container, tree, slot binding and class numbering. | Corroborating for those. The byte-sum histogram it quotes (229 887 / 74 / 87 over 230 048 rows) is the one measured here, and is now *explained* rather than taken as a property: see *Frequencies*. |
 | MonkerSolver's own guide, <https://monkerware.com/guide.html> (read 2026-09-22) | Documents installing, building a tree, abstraction, solving and viewing. **No file format, anywhere.** | Primary, negative. The vendor still does not specify `.mkr`. |
@@ -159,16 +159,37 @@ check instead of returning a frequency. They are reported per file by
 | infoset count | the archive's `iscount` scalar against decisions × classes | 230 048 = 14 × 16432; 2366 = 14 × 169 |
 | node count (storage) | the count a stored strategy states against the tree's nodes, plus one | 30 = 29 + 1 |
 | slot lengths (storage) | each stored array's length against its own node's action count | every array 16432 hands long per action |
-| frequency sums (storage) | each byte is a frequency (`−100` … `100`), and a hand's sum to one within half a half-point per action of its node | every row |
+| frequency sums (storage) | each byte is a frequency (`−100` … `100`), and a hand's sum to one within half a half-point per action of its node | 229 974 rows at 200 half-points, 74 at 201 |
 | group widths (calculation) | each row's width against the nodes of its group | `Σ (n + 2) = 56` for the EV rows |
 | EV groups (calculation) | the groups `reg` has EV rows for against `hasEv` | 0, 4, 8, 12 |
 | group order (calculation) | a depth-first against a breadth-first order of each group's nodes | equal: every player acts at one depth |
-| average against EV (calculation) | the action `iavg` plays most against the action `reg` says is worth most, per node, over the hands where both are clear; more than half must agree | 0.93 to 1.00 per node |
+| average against EV (calculation) | the action `iavg` plays most against the action `reg` says is worth most, per node, over the hands where both are clear; more than half must agree | 93 % or more at every one of the 14 nodes |
 | fold EV | every hand's fold EV at a node against each other, and against minus the blind at a first action | first to act 0, next 0, SB −1000, BB −2000, over all 14 nodes and every class |
 | range block | the tree's starting-range combos against the strategy's hand size | — (neither save carries one) |
 | locks (calculation) | a calculation save carrying locks, which its store does not apply | — |
 | big blind | the largest committed amount against the seating rotation | 2000, posted by the last seat to act |
 | action codes | the tree's codes against the codes that have a reading | 0, 1, 3 |
+
+### Both real saves, read through
+
+Run on 2026-09-25 with `scripts/mkr_report.py`, every check passes on both saves — eight
+of eight on the one made for storage, ten of ten on the one made for calculation — and the
+provider builds on each.
+
+| | `ggpoker-aof-plo.mkr` | `validated-holdem.mkr` |
+| --- | --- | --- |
+| kind | for storage | for further calculation |
+| game, hand axis | PLO, 16432 classes | hold'em, 169 classes |
+| checks | 8 / 8 pass | 10 / 10 pass |
+| node count / groups | 30 = 29 + 1 | EV rows for groups 0, 4, 8, 12, as `hasEv` marks |
+| fold EV | 0, 0, −1000, −2000 at the 14 nodes, for every class | the same |
+| average against EV | — | 93 % or more at every node |
+| EV per hand by player, in chips | 433.6 / −236.4 / −639.8 / 419.4 (sum −23.2) | 513.1 / −217.0 / −768.3 / 450.9 (sum −21.3) |
+
+Beyond the checks, the numbers read sensibly together, which nothing in the reader forces:
+`AsAhKsKh` shoves from the cutoff 100 % of the time at an EV of +611, and where it folds
+97.5 % of the time the fold is worth −1000 against −1518 for the call; `AsAd` pushes or
+calls everywhere, at EVs between +2324 and +4961.
 
 ## The hand axis is the application's own
 
@@ -323,9 +344,12 @@ The provider stays out of the application until all of these hold. Current state
       anything else, or nothing, fails the `format version` check and is refused. Two
       builds can share a tree signature and still disagree about an entry, so the signature
       is the coarse guard and the build number is the fine one.
-- [x] **the comparison against an export exists, and two of its three parts pass against
+- [x] **both kinds of save are read end to end from a real file, every check passing.** The
+      storage save and the calculation save above, 8 / 8 and 10 / 10, with frequencies and
+      EVs through the provider.
+- [x] **the comparison against an export exists, and two of its four parts pass against
       the solver's own output.** `preflop_advisor/mkr_crosscheck.py` compares a save with an
-      exported range folder on topology, hand axis and values; see below for what it
+      exported range folder on topology, hand axis, values and EVs; see below for what it
       established.
 - [ ] **the values match an export of the same simulation, node by node and hand by hand.**
       This is the gate. Everything else checks a reading against *itself* or against the
