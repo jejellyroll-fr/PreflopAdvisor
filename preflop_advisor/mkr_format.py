@@ -236,8 +236,13 @@ def read_structure(path: str) -> MkrStructure:
     tree = read_tree(archive.read(TREE_ENTRY))
     strategies: dict[str, MkrStrategy] = {}
     source: StrategySource
-    if names & set(STRATEGY_ENTRIES):
+    if STRATEGY_ENTRIES[0] in names:
         strategies, source = read_stored(archive, tree)
+    elif names & set(STRATEGY_ENTRIES):
+        raise NativeFormatError(
+            f"{path} holds {', '.join(sorted(names & set(STRATEGY_ENTRIES)))} but no {STRATEGY_ENTRIES[0]}, "
+            "the entry every save made for storage carries: the archive is truncated or mixed."
+        )
     else:
         source = read_calculation(archive, tree)
     scalars = read_scalars(archive)

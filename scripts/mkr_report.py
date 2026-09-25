@@ -22,8 +22,8 @@ agrees on the first two and differs on the third, which the report says in those
 rather than as one verdict.
 
 The exit status is what a check script wants: ``0`` when everything asked for agreed,
-``1`` when something differed, ``2`` when the file could not be read as a saved simulation
-at all.
+``1`` when something differed or the strategy model could not be built from the file,
+``2`` when the file could not be read as a saved simulation at all.
 """
 
 import os
@@ -42,7 +42,12 @@ from preflop_advisor.strategy import node_identity
 
 #: The seat names a report uses, which are only names: the reader rotates them onto the
 #: tree's own seats and refuses the file if the big blind does not come out last.
-SEATS = {"positions": "BB,SB,BU,CO,MP,UTG", "positions7": "BB,SB,BU,CO,HJ,MP,UTG"}
+SEATS = {
+    "positions": "BB,SB,BU,CO,MP,UTG",
+    "positions7": "BB,SB,BU,CO,HJ,MP,UTG",
+    "positions8": "BB,SB,BU,CO,HJ,LJ,MP,UTG",
+    "positions9": "BB,SB,BU,CO,HJ,LJ,MP,UTG1,UTG",
+}
 
 
 def describe(structure: MkrStructure) -> None:
@@ -164,10 +169,12 @@ def main() -> int:
         provider = MkrStrategyProvider(path, SEATS)
     except NativeFormatError as error:
         print(f"model: not built ({error})")
+        built = False
     else:
         describe_model(provider, hands)
+        built = True
     agreed = describe_crosscheck(structure, folder) if folder else True
-    return 1 if structure.failures or not agreed else 0
+    return 1 if structure.failures or not built or not agreed else 0
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ a real save is not this repository's to redistribute.
 """
 
 import hashlib
+import importlib.util
 import os
 import struct
 import sys
@@ -55,6 +56,7 @@ from preflop_advisor.mkr_stored import (
 )
 from preflop_advisor.mkr_tree import MAX_DEPTH, action_name, chips_per_bb, read_tree, stored_action
 from preflop_advisor.native_format import probe
+from preflop_advisor.settings import seats_for
 from preflop_advisor.strategy import Node, StrategyProvider, node_identity
 
 #: What a real save would be named by, for the tests that use one.
@@ -687,6 +689,14 @@ def test_bytes_after_a_stored_strategy_s_zlib_stream_are_refused(tmp_path):
     entry = saved_run()["storedstrategy0"] + b"trailing"
     path = write_mkr(tmp_path / "trailing.mkr", saved_run(storedstrategy0=entry))
     with pytest.raises(NativeFormatError, match="8 bytes after its zlib stream"):
+        read_structure(path)
+
+
+def test_a_later_stored_strategy_without_the_first_is_refused_rather_than_read(tmp_path):
+    entries = saved_run(storedstrategy1=saved_run()["storedstrategy0"])
+    del entries["storedstrategy0"]
+    path = write_mkr(tmp_path / "truncated.mkr", entries)
+    with pytest.raises(NativeFormatError, match="holds storedstrategy1 but no storedstrategy0"):
         read_structure(path)
 
 
@@ -1495,6 +1505,27 @@ def test_a_game_the_reader_does_not_know_is_refused_when_the_file_is_opened(tmp_
     path = write_mkr(tmp_path / "other-game.mkr", saved_run(game=java_int(9)))
     with pytest.raises(NativeFormatError, match="declares game 9"):
         MkrStrategyProvider(path, SEATS)
+
+
+def _mkr_report():
+    path = os.path.join(os.path.dirname(__file__), "..", "scripts", "mkr_report.py")
+    spec = importlib.util.spec_from_file_location("mkr_report", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_report_exits_nonzero_when_the_model_cannot_be_built(tmp_path, monkeypatch, capsys):
+    path = write_mkr(tmp_path / "other-game.mkr", saved_run(game=java_int(9)))
+    monkeypatch.setattr(sys, "argv", ["mkr_report.py", path])
+    assert _mkr_report().main() == 1
+    assert "model: not built" in capsys.readouterr().out
+
+
+def test_the_report_names_the_seats_of_a_full_ring_table():
+    report = _mkr_report()
+    for players in (8, 9):
+        assert len(seats_for(report.SEATS, players, [])) == players
 
 
 def test_a_game_that_disagrees_with_its_own_hand_size_is_refused(tmp_path):

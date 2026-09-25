@@ -59,6 +59,8 @@ one.
 
 The solver saves a run *for storage* or *for further calculation*, and tells the two apart
 by the presence of `storedstrategy0` alone. Both carry `version = 20109`, and both are read.
+An archive holding a later `storedstrategyN` without `storedstrategy0` is neither, and is
+refused as truncated or mixed rather than read from whichever street happens to be there.
 
 | Kind | Entries | Read? |
 | --- | --- | --- |
