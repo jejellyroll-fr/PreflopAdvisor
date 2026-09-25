@@ -1058,6 +1058,7 @@ def test_a_save_for_further_calculation_is_read_and_agrees_with_itself(calc_path
     assert {check.name for check in structure.checks} == {
         "infoset count",
         "group widths",
+        "average counts",
         "EV groups",
         "group order",
         "fold EV",
@@ -1136,6 +1137,33 @@ def test_a_group_whose_ev_was_not_kept_answers_frequencies_and_no_ev(tmp_path):
     results = MkrStrategyProvider(path, SEATS).strategy(Node(hero="BB", path=(("SB", "Allin"),)), "AsAd")
     assert [round(result.frequency, 6) for result in results] == [0.125, 0.875]
     assert [result.ev for result in results] == [None, None]
+
+
+def test_ev_rows_for_fewer_hands_than_the_average_fail_a_check_rather_than_crash(tmp_path):
+    ev_groups = [None] * 8
+    ev_groups[0] = _hand_rows(_ev_block(ROOT_EVS, 10, 2000), {})[:100]
+    ev_groups[4] = _hand_rows(_ev_block(FACED_EVS, 5, 0), {})
+    path = write_mkr(tmp_path / "short-ev.mkr", calc_run(reg=reg_entry(SCALE, [None] * 8, ev_groups)))
+    structure = read_structure(path)
+    assert "group widths" in {check.name for check in structure.failures}
+    assert structure.evs(0, HOLDEM_CLASSES - 1) is None
+
+
+@pytest.mark.parametrize("scale", [float("nan"), float("inf"), 0.0, -2.0])
+def test_a_scale_no_ev_can_be_divided_by_is_refused(tmp_path, scale):
+    path = write_mkr(tmp_path / "bad-scale.mkr", calc_run(reg=reg_entry(scale, [None] * 8, [None] * 8)))
+    with pytest.raises(NativeFormatError, match="which no EV can be divided by"):
+        read_structure(path)
+
+
+def test_a_negative_accumulated_count_fails_a_check_and_is_no_frequency(tmp_path):
+    average_groups = [None] * 8
+    average_groups[0] = _hand_rows([1, 1], {"AsAd": [3, -1], "2s3d": [1, 3]})
+    average_groups[4] = _hand_rows([1, 1], {"AsAd": [7, 1]})
+    path = write_mkr(tmp_path / "negative.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[I", average_groups)))
+    structure = read_structure(path)
+    assert [check.name for check in structure.failures] == ["average counts"]
+    assert structure.frequencies(0, class_of_hand("AsAd")) is None
 
 
 def test_an_iavg_layout_no_save_has_been_seen_with_is_refused_by_name(tmp_path):
@@ -1370,6 +1398,8 @@ def test_a_hand_of_the_wrong_shape_is_an_empty_node(provider):
     assert provider.strategy(root, "AsAhKsKh") == ()
     assert provider.strategy(root, "AsAs") == ()
     assert provider.strategy(root, "nonsense") == ()
+    assert provider.raw_frequencies(root, "AsAhKsKh") == ()
+    assert provider.raw_frequencies(root, "nonsense") == ()
 
 
 def test_the_hands_of_a_node_are_the_application_s_own_keys(provider):

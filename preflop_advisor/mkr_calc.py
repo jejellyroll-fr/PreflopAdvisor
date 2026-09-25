@@ -35,6 +35,7 @@ exactly as wide as its nodes need.
 
 from __future__ import annotations
 
+import math
 from array import array
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -143,7 +144,12 @@ def _read_reg(archive: MkrArchive) -> tuple[float, object]:
         raise NativeFormatError(
             f"The {REG_ENTRY} entry of {archive.path} is not the scale and two arrays its layout {REG_LAYOUT} holds."
         )
-    return float(value[0]), value[2]
+    scale = float(value[0])
+    if not math.isfinite(scale) or scale <= 0:
+        raise NativeFormatError(
+            f"The {REG_ENTRY} entry of {archive.path} scales its EVs by {scale}, which no EV can be divided by."
+        )
+    return scale, value[2]
 
 
 def _require_layout(archive: MkrArchive, entry: str, layout: int, read: int, unseen: tuple[int, ...]) -> None:
@@ -220,7 +226,11 @@ class CalcSource:
         if any(len(row) != needed for row in self.average_rows[group] or ()):
             return False
         ev_rows = self.ev_rows[group] if group < len(self.ev_rows) else None
-        return ev_rows is None or all(len(row) == needed + EV_EXTRA_CELLS * len(nodes) for row in ev_rows)
+        if ev_rows is None:
+            return True
+        return len(ev_rows) == self.class_count and all(
+            len(row) == needed + EV_EXTRA_CELLS * len(nodes) for row in ev_rows
+        )
 
     def raw(self, node: int, hand_class: int) -> tuple[int, ...]:
         """A hand's accumulated action counts at a node, in child order."""
@@ -239,7 +249,7 @@ class CalcSource:
         equally often, and so does this. ``None`` only when the store cannot be read here.
         """
         counts = self.raw(node, hand_class)
-        if not counts:
+        if not counts or min(counts) < 0:
             return None
         total = sum(counts)
         if not total:
@@ -268,7 +278,7 @@ class CalcSource:
         )
 
     def checks(self) -> tuple[MkrCheck, ...]:
-        checks = [self._width_check(), self._ev_group_check(), self._order_check()]
+        checks = [self._width_check(), self._count_check(), self._ev_group_check(), self._order_check()]
         agreement = self._agreement_check()
         if agreement is not None:
             checks.append(agreement)
@@ -314,6 +324,17 @@ class CalcSource:
             passed=self.widths_agree,
             detail=f"every {IAVG_ENTRY} row is one count per action of its group's nodes, and every "
             f"{REG_ENTRY} EV row that plus a weight and a value per node",
+        )
+
+    def _count_check(self) -> MkrCheck:
+        """Accumulated counts only grow from zero: a negative one is a corrupt or overflowed row."""
+        negative = sum(1 for group in self.members for row in self.average_rows[group] or () if row and min(row) < 0)
+        return MkrCheck(
+            name="average counts",
+            passed=not negative,
+            detail=f"every {IAVG_ENTRY} count is zero or more"
+            if not negative
+            else f"{negative} {IAVG_ENTRY} rows hold a negative count, which no accumulated count is",
         )
 
     def _ev_group_check(self) -> MkrCheck:

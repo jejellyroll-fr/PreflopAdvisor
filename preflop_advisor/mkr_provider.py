@@ -341,7 +341,10 @@ class MkrStrategyProvider:
         index = self._index_of(node)
         if index is None:
             return ()
-        return self.structure.raw(index, class_of_hand(hand))
+        hand_class = self._class_of(hand)
+        if hand_class is None:
+            return ()
+        return self.structure.raw(index, hand_class)
 
     def hands_at(self, node: Node) -> list[str]:
         """The hands this simulation holds behind a node, as its own keys.
