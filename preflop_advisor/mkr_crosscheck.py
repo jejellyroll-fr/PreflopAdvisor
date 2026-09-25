@@ -251,12 +251,14 @@ def read_export_rows(path: str) -> dict[str, tuple[float, float | None]]:
 
 
 def _stored_row(structure: MkrStructure, node: int, hand_class: int) -> tuple[float, ...]:
-    """A node's stored frequencies for one hand class, renormalised, or ``()`` if unstored."""
+    """A node's stored frequencies for one hand class, as stored, or ``()`` if unstored.
+
+    Not renormalised: each action is rounded on its own, so a row of three or more can sum
+    to a step either side of one, and dividing by that sum would move every frequency by
+    more than its own rounding -- the one error the tolerance is sized for.
+    """
     frequencies = structure.frequencies(node, hand_class)
-    if frequencies is None:
-        return ()
-    total = sum(frequencies)
-    return tuple(value / total for value in frequencies)
+    return () if frequencies is None else frequencies
 
 
 def _node_and_action(structure: MkrStructure, codes: tuple[int, ...]) -> tuple[int, int] | None:

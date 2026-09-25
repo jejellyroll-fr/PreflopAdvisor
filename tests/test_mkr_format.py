@@ -1179,6 +1179,11 @@ def test_an_ev_that_overflows_to_an_infinity_is_no_ev(tmp_path):
     assert read_structure(path).evs(0, class_of_hand("AsAd")) == (None, None)
 
 
+def test_a_denominator_that_overflows_is_no_ev_rather_than_a_zero(tmp_path):
+    path = write_mkr(tmp_path / "huge-scale.mkr", calc_run(reg=reg_entry(1e308, [None] * 8, _default_ev_groups())))
+    assert read_structure(path).evs(0, class_of_hand("AsAd")) == (None, None)
+
+
 def _default_ev_groups():
     ev_groups = [None] * 8
     ev_groups[0] = _hand_rows(_ev_block(ROOT_EVS, 10, 2000), {})

@@ -271,8 +271,13 @@ class CalcSource:
             # Zero is a hand never weighted; below zero is no weight at all, which the
             # "EV weights" check reports.
             return (None,) * actions
+        denominator = weight * self.scale
+        if not math.isfinite(denominator):
+            # A weight times a large scale can overflow, and dividing by the infinity would
+            # turn every EV into a plausible zero.
+            return (None,) * actions
         regrets = row[start : start + actions]
-        evs = ((regret + value) / (weight * self.scale) for regret in reversed(regrets))
+        evs = ((regret + value) / denominator for regret in reversed(regrets))
         return tuple(ev if math.isfinite(ev) else None for ev in evs)
 
     def describe(self) -> str:

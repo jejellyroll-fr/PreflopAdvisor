@@ -320,6 +320,17 @@ def test_a_difference_rounding_to_another_stored_value_is_a_difference(structure
     assert report.differing == 1
 
 
+def test_a_stored_row_is_compared_as_stored_not_renormalised(structure):
+    """Rounded one by one, three actions can sum to 201 steps; dividing by that would move each."""
+    from preflop_advisor.mkr_crosscheck import _stored_row
+
+    class Uneven:
+        def frequencies(self, node, hand_class):
+            return (0.015, 0.005, 0.985)
+
+    assert _stored_row(Uneven(), 0, 0) == (0.015, 0.005, 0.985)
+
+
 def test_a_tolerance_the_caller_sets_is_the_one_used(structure, export):
     nudged = {**SAME_RUN, "0": {**SAME_RUN["0"], "AA": 0.30}}
 
