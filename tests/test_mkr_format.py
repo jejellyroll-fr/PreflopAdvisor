@@ -319,7 +319,13 @@ def saved_run(**overrides: bytes) -> dict[str, bytes]:
         "storedstrategy0": strategy_entry(
             NODE_COUNT,
             [root, faced, None, None, None],
-            [ev_rows(ROOT_EVS, {"AsAd": (-1000, 1500)}), ev_rows(FACED_EVS, {"AsAd": (-2000, 2600)}), None, None, None],
+            [
+                ev_rows(ROOT_EVS, {"AsAd": (-1000, 1500), "2s3d": (-1000, -1500)}),
+                ev_rows(FACED_EVS, {"AsAd": (-2000, 2600)}),
+                None,
+                None,
+                None,
+            ],
         ),
         "storedstrategy1": strategy_entry(NODE_COUNT, [None] * 5, [None] * 5),
         "iscount": java_long(2 * HOLDEM_CLASSES),
@@ -901,7 +907,7 @@ def _stored(node_count: int = NODE_COUNT, root_evs=_UNSET, faced_evs=_UNSET) -> 
     root = frequency_rows({"AsAd": (0.25, 0.75), "2s3d": (0.75, 0.25), "7h2c": (0.0, 0.0)})
     faced = frequency_rows({"AsAd": (0.125, 0.875)})
     if root_evs is _UNSET:
-        root_evs = ev_rows(ROOT_EVS, {"AsAd": (-1000, 1500)})
+        root_evs = ev_rows(ROOT_EVS, {"AsAd": (-1000, 1500), "2s3d": (-1000, -1500)})
     if faced_evs is _UNSET:
         faced_evs = ev_rows(FACED_EVS, {"AsAd": (-2000, 2600)})
     return strategy_entry(node_count, [root, faced, None, None, None], [root_evs, faced_evs, None, None, None])
@@ -997,10 +1003,11 @@ def calc_run(**overrides: bytes) -> dict[str, bytes]:
     """
     root_ev = _ev_block(ROOT_EVS, weight=10, value=2000)
     root_aa = _ev_block((-1000, 1500), weight=10, value=2000)
+    root_23 = _ev_block((-1000, -1500), weight=10, value=2000)
     faced_ev = _ev_block(FACED_EVS, weight=5, value=0)
     faced_aa = _ev_block((-2000, 2600), weight=5, value=0)
     ev_groups = [None] * 8
-    ev_groups[0] = _hand_rows(root_ev, {"AsAd": root_aa})
+    ev_groups[0] = _hand_rows(root_ev, {"AsAd": root_aa, "2s3d": root_23})
     ev_groups[4] = _hand_rows(faced_ev, {"AsAd": faced_aa})
     average_groups = [None] * 8
     average_groups[0] = _hand_rows([1, 1], {"AsAd": [3, 1], "2s3d": [1, 3], "7h2c": [0, 0]})
@@ -1054,10 +1061,13 @@ def test_a_save_for_further_calculation_is_read_and_agrees_with_itself(calc_path
         "EV groups",
         "group order",
         "fold EV",
+        "average against EV",
         "big blind",
         "format version",
         "action codes",
     }
+    agreement = next(check for check in structure.checks if check.name == "average against EV")
+    assert "for 100% of the clear hands" in agreement.detail
 
 
 def test_both_kinds_of_save_answer_the_same_hand_the_same_way(run_path, calc_path):
@@ -1068,14 +1078,17 @@ def test_both_kinds_of_save_answer_the_same_hand_the_same_way(run_path, calc_pat
             assert [result.action for result in left] == [result.action for result in right]
             assert [result.frequency for result in left] == pytest.approx([result.frequency for result in right])
             assert [result.ev for result in left] == pytest.approx([result.ev for result in right])
-    assert calculated.strategy(Node(hero="SB", path=()), "7h2c") == ()
+    # A hand never reached is every action equally often, as the solver reads a block of zeros.
+    assert [result.frequency for result in calculated.strategy(Node(hero="SB", path=()), "7h2c")] == [0.5, 0.5]
     assert calculated.raw_frequencies(Node(hero="SB", path=()), "AsAd") == (1, 3)
     assert "saved for calculation" in calculated.metadata().infos
 
 
 def test_a_hand_the_calculation_never_weighted_has_no_ev(tmp_path):
     ev_groups = [None] * 8
-    ev_groups[0] = _hand_rows(_ev_block(ROOT_EVS, 10, 2000), {"AsAd": [0, 0, 0, 0]})
+    ev_groups[0] = _hand_rows(
+        _ev_block(ROOT_EVS, 10, 2000), {"AsAd": [0, 0, 0, 0], "2s3d": _ev_block((-1000, -1500), 10, 2000)}
+    )
     ev_groups[4] = _hand_rows(_ev_block(FACED_EVS, 5, 0), {})
     path = write_mkr(tmp_path / "unweighted.mkr", calc_run(reg=reg_entry(SCALE, [None] * 8, ev_groups)))
     results = MkrStrategyProvider(path, SEATS).strategy(Node(hero="SB", path=()), "AsAd")
@@ -1088,6 +1101,50 @@ def test_a_reg_layout_no_save_has_been_seen_with_is_refused_by_name(tmp_path):
         read_structure(path)
     path = write_mkr(tmp_path / "layout-7.mkr", calc_run(reg=reg_entry(SCALE, [None] * 8, [None] * 8, layout=7)))
     with pytest.raises(NativeFormatError, match="layout 7, which is unknown"):
+        read_structure(path)
+
+
+def test_an_average_read_out_of_line_with_the_evs_fails_a_check(tmp_path):
+    """Widths cannot tell two orders apart; what the average plays against what pays can.
+
+    Here every clear hand's counts are swapped between its two actions, as a reading with
+    the actions in the file's order would swap them: the widths still agree, the fold EV
+    still holds, and the favourite action is now the one worth less for every hand.
+    """
+    average_groups = [None] * 8
+    average_groups[0] = _hand_rows([1, 1], {"AsAd": [1, 3], "2s3d": [3, 1]})
+    average_groups[4] = _hand_rows([1, 1], {"AsAd": [1, 7]})
+    path = write_mkr(tmp_path / "swapped.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[I", average_groups)))
+    failed = read_structure(path).failures
+    assert [check.name for check in failed] == ["average against EV"]
+    assert "for 0% of the clear hands" in failed[0].detail
+
+
+def test_a_group_whose_ev_was_not_kept_answers_frequencies_and_no_ev(tmp_path):
+    ev_groups = [None] * 8
+    ev_groups[0] = _hand_rows(
+        _ev_block(ROOT_EVS, 10, 2000),
+        {"AsAd": _ev_block((-1000, 1500), 10, 2000), "2s3d": _ev_block((-1000, -1500), 10, 2000)},
+    )
+    kept = [group is not None for group in ev_groups]
+    path = write_mkr(
+        tmp_path / "bb-no-ev.mkr",
+        calc_run(reg=reg_entry(SCALE, [None] * 8, ev_groups), hasEv=MAGIC + nested("[Z", kept)),
+    )
+    structure = read_structure(path)
+    assert not structure.failures, structure.summary()
+    results = MkrStrategyProvider(path, SEATS).strategy(Node(hero="BB", path=(("SB", "Allin"),)), "AsAd")
+    assert [round(result.frequency, 6) for result in results] == [0.125, 0.875]
+    assert [result.ev for result in results] == [None, None]
+
+
+def test_an_iavg_layout_no_save_has_been_seen_with_is_refused_by_name(tmp_path):
+    groups = nested("[[[I", [None] * 8)
+    path = write_mkr(tmp_path / "iavg-0.mkr", calc_run(iavg=b"\x00" + MAGIC + groups))
+    with pytest.raises(NativeFormatError, match="iavg entry .* uses layout 0, which the format defines"):
+        read_structure(path)
+    path = write_mkr(tmp_path / "iavg-5.mkr", calc_run(iavg=b"\x05" + MAGIC + groups))
+    with pytest.raises(NativeFormatError, match="layout 5, which is unknown"):
         read_structure(path)
 
 

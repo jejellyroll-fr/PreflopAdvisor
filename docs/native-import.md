@@ -63,7 +63,7 @@ by the presence of `storedstrategy0` alone. Both carry `version = 20109`, and bo
 | Kind | Entries | Read? |
 | --- | --- | --- |
 | **For storage** | `storedstrategy0` … `storedstrategy3`, one per street: per node, the displayed strategy as one signed byte per hand and action, and each action's EV rounded to the chip | **Yes**, by `mkr_stored.py` |
-| **For further calculation** | `reg`, `iavg`, `hasEv` — the solver's working store: accumulated regret, value and weight for the groups whose EV is kept, and accumulated action counts | **Yes**, by `mkr_calc.py`, under three checks of its own (below). A `reg` in either of the two layouts no save has been seen with is refused by name. |
+| **For further calculation** | `reg`, `iavg`, `hasEv` — the solver's working store: accumulated regret, value and weight for the groups whose EV is kept, and accumulated action counts | **Yes**, by `mkr_calc.py`, under four checks of its own (below). A `reg` or an `iavg` in a layout no save has been seen with is refused by name. |
 
 An earlier version of this reader called the second kind "a run still being solved" and
 refused it. That was wrong on both counts: it is a deliberate way of saving, and its layout
@@ -119,15 +119,30 @@ layout 3, the only one seen in a save. Its first index is a **group**, `4 × pla
 street`, the player numbered as the tree entry numbers players; its second is the hand
 class. The groups whose EV is kept — the ones `hasEv` marks — have a row in `b`, where each
 node of the group takes `n + 2` longs, `[R₀ … Rₙ₋₁, W, V]`, and
-`EV(a) = (R_a + V) / (W × scale)`. `iavg` is one byte, then an `int[][][]` of accumulated
-action counts on the same groups, `n` ints per node.
+`EV(a) = (R_a + V) / (W × scale)`. `iavg` is layout byte `1`, then an `int[][][]` of
+accumulated action counts, allocated for the groups whose average is kept: each node takes
+`n` ints — no weight, no value — in the same order as `reg`. A frequency is a count over
+its hand's block, and a block of zeros, a hand never reached, is worth `1/n` per action, as
+the solver reads it. An `iavg` in layout `0`, defined and never seen, is refused by name.
+
+On the hold'em save:
+
+| group | nodes | `iavg` width | `reg` width |
+| --- | --- | --- | --- |
+| 0 | 2 | 4 | 8 |
+| 4 | 4 | 8 | 16 |
+| 8 | 7 | 14 | 28 |
+| 12 | 1 | 2 | 4 |
 
 Two things are not in the file and are rebuilt from the tree, each under a check:
 
-- **which group a node is in** — from the player acting there. Checked by the widths: every
-  row must be exactly `Σ n` ints (`iavg`) or `Σ (n + 2)` longs (`reg`) over the group's
-  nodes, and on the hold'em save the EV rows are `8 + 16 + 28 + 4 = 56`, which is
-  `Σ (n + 2)` over its 14 decisions;
+- **which group a node is in, and where in its row** — from the player acting there.
+  Checked by the widths: every row must be exactly `Σ n` ints (`iavg`) or `Σ (n + 2)` longs
+  (`reg`) over the group's nodes. Widths alone do not prove the order — four nodes of two
+  actions are as wide in any order — so a second check does: **the action the average plays
+  most must be the one worth most in `reg`**, for most of the hands where both are clear. On
+  the hold'em save the agreement is 0.93 to 1.00 per node, the identity is the pairing of
+  blocks that maximises it, and with the actions reversed it falls to 0.00–0.07;
 - **the order of a group's nodes** — the tree's own. It was measured on a tree where every
   player acts at a single depth, which cannot tell a depth-first walk from a breadth-first
   one; a tree where the two differ fails the `group order` check rather than being read in
@@ -148,6 +163,7 @@ check instead of returning a frequency. They are reported per file by
 | group widths (calculation) | each row's width against the nodes of its group | `Σ (n + 2) = 56` for the EV rows |
 | EV groups (calculation) | the groups `reg` has EV rows for against `hasEv` | 0, 4, 8, 12 |
 | group order (calculation) | a depth-first against a breadth-first order of each group's nodes | equal: every player acts at one depth |
+| average against EV (calculation) | the action `iavg` plays most against the action `reg` says is worth most, per node, over the hands where both are clear; more than half must agree | 0.93 to 1.00 per node |
 | fold EV | every hand's fold EV at a node against each other, and against minus the blind at a first action | first to act 0, next 0, SB −1000, BB −2000, over all 14 nodes and every class |
 | range block | the tree's starting-range combos against the strategy's hand size | — (neither save carries one) |
 | locks (calculation) | a calculation save carrying locks, which its store does not apply | — |
@@ -211,7 +227,8 @@ both — with the EV missing only for a player whose EV the run did not keep.
 | The hand axis matches the application's own | **Supported** | `test_four_card_classes_map_one_to_one_onto_the_application_s_hand_keys` |
 | A file whose own numbers contradict each other is refused | **Supported** | same file, one test per check |
 | A save made for further calculation is read | **Supported**, under the group checks | `test_a_save_for_further_calculation_is_read_and_agrees_with_itself` |
-| A `reg` layout no save has been seen with is refused by name | **Supported** | `test_a_reg_layout_no_save_has_been_seen_with_is_refused_by_name` |
+| A `reg` or `iavg` layout no save has been seen with is refused by name | **Supported** | `test_a_reg_layout_no_save_has_been_seen_with_is_refused_by_name`, `test_an_iavg_layout_no_save_has_been_seen_with_is_refused_by_name` |
+| A calculation store read out of line is caught | **Checked**: the average against the EVs | `test_an_average_read_out_of_line_with_the_evs_fails_a_check` |
 | A postflop run is refused with why | **Supported** | same |
 | A tree saved with a starting-range block is read | **Supported**, and a block of no known size is refused | `test_a_range_block_is_read_as_one_weight_per_player_and_combo` |
 | An entry that inflates past `MAX_ENTRY_BYTES` is refused rather than held in memory | **Supported** | `tests/test_mkr_format.py` |
@@ -237,8 +254,9 @@ Three layers, in the order they matter.
    recorded, every refusal path has a test: a bad signature, a tree whose fields do not
    account for its entry, slots bound to the wrong nodes, an odd number of arrays, a node
    count one off, a fold EV that varies or is not the blind, a strategy indexed by an
-   unconfirmed class count, a `reg` layout never seen, rows narrower than their group, a
-   postflop tree, a game that disagrees with its own hand size.
+   unconfirmed class count, a `reg` or `iavg` layout never seen, rows narrower than their
+   group, an average out of line with its EVs, a postflop tree, a game that disagrees with
+   its own hand size.
 2. **One opt-in real save, skipped by default.** `PREFLOP_ADVISOR_MKR` names a `.mkr` on
    the machine running the suite. When it is set, the structure is read, every cross-check
    must pass, `iscount` must equal decisions × classes, a hand of the file's own game must

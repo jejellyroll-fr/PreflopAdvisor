@@ -14,8 +14,11 @@ of the group takes a block, the group's nodes one after another:
     average counterfactual value, in the tree's money, relative to the start of the hand.
     The other groups keep their regrets in ``a`` and no EV.
 ``iavg``
-    one byte, then an ``int[][][]`` of accumulated action counts: the average strategy.
-    Here each node takes ``n`` ints, and a frequency is a count over its node's total.
+    one layout byte -- 1, the only one seen -- then an ``int[][][]`` of accumulated action
+    counts: the average strategy, allocated for the groups whose average is kept. Each node
+    takes ``n`` ints, without ``reg``'s weight and value, in the same order as ``reg``; a
+    frequency is a count over its hand's block, and a block of zeros -- a hand never
+    reached -- is worth ``1/n`` for every action, as the solver reads it.
 ``hasEv``
     one boolean per group.
 
@@ -51,6 +54,16 @@ REG_LAYOUT = 3
 #: The layouts the format also defines -- a ``double`` store and a ``short``/``int`` one --
 #: which no save has been seen with. Refused by name rather than guessed at.
 UNSEEN_REG_LAYOUTS: tuple[int, ...] = (0, 2)
+#: The one ``iavg`` layout this reads: accumulated ``int`` action counts.
+IAVG_LAYOUT = 1
+#: The ``iavg`` layout the format also defines and no save has been seen with.
+UNSEEN_IAVG_LAYOUTS: tuple[int, ...] = (0,)
+#: How often, at the least, the action the average plays most must be the one worth most,
+#: over the hands where both are clear. An aligned store agrees for most hands -- 0.93 and
+#: more on the save measured -- and a store read out of line for few (0.07 and less).
+AGREEMENT_FLOOR = 0.5
+#: How much more than the next the best EV must be worth before a hand counts as clear.
+CLEAR_EV_MARGIN = 0.5
 #: A player's groups: one per street.
 GROUPS_PER_PLAYER = 4
 #: The cells a node takes in an EV row beyond one per action: its weight and its value.
@@ -108,6 +121,7 @@ def read_calculation(archive: MkrArchive, tree: MkrTree) -> CalcSource:
         )
     scale, ev_rows = _read_reg(archive)
     average_tag, average_rows = _read_tagged(archive, IAVG_ENTRY)
+    _require_layout(archive, IAVG_ENTRY, average_tag, IAVG_LAYOUT, UNSEEN_IAVG_LAYOUTS)
     has_ev = read_java_value(archive.read(HAS_EV_ENTRY), HAS_EV_ENTRY)
     if not isinstance(has_ev, list) or not all(isinstance(flag, bool) for flag in has_ev):
         raise NativeFormatError(f"The {HAS_EV_ENTRY} entry of {archive.path} is not one boolean per group.")
@@ -124,18 +138,23 @@ def _read_tagged(archive: MkrArchive, entry: str) -> tuple[int, object]:
 
 def _read_reg(archive: MkrArchive) -> tuple[float, object]:
     layout, value = _read_tagged(archive, REG_ENTRY)
-    if layout in UNSEEN_REG_LAYOUTS:
-        raise NativeFormatError(
-            f"The {REG_ENTRY} entry of {archive.path} uses layout {layout}, which the format defines and no save "
-            f"has been seen with; only layout {REG_LAYOUT} is read, rather than guessing at another."
-        )
-    if layout != REG_LAYOUT:
-        raise NativeFormatError(f"The {REG_ENTRY} entry of {archive.path} uses layout {layout}, which is unknown.")
+    _require_layout(archive, REG_ENTRY, layout, REG_LAYOUT, UNSEEN_REG_LAYOUTS)
     if not isinstance(value, list) or len(value) != 3 or not isinstance(value[0], (int, float)):
         raise NativeFormatError(
             f"The {REG_ENTRY} entry of {archive.path} is not the scale and two arrays its layout {REG_LAYOUT} holds."
         )
     return float(value[0]), value[2]
+
+
+def _require_layout(archive: MkrArchive, entry: str, layout: int, read: int, unseen: tuple[int, ...]) -> None:
+    """Refuse an entry laid out in any way but the one read, naming the ones never seen."""
+    if layout in unseen:
+        raise NativeFormatError(
+            f"The {entry} entry of {archive.path} uses layout {layout}, which the format defines and no save "
+            f"has been seen with; only layout {read} is read, rather than guessing at another."
+        )
+    if layout != read:
+        raise NativeFormatError(f"The {entry} entry of {archive.path} uses layout {layout}, which is unknown.")
 
 
 def _groups(value: object, entry: str) -> list[list[Sequence[int]] | None]:
@@ -146,6 +165,15 @@ def _groups(value: object, entry: str) -> list[list[Sequence[int]] | None]:
         if rows is not None and not (isinstance(rows, list) and all(isinstance(row, array) for row in rows)):
             raise NativeFormatError(f"The {entry} entry holds a group that is not one row of numbers per hand.")
     return value
+
+
+def _clear_best(values: Sequence[float | None], margin: float) -> int | None:
+    """Which value is largest by more than ``margin``, or ``None`` when none clearly is."""
+    numbers = [value for value in values if value is not None]
+    if len(numbers) < 2 or len(numbers) != len(values):
+        return None
+    order = sorted(range(len(numbers)), key=numbers.__getitem__, reverse=True)
+    return order[0] if numbers[order[0]] - numbers[order[1]] > margin else None
 
 
 class CalcSource:
@@ -205,11 +233,17 @@ class CalcSource:
         return tuple(int(count) for count in reversed(counts))
 
     def frequencies(self, node: int, hand_class: int) -> tuple[float, ...] | None:
-        """A hand's average strategy at a node in child order, or ``None`` if it was never counted."""
+        """A hand's average strategy at a node in child order.
+
+        A hand never reached has a block of zeros, which the solver reads as every action
+        equally often, and so does this. ``None`` only when the store cannot be read here.
+        """
         counts = self.raw(node, hand_class)
+        if not counts:
+            return None
         total = sum(counts)
         if not total:
-            return None
+            return (1 / len(counts),) * len(counts)
         return tuple(count / total for count in counts)
 
     def evs(self, node: int, hand_class: int) -> tuple[float | None, ...] | None:
@@ -234,7 +268,45 @@ class CalcSource:
         )
 
     def checks(self) -> tuple[MkrCheck, ...]:
-        return (self._width_check(), self._ev_group_check(), self._order_check())
+        checks = [self._width_check(), self._ev_group_check(), self._order_check()]
+        agreement = self._agreement_check()
+        if agreement is not None:
+            checks.append(agreement)
+        return tuple(checks)
+
+    def _agreement_check(self) -> MkrCheck | None:
+        """The average's favourite action against the best EV: what proves the two line up.
+
+        Widths alone prove nothing about order -- four nodes of two actions are as wide in
+        any order. What does is that ``iavg`` and ``reg`` describe the same play: the action
+        a hand takes most is, for most hands, the one worth most. Read out of line, or with
+        the actions reversed, the two all but never agree.
+        """
+        shares = {node: self._agreement(node) for node in self.layout} if self.widths_agree else {}
+        measured = {node: share for node, share in shares.items() if share is not None}
+        if not measured:
+            return None
+        worst = min(measured, key=lambda node: measured[node])
+        return MkrCheck(
+            name="average against EV",
+            passed=measured[worst] > AGREEMENT_FLOOR,
+            detail=f"at {len(measured)} nodes the action the average plays most is the one worth most for "
+            f"{measured[worst]:.0%} of the clear hands or more (node {worst} the least)",
+        )
+
+    def _agreement(self, node: int) -> float | None:
+        """At one node, the share of clear hands whose most played action is worth most."""
+        clear = agreeing = 0
+        for hand_class in range(self.class_count):
+            evs = self.evs(node, hand_class)
+            if evs is None:
+                return None
+            played, worth = _clear_best(self.raw(node, hand_class), 0), _clear_best(evs, CLEAR_EV_MARGIN)
+            if played is None or worth is None:
+                continue
+            clear += 1
+            agreeing += played == worth
+        return agreeing / clear if clear else None
 
     def _width_check(self) -> MkrCheck:
         return MkrCheck(

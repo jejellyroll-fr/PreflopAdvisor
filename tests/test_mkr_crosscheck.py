@@ -52,7 +52,7 @@ UNSTORED_AT_ROOT = 2
 #: hands worth something else. Folding costs the blind; the rest is the save's own numbers.
 SAME_RUN_EVS: dict[str, tuple[float, dict[str, float]]] = {
     "0": (-1000.0, {}),
-    "3": (500.0, {"AA": 1500.0}),
+    "3": (500.0, {"AA": 1500.0, "32o": -1500.0}),
     "3.0": (-2000.0, {}),
     "3.1": (-500.0, {"AA": 2600.0}),
 }
@@ -174,7 +174,7 @@ def test_an_export_of_the_same_run_agrees_on_every_count(structure, export):
 
 def test_an_ev_the_export_states_differently_is_counted(structure, export):
     """An EV is compared to the chip: the save rounds to one, and so does the export."""
-    evs = {**SAME_RUN_EVS, "3": (500.0, {"AA": 1400.0})}
+    evs = {**SAME_RUN_EVS, "3": (500.0, {"AA": 1400.0, "32o": -1500.0})}
     report = crosscheck(structure, export(evs=evs))
     assert report.values_agree
     assert not report.evs_agree
