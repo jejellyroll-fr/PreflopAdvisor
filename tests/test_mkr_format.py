@@ -21,11 +21,13 @@ import os
 import struct
 import zipfile
 import zlib
+from array import array
 
 import pytest
 
 from preflop_advisor.errors import NativeFormatError
 from preflop_advisor.hand_convert_helper import convert_hand
+from preflop_advisor.mkr_archive import MAX_ENTRY_BYTES, read_entries
 from preflop_advisor.mkr_classes import (
     CLASS_COUNTS,
     canonical,
@@ -37,20 +39,20 @@ from preflop_advisor.mkr_classes import (
     class_table,
     hand_indices,
 )
-from preflop_advisor.mkr_format import (
-    MAX_ENTRY_BYTES,
+from preflop_advisor.mkr_format import read_structure
+from preflop_advisor.mkr_java import MAX_NESTING, read_java_value
+from preflop_advisor.mkr_provider import MkrStrategyProvider, version_name
+from preflop_advisor.mkr_stored import (
     MkrSlot,
     MkrStrategy,
     bind_slots,
     class_count_of,
+    decode_frequency,
+    frequency_steps,
     frequency_sum_allowed,
-    read_entries,
     read_strategy,
-    read_structure,
 )
-from preflop_advisor.mkr_java import read_java_value
-from preflop_advisor.mkr_provider import MkrStrategyProvider, version_name
-from preflop_advisor.mkr_tree import MAX_DEPTH, action_name, chips_per_bb, read_tree
+from preflop_advisor.mkr_tree import MAX_DEPTH, action_name, chips_per_bb, read_tree, stored_action
 from preflop_advisor.native_format import probe
 from preflop_advisor.strategy import Node, StrategyProvider, node_identity
 
@@ -89,9 +91,13 @@ def utf(text: str) -> bytes:
 
 def java_boxed(class_name: str, type_code: str, packed: bytes) -> bytes:
     """One boxed number, exactly as ``ObjectOutputStream.writeObject`` writes it."""
+    return MAGIC + boxed_body(class_name, type_code, packed)
+
+
+def boxed_body(class_name: str, type_code: str, packed: bytes) -> bytes:
+    """A boxed number without the stream magic, as it sits inside an ``Object[]``."""
     return (
-        MAGIC
-        + b"\x73\x72"
+        b"\x73\x72"
         + utf(class_name)
         + UIDS[class_name]
         + b"\x02"
@@ -122,14 +128,57 @@ def java_double(value: float) -> bytes:
 
 
 def array_body(code: str, values: bytes) -> bytes:
-    """A primitive array's class description and payload, without the stream magic."""
-    return b"\x75\x72" + utf(code) + UIDS[code] + b"\x02" + struct.pack(">H", 0) + b"\x78\x70" + values
+    """An array's class description and payload, without the stream magic."""
+    return b"\x75\x72" + utf(code) + UIDS.get(code, bytes(8)) + b"\x02" + struct.pack(">H", 0) + b"\x78\x70" + values
+
+
+def nested(code: str, value) -> bytes:
+    """An array of any depth -- ``int[][][]``, ``Object[]`` -- each element written in turn.
+
+    ``value`` is a list whose elements are themselves lists, ``None`` for a null, or --
+    for an ``Object[]`` -- the bytes of an element already written.
+    """
+    if value is None:
+        return b"\x70"
+    formats = {"[I": "i", "[J": "q", "[D": "d"}
+    if code in formats:
+        return array_body(code, struct.pack(f">i{len(value)}{formats[code]}", len(value), *value))
+    if code == "[Z":
+        return array_body(code, struct.pack(">i", len(value)) + bytes(int(flag) for flag in value))
+    elements = [element if isinstance(element, bytes) else nested(code[1:], element) for element in value]
+    return array_body(code, struct.pack(">i", len(value)) + b"".join(elements))
 
 
 def java_array(code: str, values: list[float] | list[int]) -> bytes:
     formats = {"[D": "d", "[J": "q", "[I": "i"}
     packed = struct.pack(f">i{len(values)}{formats[code]}", len(values), *values)
     return MAGIC + array_body(code, packed)
+
+
+def java_hash_map(pairs: dict[int, list[float]]) -> bytes:
+    """A ``HashMap<Integer, double[]>``, the way ``HashMap.writeObject`` writes one.
+
+    Its two fields, then a block of its capacity and size, then each key and value in turn,
+    then the end of the block -- which is what the locks of a save are written as.
+    """
+    body = (
+        b"\x73\x72"
+        + utf("java.util.HashMap")
+        + bytes(8)
+        + b"\x03"
+        + struct.pack(">H", 2)
+        + b"F"
+        + utf("loadFactor")
+        + b"I"
+        + utf("threshold")
+        + b"\x78\x70"
+        + struct.pack(">fi", 0.75, 12)
+        + b"\x77\x08"
+        + struct.pack(">ii", 16, len(pairs))
+    )
+    for key, values in pairs.items():
+        body += boxed_body("java.lang.Integer", "I", struct.pack(">i", key)) + nested("[D", values)
+    return MAGIC + body + b"\x78"
 
 
 def java_bytes_array(payload: bytes) -> bytes:
@@ -140,13 +189,13 @@ def java_ints_array(values: list[int]) -> bytes:
     return array_body("[I", struct.pack(f">i{len(values)}i", len(values), *values))
 
 
-def strategy_entry(bucket_count: int, frequencies: list[bytes | None], regrets: list[list[int] | None]) -> bytes:
-    """A ``storedstrategyN`` entry: a bucket count, then every slot in stream order."""
-    stream = MAGIC + b"\x77\x04" + struct.pack(">i", bucket_count)
+def strategy_entry(node_count: int, frequencies: list[bytes | None], evs: list[list[int] | None]) -> bytes:
+    """A ``storedstrategyN`` entry: a node count, then every slot in stream order."""
+    stream = MAGIC + b"\x77\x04" + struct.pack(">i", node_count)
     for row in frequencies:
         stream += b"\x70" if row is None else java_bytes_array(row)
-    for regret in regrets:
-        stream += b"\x70" if regret is None else java_ints_array(regret)
+    for ev in evs:
+        stream += b"\x70" if ev is None else java_ints_array(ev)
     return zlib.compress(stream)
 
 
@@ -184,19 +233,45 @@ HEADS_UP_NODES = struct.pack(">9H", 2, 0, 0, 3, 2, 0, 0, 1, 0)
 #: The classes a heads-up strategy is indexed by, and the actions of each decision.
 HOLDEM_CLASSES = 169
 ACTIONS = 2
+#: The heads-up tree's node count as a stored strategy states it: five nodes, plus node 0.
+NODE_COUNT = 6
 
 
-def frequency_rows(rows: dict[str, tuple[int, ...]]) -> bytes:
-    """A frequency array: every class uniform at 128/128, but the hands named here.
+def encode_frequency(frequency: float) -> int:
+    """One stored frequency byte, as the solver writes it: ``round(200 f) - 100``, signed."""
+    return (round(frequency * 200) - 100) & 0xFF
 
-    Uniform elsewhere because a strategy that is *uniform* is still a strategy: the sums
-    hold, the binding holds, and the hands a test asserts on are the ones it sets.
+
+def frequency_rows(rows: dict[str, tuple[float, ...]]) -> bytes:
+    """A frequency array: every class 50/50, but the hands named here, in child order.
+
+    Written the way the solver writes it -- one signed byte per action, the actions in the
+    reverse of the tree's child order -- so the reader has to undo both. Uniform elsewhere
+    because a uniform strategy is still a strategy: the sums hold, the binding holds, and
+    the hands a test asserts on are the ones it sets.
     """
-    table = bytearray(b"\x80" * HOLDEM_CLASSES * ACTIONS)
+    table = [encode_frequency(0.5)] * HOLDEM_CLASSES * ACTIONS
     for hand, row in rows.items():
         index = class_of_hand(hand)
-        table[index * ACTIONS : (index + 1) * ACTIONS] = bytes(row)
+        table[index * ACTIONS : (index + 1) * ACTIONS] = [encode_frequency(value) for value in reversed(row)]
     return bytes(table)
+
+
+def ev_rows(default: tuple[int, ...], rows: dict[str, tuple[int, ...]] | None = None) -> list[int]:
+    """An EV array: every class worth ``default`` but the hands named here, in child order."""
+    table: list[int] = []
+    for hand_class in range(HOLDEM_CLASSES):
+        table.extend(reversed(default))
+    for hand, row in (rows or {}).items():
+        index = class_of_hand(hand)
+        table[index * ACTIONS : (index + 1) * ACTIONS] = list(reversed(row))
+    return table
+
+
+#: What each action of the heads-up tree is worth, in chips of which 2000 are a big blind.
+#: Folding is worth minus the blind forfeited -- 1000 for the small blind, 2000 for the big.
+ROOT_EVS = (-1000, 500)
+FACED_EVS = (-2000, -500)
 
 
 class Utf16Name(zipfile.ZipInfo):
@@ -237,16 +312,16 @@ def saved_run(**overrides: bytes) -> dict[str, bytes]:
     first -- so for this tree it is nodes 0, 2, 4, 3, 1: a strategy on the first two and
     nothing on the three terminals.
     """
-    root = frequency_rows({"AsAd": (64, 192), "2s3d": (192, 64), "7h2c": (0, 0)})
-    faced = frequency_rows({"AsAd": (32, 224)})
+    root = frequency_rows({"AsAd": (0.25, 0.75), "2s3d": (0.75, 0.25), "7h2c": (0.0, 0.0)})
+    faced = frequency_rows({"AsAd": (0.125, 0.875)})
     entries = {
         "tree": tree_entry(),
         "storedstrategy0": strategy_entry(
-            30,
+            NODE_COUNT,
             [root, faced, None, None, None],
-            [[0] * HOLDEM_CLASSES * ACTIONS, [0] * HOLDEM_CLASSES * ACTIONS, None, None, None],
+            [ev_rows(ROOT_EVS, {"AsAd": (-1000, 1500)}), ev_rows(FACED_EVS, {"AsAd": (-2000, 2600)}), None, None, None],
         ),
-        "storedstrategy1": strategy_entry(30, [None] * 5, [None] * 5),
+        "storedstrategy1": strategy_entry(NODE_COUNT, [None] * 5, [None] * 5),
         "iscount": java_long(2 * HOLDEM_CLASSES),
         "game": java_int(0),
         "version": java_long(20109),
@@ -256,7 +331,7 @@ def saved_run(**overrides: bytes) -> dict[str, bytes]:
         "rakepercent": java_double(1.0),
         "rakecap": java_int(30),
         "rakeflags": java_int(12),
-        "evs": java_array("[D", [1.5, -1.5]),
+        "evs": java_array("[D", [1.5e9, -1.6e9]),
         "eviters": java_array("[J", [1_000_000, 1_000_000]),
     }
     entries.update(overrides)
@@ -402,8 +477,42 @@ def test_the_scalars_are_read_as_the_numbers_they_box():
     assert read_java_value(java_int(7), "game") == 7
     assert read_java_value(java_long(20109), "version") == 20109
     assert read_java_value(java_double(0.25), "rakepercent") == 0.25
-    assert read_java_value(java_array("[D", [1.0, -2.0]), "evs") == [1.0, -2.0]
-    assert read_java_value(java_array("[J", [3, 4]), "eviters") == [3, 4]
+    assert read_java_value(java_array("[D", [1.0, -2.0]), "evs") == array("d", [1.0, -2.0])
+    assert read_java_value(java_array("[J", [3, 4]), "eviters") == array("q", [3, 4])
+    assert read_java_value(MAGIC + nested("[Z", [True, False]), "hasEv") == [True, False]
+
+
+def test_arrays_of_arrays_and_of_objects_are_read_element_by_element():
+    """The shapes a calculation store is written in: ``int[][][]`` inside an ``Object[]``."""
+    stream = MAGIC + nested(
+        "[Ljava.lang.Object;",
+        [boxed_body("java.lang.Double", "D", struct.pack(">d", 2.5)), nested("[[[I", [[[1, 2]], None])],
+    )
+    scale, rows = read_java_value(stream, "reg")
+    assert scale == 2.5
+    assert rows[0][0] == array("i", [1, 2])
+    assert rows[1] is None
+
+
+def test_a_hash_map_is_read_as_the_pairs_it_holds():
+    """``presetsmap`` is a ``HashMap``, which writes its pairs through its own method."""
+    assert read_java_value(java_hash_map({3: [-1.0, 0.5]}), "presetsmap") == {3: array("d", [-1.0, 0.5])}
+    assert read_java_value(java_hash_map({}), "presetsmap") == {}
+
+
+def test_values_nested_deeper_than_any_save_writes_are_refused():
+    stream = MAGIC + nested("[" * (MAX_NESTING + 1) + "I", _deep(MAX_NESTING + 1))
+    with pytest.raises(NativeFormatError, match="nests values more than"):
+        read_java_value(stream, "reg")
+
+
+def _deep(levels: int):
+    return [1] if levels == 1 else [_deep(levels - 1)]
+
+
+def test_an_array_of_a_type_java_does_not_have_is_refused():
+    with pytest.raises(NativeFormatError, match="which is not Java's"):
+        read_java_value(MAGIC + array_body("[Q", struct.pack(">i", 0)), "reg")
 
 
 def test_a_stream_without_the_serialization_magic_is_refused():
@@ -447,6 +556,30 @@ def test_the_tree_is_read_field_by_field_and_accounts_for_its_whole_entry():
     assert tree.decisions == (0, 2)
     assert tree.action_codes == (0, 1, 3)
     assert not tree.has_ranges
+    assert tree.range_combos == 0
+    assert tree.starting_range(0) == ()
+
+
+def test_a_range_block_is_read_as_one_weight_per_player_and_combo():
+    """Fixed point, over 2**31 - 1: one int32 per starting combo, player after player."""
+    weights = [2_147_483_647] * 1326 + [0] * 1325 + [1_073_741_824]
+    tree = read_tree(tree_entry(has_ranges=1, tail=struct.pack(">2652i", *weights)))
+    assert tree.has_ranges
+    assert tree.range_combos == 1326
+    assert set(tree.starting_range(0)) == {1.0}
+    assert tree.starting_range(1)[-1] == pytest.approx(0.5)
+
+
+def test_a_range_block_of_no_known_size_is_refused():
+    with pytest.raises(NativeFormatError, match="no whole number of weights"):
+        read_tree(tree_entry(has_ranges=1, tail=b"\x00" * 16))
+
+
+def test_a_stored_action_is_the_reverse_of_the_tree_s_child_order():
+    """The root's first child in the file, a fold, is its *last* stored action."""
+    assert stored_action(0, 2) == 1
+    assert stored_action(1, 2) == 0
+    assert stored_action(0, 3) == 2
 
 
 def test_a_node_knows_its_line_of_play_and_the_seat_that_acts_at_it():
@@ -457,6 +590,9 @@ def test_a_node_knows_its_line_of_play_and_the_seat_that_acts_at_it():
     assert tree.actor_of(tree.nodes[2]) == 1
     assert tree.seat_of(0) == 0
     assert tree.seat_of(1) == 1
+    assert tree.player_at(0) == 0
+    assert tree.player_at(2) == 1
+    assert tree.acts_first_at(2)
 
 
 def test_the_slot_order_visits_children_last_to_first():
@@ -485,11 +621,6 @@ def test_a_tree_that_ends_before_its_range_flag_is_refused():
         read_tree(tree_entry()[:-1])
 
 
-def test_a_tree_with_a_range_block_is_refused_by_name_rather_than_as_a_wrong_layout():
-    with pytest.raises(NativeFormatError, match="range block"):
-        read_tree(tree_entry(has_ranges=1, tail=b"\x00" * 16))
-
-
 def test_a_seat_that_folded_is_skipped_when_the_action_comes_back_around():
     """UTG folds, the blinds raise and re-raise: the small blind acts next, not UTG."""
     # root -[fold]-> SB -[raise 50%]-> BB -[raise 100%]-> SB -[fold]-> terminal
@@ -507,7 +638,7 @@ def test_a_seat_that_is_all_in_is_past_as_well():
 
 
 def test_a_member_declaring_more_than_the_reader_holds_is_refused(run_path, monkeypatch):
-    monkeypatch.setattr("preflop_advisor.mkr_format.MAX_ENTRY_BYTES", 8)
+    monkeypatch.setattr("preflop_advisor.mkr_archive.MAX_ENTRY_BYTES", 8)
     with pytest.raises(NativeFormatError, match="declares"):
         read_entries(run_path).read("tree")
     assert MAX_ENTRY_BYTES > 8
@@ -516,7 +647,7 @@ def test_a_member_declaring_more_than_the_reader_holds_is_refused(run_path, monk
 def test_a_strategy_that_inflates_past_the_limit_is_refused(run_path, monkeypatch):
     archive = read_entries(run_path)
     payload_size = archive.entry("storedstrategy0").size
-    monkeypatch.setattr("preflop_advisor.mkr_format.MAX_ENTRY_BYTES", payload_size + 1)
+    monkeypatch.setattr("preflop_advisor.mkr_archive.MAX_ENTRY_BYTES", payload_size + 1)
     with pytest.raises(NativeFormatError, match="inflates past"):
         read_strategy(archive, "storedstrategy0")
 
@@ -568,12 +699,27 @@ def test_action_codes_are_named_only_where_they_have_a_reading():
 # The stored strategy
 
 
-def test_a_stored_strategy_holds_one_frequency_and_one_regret_array_per_node(run_path):
+def test_a_stored_strategy_holds_one_frequency_and_one_ev_array_per_node(run_path):
     strategy = read_strategy(read_entries(run_path), "storedstrategy0")
-    assert strategy.bucket_count == 30
+    assert strategy.node_count == NODE_COUNT
     assert len(strategy.slots) == 5
     assert [slot.present for slot in strategy.slots] == [True, True, False, False, False]
+    assert [slot.evs is not None for slot in strategy.slots] == [True, True, False, False, False]
     assert strategy.populated
+
+
+def test_a_stored_frequency_is_a_signed_byte_of_half_points():
+    """``round(200 f) - 100``, signed: -100 is never, 100 always, 0 an even split.
+
+    Read unsigned, a 75/25 split is 50 and 206, which sum to 256 -- the property that made
+    "a byte over 256" look right, and an even split is 0 and 0, which made it look like a
+    hand stored as nothing.
+    """
+    assert frequency_steps(0x9C) == 0 and decode_frequency(0x9C) == 0.0
+    assert frequency_steps(100) == 200 and decode_frequency(100) == 1.0
+    assert frequency_steps(0) == 100 and decode_frequency(0) == 0.5
+    assert decode_frequency(encode_frequency(0.75)) == 0.75
+    assert encode_frequency(0.75) + encode_frequency(0.25) == 256
 
 
 def test_an_empty_street_is_read_as_an_empty_street(run_path):
@@ -590,7 +736,7 @@ def test_the_slots_bind_to_the_nodes_of_the_tree_they_were_written_for(run_path)
 def test_slots_written_for_another_tree_are_refused(run_path):
     tree = read_tree(read_entries(run_path).read("tree"))
     strategy = read_strategy(read_entries(run_path), "storedstrategy0")
-    shortened = MkrStrategy(entry=strategy.entry, bucket_count=30, slots=strategy.slots[:3])
+    shortened = MkrStrategy(entry=strategy.entry, node_count=NODE_COUNT, slots=strategy.slots[:3])
     with pytest.raises(NativeFormatError, match="written for another tree"):
         bind_slots(tree, shortened)
 
@@ -598,15 +744,15 @@ def test_slots_written_for_another_tree_are_refused(run_path):
 def test_a_strategy_on_a_terminal_node_is_refused(tmp_path):
     """A slot pattern that does not match the tree is the one failure worth refusing.
 
-    Read in the wrong order the arrays still parse, still sum to 256 and still have the
+    Read in the wrong order the arrays still parse, still sum to one and still have the
     right length -- they simply belong to other nodes. The pattern of which slots are held
-    is the only thing that catches it, so it is checked rather than trusted.
+    is one thing that catches it, so it is checked rather than trusted.
     """
     row = frequency_rows({})
-    regret = [0] * HOLDEM_CLASSES * ACTIONS
+    ev = ev_rows(ROOT_EVS)
     path = write_mkr(
         tmp_path / "misbound.mkr",
-        saved_run(storedstrategy0=strategy_entry(30, [row, None, row, None, None], [regret, None, regret, None, None])),
+        saved_run(storedstrategy0=strategy_entry(NODE_COUNT, [row, None, row, None, None], [ev, None, ev, None, None])),
     )
     with pytest.raises(NativeFormatError, match="do not bind to this tree"):
         read_structure(path)
@@ -616,7 +762,7 @@ def test_an_odd_number_of_arrays_is_refused(tmp_path):
     row = frequency_rows({})
     path = write_mkr(
         tmp_path / "odd.mkr",
-        saved_run(storedstrategy0=strategy_entry(30, [row, None], [None])),
+        saved_run(storedstrategy0=strategy_entry(NODE_COUNT, [row, None], [None])),
     )
     with pytest.raises(NativeFormatError, match="an odd number"):
         read_structure(path)
@@ -628,12 +774,12 @@ def test_a_strategy_entry_that_is_not_compressed_is_refused(tmp_path):
         read_structure(path)
 
 
-def test_a_strategy_entry_without_its_bucket_count_is_refused(tmp_path):
+def test_a_strategy_entry_without_its_node_count_is_refused(tmp_path):
     path = write_mkr(
         tmp_path / "headless.mkr",
         saved_run(storedstrategy0=zlib.compress(MAGIC + java_bytes_array(frequency_rows({})))),
     )
-    with pytest.raises(NativeFormatError, match="four bytes of its bucket count"):
+    with pytest.raises(NativeFormatError, match="four bytes of its node count"):
         read_structure(path)
 
 
@@ -650,17 +796,88 @@ def test_a_saved_run_is_read_and_agrees_with_itself(run_path):
     assert structure.version == 20109
     assert structure.iscount == 2 * HOLDEM_CLASSES
     assert structure.preflop_only
+    assert structure.mode == "storage"
     assert structure.unnamed_action_codes == ()
-    assert not structure.failures
+    assert not structure.failures, structure.summary()
     assert {check.name for check in structure.checks} == {
         "infoset count",
+        "node count",
         "slot lengths",
         "frequency sums",
+        "fold EV",
         "big blind",
         "format version",
         "action codes",
     }
-    assert "6/6 checks passed" in structure.summary()
+    assert "8/8 checks passed" in structure.summary()
+
+
+def test_each_player_s_ev_is_the_accumulated_sum_over_its_samples(run_path):
+    """``evs`` is a sum of the order of 10**9 here, 10**11 on a real save: never an EV itself."""
+    assert read_structure(run_path).player_evs == (1500.0, -1600.0)
+
+
+def test_a_node_count_that_is_not_one_more_than_the_tree_s_is_reported(tmp_path):
+    entries = saved_run()
+    path = write_mkr(tmp_path / "miscounted-nodes.mkr", {**entries, "storedstrategy0": _stored(node_count=30)})
+    assert {check.name for check in read_structure(path).failures} == {"node count"}
+
+
+def test_folding_is_worth_the_same_with_every_hand(tmp_path):
+    """The check that catches EVs read on the wrong node, or actions read in the wrong order."""
+    root = ev_rows(ROOT_EVS, {"AsAd": (-900, 1500)})
+    path = write_mkr(tmp_path / "fold-varies.mkr", saved_run(storedstrategy0=_stored(root_evs=root)))
+    failed = read_structure(path).failures
+    assert [check.name for check in failed] == ["fold EV"]
+    assert "folds for -1000 to -900" in failed[0].detail
+
+
+def test_folding_at_a_first_action_is_worth_minus_the_blind_posted(tmp_path):
+    """Read in child order rather than the solver's, the root's fold would be its shove."""
+    reversed_root = ev_rows(tuple(reversed(ROOT_EVS)))
+    path = write_mkr(tmp_path / "fold-reversed.mkr", saved_run(storedstrategy0=_stored(root_evs=reversed_root)))
+    failed = read_structure(path).failures
+    assert [check.name for check in failed] == ["fold EV"]
+    assert "not the -1000 its blind forfeits" in failed[0].detail
+
+
+def test_a_node_whose_ev_was_not_kept_answers_frequencies_and_no_ev(tmp_path):
+    path = write_mkr(tmp_path / "no-ev.mkr", saved_run(storedstrategy0=_stored(root_evs=None, faced_evs=None)))
+    structure = read_structure(path)
+    assert "fold EV" not in {check.name for check in structure.checks}
+    results = MkrStrategyProvider(path, SEATS).strategy(Node(hero="SB", path=()), "AsAd")
+    assert [round(result.frequency, 6) for result in results] == [0.25, 0.75]
+    assert [result.ev for result in results] == [None, None]
+
+
+def test_an_ev_java_rounded_from_an_infinity_is_no_ev(tmp_path):
+    root = ev_rows(ROOT_EVS, {"AsAd": (-1000, -(2**31))})
+    path = write_mkr(tmp_path / "infinite.mkr", saved_run(storedstrategy0=_stored(root_evs=root)))
+    results = MkrStrategyProvider(path, SEATS).strategy(Node(hero="SB", path=()), "AsAd")
+    assert [result.ev for result in results] == [-1000.0, None]
+
+
+def test_locks_are_read_and_are_already_in_a_stored_strategy(tmp_path):
+    path = write_mkr(tmp_path / "locked.mkr", saved_run(presetsmap=java_hash_map({1: [-1.0] * 338})))
+    structure = read_structure(path)
+    assert list(structure.locks) == [1]
+    assert "presetsmap" not in structure.scalars
+    locks = [check for check in structure.checks if check.name == "locks"]
+    assert locks and locks[0].passed
+
+
+_UNSET = object()
+
+
+def _stored(node_count: int = NODE_COUNT, root_evs=_UNSET, faced_evs=_UNSET) -> bytes:
+    """The fixture's street-zero entry, with one of its parts replaced."""
+    root = frequency_rows({"AsAd": (0.25, 0.75), "2s3d": (0.75, 0.25), "7h2c": (0.0, 0.0)})
+    faced = frequency_rows({"AsAd": (0.125, 0.875)})
+    if root_evs is _UNSET:
+        root_evs = ev_rows(ROOT_EVS, {"AsAd": (-1000, 1500)})
+    if faced_evs is _UNSET:
+        faced_evs = ev_rows(FACED_EVS, {"AsAd": (-2000, 2600)})
+    return strategy_entry(node_count, [root, faced, None, None, None], [root_evs, faced_evs, None, None, None])
 
 
 def test_the_infoset_count_relates_two_numbers_from_opposite_ends_of_the_archive(tmp_path):
@@ -676,31 +893,50 @@ def test_the_infoset_count_relates_two_numbers_from_opposite_ends_of_the_archive
 def test_frequency_bytes_that_do_not_sum_to_a_strategy_are_reported(tmp_path):
     rows = bytearray(frequency_rows({}))
     rows[0:2] = bytes((10, 10))
-    regret = [0] * HOLDEM_CLASSES * ACTIONS
+    evs = ev_rows(ROOT_EVS)
     path = write_mkr(
         tmp_path / "unsummed.mkr",
         saved_run(
             storedstrategy0=strategy_entry(
-                30, [bytes(rows), frequency_rows({}), None, None, None], [regret, regret, None, None, None]
+                NODE_COUNT,
+                [bytes(rows), frequency_rows({}), None, None, None],
+                [evs, ev_rows(FACED_EVS), None, None, None],
             )
         ),
     )
     structure = read_structure(path)
     assert {check.name for check in structure.failures} == {"frequency sums"}
-    assert not frequency_sum_allowed(20, ACTIONS)
+    assert not frequency_sum_allowed(220, ACTIONS)
+
+
+def test_a_byte_outside_never_to_always_is_no_frequency(tmp_path):
+    """-128 and 127 are bytes, and no frequency: a row holding one is not a strategy."""
+    rows = bytearray(frequency_rows({}))
+    rows[0:2] = bytes((0x80, 0x7F))
+    path = write_mkr(
+        tmp_path / "out-of-range.mkr",
+        saved_run(
+            storedstrategy0=strategy_entry(
+                NODE_COUNT,
+                [bytes(rows), frequency_rows({}), None, None, None],
+                [ev_rows(ROOT_EVS), ev_rows(FACED_EVS), None, None, None],
+            )
+        ),
+    )
+    assert {check.name for check in read_structure(path).failures} == {"frequency sums"}
 
 
 def test_the_rounding_a_frequency_sum_may_carry_grows_with_the_node_s_actions():
-    """Each action is rounded to a byte on its own, so a row is off by at most half a byte per action."""
+    """Each action is rounded on its own, so a row is off by at most half a half-point per action."""
     assert frequency_sum_allowed(0, 2)
-    assert frequency_sum_allowed(256, 2)
-    assert frequency_sum_allowed(257, 2)
-    assert frequency_sum_allowed(255, 2)
-    assert not frequency_sum_allowed(258, 2)
-    # Three equal thirds: 85 + 85 + 85.
-    assert frequency_sum_allowed(255, 3)
-    assert frequency_sum_allowed(254, 4)
-    assert not frequency_sum_allowed(253, 4)
+    assert frequency_sum_allowed(200, 2)
+    assert frequency_sum_allowed(201, 2)
+    assert frequency_sum_allowed(199, 2)
+    assert not frequency_sum_allowed(202, 2)
+    # Three equal thirds: 67 + 67 + 67.
+    assert frequency_sum_allowed(201, 3)
+    assert frequency_sum_allowed(198, 4)
+    assert not frequency_sum_allowed(197, 4)
 
 
 def test_an_action_code_with_no_reading_fails_a_check_rather_than_being_named(tmp_path):
@@ -719,25 +955,241 @@ def test_an_archive_with_no_tree_is_not_a_saved_simulation(tmp_path):
         read_structure(path)
 
 
-def test_a_run_saved_while_it_was_still_solving_is_refused_by_name(tmp_path):
-    """The other shape of the same format version, and the one that must not be guessed at.
+# --------------------------------------------------------------------------------------
+# A save made for further calculation
 
-    An unfinished save keeps accumulated regret and an iterative average instead of a
-    stored strategy, in nested arrays whose axes are not established. It parses; it just
-    does not mean what a stored strategy means, so it is refused with what to do instead.
+
+def calc_run(**overrides: bytes) -> dict[str, bytes]:
+    """The same heads-up run, saved for further calculation instead of for storage.
+
+    The small blind is player 0 and the big blind player 1, so the root is group 0 and the
+    big blind's node group 4 -- ``4 x player + street``. Each node takes ``n + 2`` longs of
+    its group's EV row, ``[R_allin, R_fold, W, V]`` in the solver's action order, and ``n``
+    ints of its average row. The numbers are the storage fixture's: the same frequencies,
+    and EVs ``(R + V) / (W x scale)`` equal to the stored ones.
     """
+    root_ev = _ev_block(ROOT_EVS, weight=10, value=2000)
+    root_aa = _ev_block((-1000, 1500), weight=10, value=2000)
+    faced_ev = _ev_block(FACED_EVS, weight=5, value=0)
+    faced_aa = _ev_block((-2000, 2600), weight=5, value=0)
+    ev_groups = [None] * 8
+    ev_groups[0] = _hand_rows(root_ev, {"AsAd": root_aa})
+    ev_groups[4] = _hand_rows(faced_ev, {"AsAd": faced_aa})
+    average_groups = [None] * 8
+    average_groups[0] = _hand_rows([1, 1], {"AsAd": [3, 1], "2s3d": [1, 3], "7h2c": [0, 0]})
+    average_groups[4] = _hand_rows([1, 1], {"AsAd": [7, 1]})
     entries = {name: payload for name, payload in saved_run().items() if not name.startswith("storedstrategy")}
-    entries["reg"] = b"\x03" + java_array("[D", [1.0])
-    entries["iavg"] = b"\x01" + java_array("[I", [1])
-    path = write_mkr(tmp_path / "in-progress.mkr", entries)
-    with pytest.raises(NativeFormatError, match="still being solved"):
+    entries["reg"] = reg_entry(SCALE, [None] * 8, ev_groups)
+    entries["iavg"] = b"\x01" + MAGIC + nested("[[[I", average_groups)
+    entries["hasEv"] = MAGIC + nested("[Z", [group is not None for group in ev_groups])
+    entries.update(overrides)
+    return entries
+
+
+#: The calculation store's scale: every EV row is divided by weight times this.
+SCALE = 2.0
+
+
+def reg_entry(scale: float, int_groups, long_groups, layout: int = 3) -> bytes:
+    """A ``reg`` entry: its layout byte, then ``Object[]{Double, int[][][], long[][][]}``."""
+    scale_value = boxed_body("java.lang.Double", "D", struct.pack(">d", scale))
+    body = nested("[Ljava.lang.Object;", [scale_value, nested("[[[I", int_groups), nested("[[[J", long_groups)])
+    return bytes([layout]) + MAGIC + body
+
+
+def _ev_block(evs: tuple[int, int], weight: int, value: int) -> list[int]:
+    """One node's EV cells for one hand, solver order: each regret is ``EV x W x scale - V``."""
+    regrets = [round(ev * weight * SCALE) - value for ev in reversed(evs)]
+    return [*regrets, weight, value]
+
+
+def _hand_rows(default: list[int], rows: dict[str, list[int]]) -> list[list[int]]:
+    table = [list(default) for _ in range(HOLDEM_CLASSES)]
+    for hand, row in rows.items():
+        table[class_of_hand(hand)] = list(row)
+    return table
+
+
+@pytest.fixture
+def calc_path(tmp_path):
+    return write_mkr(tmp_path / "heads-up-calc.mkr", calc_run())
+
+
+def test_a_save_for_further_calculation_is_read_and_agrees_with_itself(calc_path):
+    structure = read_structure(calc_path)
+    assert structure.mode == "calculation"
+    assert structure.strategies == {}
+    assert structure.class_count == HOLDEM_CLASSES
+    assert not structure.failures, structure.summary()
+    assert {check.name for check in structure.checks} == {
+        "infoset count",
+        "group widths",
+        "EV groups",
+        "group order",
+        "fold EV",
+        "big blind",
+        "format version",
+        "action codes",
+    }
+
+
+def test_both_kinds_of_save_answer_the_same_hand_the_same_way(run_path, calc_path):
+    stored, calculated = MkrStrategyProvider(run_path, SEATS), MkrStrategyProvider(calc_path, SEATS)
+    for node in (Node(hero="SB", path=()), Node(hero="BB", path=(("SB", "Allin"),))):
+        for hand in ("AsAd", "2s3d", "KhQh"):
+            left, right = stored.strategy(node, hand), calculated.strategy(node, hand)
+            assert [result.action for result in left] == [result.action for result in right]
+            assert [result.frequency for result in left] == pytest.approx([result.frequency for result in right])
+            assert [result.ev for result in left] == pytest.approx([result.ev for result in right])
+    assert calculated.strategy(Node(hero="SB", path=()), "7h2c") == ()
+    assert calculated.raw_frequencies(Node(hero="SB", path=()), "AsAd") == (1, 3)
+    assert "saved for calculation" in calculated.metadata().infos
+
+
+def test_a_hand_the_calculation_never_weighted_has_no_ev(tmp_path):
+    ev_groups = [None] * 8
+    ev_groups[0] = _hand_rows(_ev_block(ROOT_EVS, 10, 2000), {"AsAd": [0, 0, 0, 0]})
+    ev_groups[4] = _hand_rows(_ev_block(FACED_EVS, 5, 0), {})
+    path = write_mkr(tmp_path / "unweighted.mkr", calc_run(reg=reg_entry(SCALE, [None] * 8, ev_groups)))
+    results = MkrStrategyProvider(path, SEATS).strategy(Node(hero="SB", path=()), "AsAd")
+    assert [result.ev for result in results] == [None, None]
+
+
+def test_a_reg_layout_no_save_has_been_seen_with_is_refused_by_name(tmp_path):
+    path = write_mkr(tmp_path / "layout-2.mkr", calc_run(reg=reg_entry(SCALE, [None] * 8, [None] * 8, layout=2)))
+    with pytest.raises(NativeFormatError, match="no save has been seen with"):
         read_structure(path)
+    path = write_mkr(tmp_path / "layout-7.mkr", calc_run(reg=reg_entry(SCALE, [None] * 8, [None] * 8, layout=7)))
+    with pytest.raises(NativeFormatError, match="layout 7, which is unknown"):
+        read_structure(path)
+
+
+def test_a_reg_entry_that_is_not_a_scale_and_two_arrays_is_refused(tmp_path):
+    path = write_mkr(tmp_path / "reg-shape.mkr", calc_run(reg=b"\x03" + java_array("[D", [1.0])))
+    with pytest.raises(NativeFormatError, match="is not the scale and two arrays"):
+        read_structure(path)
+
+
+def test_a_save_with_neither_a_stored_strategy_nor_a_calculation_store_is_refused(tmp_path):
+    entries = calc_run()
+    del entries["iavg"]
+    path = write_mkr(tmp_path / "half.mkr", entries)
+    with pytest.raises(NativeFormatError, match="missing iavg"):
+        read_structure(path)
+
+
+def test_rows_narrower_than_their_group_s_nodes_fail_a_check(tmp_path):
+    average_groups = [None] * 8
+    average_groups[0] = _hand_rows([1, 1, 1], {})
+    average_groups[4] = _hand_rows([1, 1], {})
+    path = write_mkr(tmp_path / "wide.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[I", average_groups)))
+    structure = read_structure(path)
+    assert "group widths" in {check.name for check in structure.failures}
+    with pytest.raises(NativeFormatError, match="contradicts itself"):
+        MkrStrategyProvider(path, SEATS)
+
+
+def test_ev_rows_for_groups_has_ev_does_not_mark_fail_a_check(tmp_path):
+    path = write_mkr(tmp_path / "has-ev.mkr", calc_run(hasEv=MAGIC + nested("[Z", [True] + [False] * 7)))
+    assert {check.name for check in read_structure(path).failures} == {"EV groups"}
+
+
+def test_a_calculation_store_with_locks_is_not_read(tmp_path):
+    path = write_mkr(tmp_path / "calc-locked.mkr", calc_run(presetsmap=java_hash_map({1: [0.5] * 338})))
+    assert {check.name for check in read_structure(path).failures} == {"locks"}
+
+
+def test_a_calculation_store_says_what_it_holds(calc_path, run_path):
+    calculated, stored = read_structure(calc_path), read_structure(run_path)
+    assert "scale 2" in calculated.source.describe()
+    assert "EV kept for groups [0, 4]" in calculated.source.describe()
+    assert "2 nodes with a strategy, 2 of them with an EV, node count 6" in stored.source.describe()
+    assert stored.raw(1, 0) == ()
+
+
+def test_a_has_ev_entry_that_is_not_booleans_is_refused(tmp_path):
+    path = write_mkr(tmp_path / "has-ev-ints.mkr", calc_run(hasEv=java_array("[I", [1, 0])))
+    with pytest.raises(NativeFormatError, match="is not one boolean per group"):
+        read_structure(path)
+
+
+def test_an_empty_calculation_entry_is_refused(tmp_path):
+    path = write_mkr(tmp_path / "empty-reg.mkr", calc_run(reg=b""))
+    with pytest.raises(NativeFormatError, match="The reg entry of .* is empty"):
+        read_structure(path)
+
+
+def test_an_average_store_that_is_not_one_row_per_group_is_refused(tmp_path):
+    path = write_mkr(tmp_path / "iavg-scalar.mkr", calc_run(iavg=b"\x01" + java_int(3)))
+    with pytest.raises(NativeFormatError, match="does not hold one row of hands per group"):
+        read_structure(path)
+    deeper = [None] * 8
+    deeper[0] = [[[1, 1]]]
+    path = write_mkr(tmp_path / "iavg-deep.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[[I", deeper)))
+    with pytest.raises(NativeFormatError, match="not one row of numbers per hand"):
+        read_structure(path)
+
+
+def test_groups_that_disagree_about_the_hand_count_are_refused(tmp_path):
+    average_groups = [None] * 8
+    average_groups[0] = _hand_rows([1, 1], {})
+    average_groups[4] = [[1, 1]] * 100
+    path = write_mkr(tmp_path / "two-axes.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[I", average_groups)))
+    with pytest.raises(NativeFormatError, match="does not hold one row per hand for every group"):
+        read_structure(path)
+
+
+def test_a_store_with_fewer_groups_than_players_times_streets_fails_a_check(tmp_path):
+    average_groups = [None] * 5
+    average_groups[0] = _hand_rows([1, 1], {})
+    average_groups[4] = _hand_rows([1, 1], {})
+    path = write_mkr(tmp_path / "few-groups.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[I", average_groups)))
+    structure = read_structure(path)
+    assert "group widths" in {check.name for check in structure.failures}
+    assert structure.raw(0, 0) == ()
+    assert structure.frequencies(0, 0) is None
+    assert structure.evs(0, 0) is None
+
+
+def test_ev_rows_narrower_than_their_nodes_fail_a_check(tmp_path):
+    ev_groups = [None] * 8
+    ev_groups[0] = _hand_rows([1, 2, 3], {})
+    ev_groups[4] = _hand_rows(_ev_block(FACED_EVS, 5, 0), {})
+    path = write_mkr(tmp_path / "narrow-ev.mkr", calc_run(reg=reg_entry(SCALE, [None] * 8, ev_groups)))
+    assert "group widths" in {check.name for check in read_structure(path).failures}
+
+
+def test_a_range_block_is_checked_against_the_hand_axis(tmp_path):
+    ranged = tree_entry(has_ranges=1, tail=bytes(2 * 1326 * 4))
+    structure = read_structure(write_mkr(tmp_path / "ranged.mkr", saved_run(tree=ranged)))
+    checks = {check.name: check for check in structure.checks}
+    assert checks["range block"].passed
+    assert "1326 combos, which is 2-card hands" in checks["range block"].detail
+
+
+def test_a_save_that_does_not_state_its_evs_has_no_player_ev(tmp_path):
+    entries = saved_run()
+    del entries["evs"]
+    assert read_structure(write_mkr(tmp_path / "no-evs.mkr", entries)).player_evs == ()
+
+
+def test_a_group_whose_nodes_a_breadth_first_walk_would_reorder_is_not_established():
+    """A player acting at two depths, deeper first in the tree's order, breaks the tie."""
+    from preflop_advisor.mkr_calc import group_layout
+
+    # SB raises -> BB re-raises -> SB raises again -> BB (depth 3), then SB shoves -> BB (depth 1).
+    nodes = struct.pack(">13H", 2, 40050, 1, 40100, 1, 40200, 1, 1, 0, 3, 1, 1, 0)
+    tree = read_tree(tree_entry(nodes=nodes))
+    layout, members, established = group_layout(tree)
+    assert not established
+    assert [tree.nodes[node].depth for node in members[4]] == [1, 3, 1]
+    assert layout[members[4][1]].ev_offset == 3
 
 
 def test_a_run_saved_before_it_had_a_strategy_is_refused(tmp_path):
     path = write_mkr(
         tmp_path / "empty.mkr",
-        saved_run(storedstrategy0=strategy_entry(30, [None] * 5, [None] * 5)),
+        saved_run(storedstrategy0=strategy_entry(NODE_COUNT, [None] * 5, [None] * 5)),
     )
     with pytest.raises(NativeFormatError, match="before it had a strategy to save"):
         read_structure(path)
@@ -752,12 +1204,12 @@ def test_a_scalar_entry_that_cannot_be_read_is_left_out_rather_than_fatal(tmp_pa
 
 def test_a_strategy_indexed_by_no_verified_class_count_is_refused(tmp_path):
     """A hand axis nothing confirms is refused, because a wrong one reads the wrong hand."""
-    rows = bytes(b"\x80" * 200 * ACTIONS)
-    regret = [0] * 200 * ACTIONS
+    rows = bytes(200 * ACTIONS)
+    evs = [0] * 200 * ACTIONS
     path = write_mkr(
         tmp_path / "unverified.mkr",
         saved_run(
-            storedstrategy0=strategy_entry(30, [rows, rows, None, None, None], [regret, regret, None, None, None])
+            storedstrategy0=strategy_entry(NODE_COUNT, [rows, rows, None, None, None], [evs, evs, None, None, None])
         ),
     )
     with pytest.raises(NativeFormatError, match="matches no verified hand size"):
@@ -808,19 +1260,20 @@ def test_a_node_is_named_by_its_line_of_play_seat_by_seat(provider):
     assert not provider.has_node(Node(hero="BB", path=(("SB", "Fold"),)))
 
 
-def test_a_hand_is_answered_with_every_action_and_no_ev(provider):
+def test_a_hand_is_answered_with_every_action_and_what_each_is_worth(provider):
     results = provider.strategy(Node(hero="SB", path=()), "AsAd")
     assert [result.action for result in results] == ["Fold", "Allin"]
     assert [round(result.frequency, 6) for result in results] == [0.25, 0.75]
-    assert all(result.ev is None for result in results)
-    assert provider.raw_frequencies(Node(hero="SB", path=()), "AsAd") == (64, 192)
+    assert [result.ev for result in results] == [-1000.0, 1500.0]
+    assert provider.raw_frequencies(Node(hero="SB", path=()), "AsAd") == (50, 150)
 
 
 def test_frequencies_are_renormalised_over_the_actions_present(provider):
     results = provider.strategy(Node(hero="BB", path=(("SB", "Allin"),)), "AsAd")
     assert [result.action for result in results] == ["Fold", "Call"]
     assert sum(result.frequency for result in results) == pytest.approx(1.0)
-    assert results[1].frequency == pytest.approx(224 / 256)
+    assert results[1].frequency == pytest.approx(0.875)
+    assert [result.ev for result in results] == [-2000.0, 2600.0]
 
 
 def test_a_class_the_run_stored_nothing_for_is_an_empty_node_not_a_uniform_one(provider):
@@ -942,7 +1395,6 @@ def test_a_real_save_answers_a_hand_of_its_own_game(real_run):
     results = reader.strategy(root, dealt)
     assert results
     assert sum(result.frequency for result in results) == pytest.approx(1.0)
-    assert all(result.ev is None for result in results)
 
 
 def test_a_real_save_is_never_written_to(real_run):
@@ -957,7 +1409,7 @@ def test_a_real_save_is_never_written_to(real_run):
 
 def test_a_value_used_as_a_class_description_is_refused(archive_of):
     """A reference that points at data rather than at a class: the arrays are not arrays."""
-    stream = MAGIC + b"\x77\x04" + struct.pack(">i", 30) + java_bytes_array(b"\x80\x80")
+    stream = MAGIC + b"\x77\x04" + struct.pack(">i", NODE_COUNT) + java_bytes_array(b"\x00\x00")
     stream += b"\x75\x71" + struct.pack(">i", 0x7E0001)
     with pytest.raises(NativeFormatError, match="uses a value as a class description"):
         read_strategy(archive_of(stream), "storedstrategy0")
@@ -994,19 +1446,37 @@ def test_an_object_field_that_is_not_a_number_is_refused():
         read_java_value(stream, "presetsmap")
 
 
-def test_an_object_array_is_refused_by_the_class_it_names():
-    stream = (
-        MAGIC
-        + b"\x75\x72"
-        + utf("[Ljava.lang.Object;")
-        + bytes(8)
-        + b"\x02"
-        + struct.pack(">H", 0)
-        + b"\x78\x70"
-        + struct.pack(">i", 0)
-    )
-    with pytest.raises(NativeFormatError, match="only primitive arrays are read"):
-        read_java_value(stream, "bountymaps")
+def test_a_string_is_read_as_the_text_it_is():
+    assert read_java_value(MAGIC + b"\x74" + utf("hello"), "note") == "hello"
+
+
+def test_a_map_of_a_negative_size_is_refused():
+    stream = java_hash_map({}).replace(struct.pack(">ii", 16, 0), struct.pack(">ii", 16, -1))
+    with pytest.raises(NativeFormatError, match="map of -1 entries"):
+        read_java_value(stream, "presetsmap")
+
+
+def test_a_map_keyed_by_an_array_is_refused():
+    stream = java_hash_map({}).replace(struct.pack(">ii", 16, 0), struct.pack(">ii", 16, 1))
+    stream = stream[:-1] + nested("[I", [1]) + nested("[D", [0.5]) + b"\x78"
+    with pytest.raises(NativeFormatError, match="keys a map by a array"):
+        read_java_value(stream, "presetsmap")
+
+
+def test_an_object_array_of_a_negative_length_is_refused():
+    with pytest.raises(NativeFormatError, match="array of -1 elements"):
+        read_java_value(MAGIC + array_body("[Ljava.lang.Object;", struct.pack(">i", -1)), "reg")
+
+
+def test_an_empty_object_array_is_an_empty_list():
+    assert read_java_value(MAGIC + nested("[Ljava.lang.Object;", []), "bountymaps") == []
+
+
+def test_a_map_without_its_capacity_and_size_is_refused():
+    stream = java_hash_map({})
+    broken = stream.replace(b"\x77\x08" + struct.pack(">ii", 16, 0), b"\x77\x04" + struct.pack(">i", 16))
+    with pytest.raises(NativeFormatError, match="without its capacity and size"):
+        read_java_value(broken, "presetsmap")
 
 
 def test_long_block_data_is_read_as_the_bytes_it_is():
@@ -1029,17 +1499,30 @@ def test_an_entry_name_that_starts_like_utf16be_but_is_not_is_left_alone(tmp_pat
     assert not entry.utf16
 
 
-def test_a_slot_that_pairs_a_strategy_with_nothing_is_refused(archive_of):
+def test_a_strategy_paired_with_no_ev_is_a_node_whose_ev_was_not_kept(archive_of):
     row = frequency_rows({})
-    stream = MAGIC + b"\x77\x04" + struct.pack(">i", 30) + java_bytes_array(row) + b"\x70"
+    stream = MAGIC + b"\x77\x04" + struct.pack(">i", 2) + java_bytes_array(row) + b"\x70"
+    slot = read_strategy(archive_of(stream), "storedstrategy0").slots[0]
+    assert slot.present
+    assert slot.evs is None
+
+
+def test_an_ev_with_no_strategy_beside_it_is_refused(archive_of):
+    stream = MAGIC + b"\x77\x04" + struct.pack(">i", 2) + b"\x70" + java_ints_array([0, 0])
     with pytest.raises(NativeFormatError, match="where a frequency array is paired"):
         read_strategy(archive_of(stream), "storedstrategy0")
 
 
-def test_a_slot_whose_regrets_do_not_run_parallel_is_refused(archive_of):
+def test_a_slot_whose_evs_do_not_run_parallel_is_refused(archive_of):
     row = frequency_rows({})
-    stream = MAGIC + b"\x77\x04" + struct.pack(">i", 30) + java_bytes_array(row) + java_ints_array([0, 0])
+    stream = MAGIC + b"\x77\x04" + struct.pack(">i", 2) + java_bytes_array(row) + java_ints_array([0, 0])
     with pytest.raises(NativeFormatError, match="which are meant to run in parallel"):
+        read_strategy(archive_of(stream), "storedstrategy0")
+
+
+def test_anything_but_arrays_in_a_stored_strategy_is_refused(archive_of):
+    stream = MAGIC + b"\x77\x04" + struct.pack(">i", 2) + java_array("[D", [1.0])[len(MAGIC) :]
+    with pytest.raises(NativeFormatError, match="where a strategy array belongs"):
         read_strategy(archive_of(stream), "storedstrategy0")
 
 
@@ -1048,7 +1531,7 @@ def test_a_slot_that_is_not_a_whole_number_of_hands_is_refused(run_path):
     odd = bytes(HOLDEM_CLASSES * ACTIONS + 1)
     strategy = MkrStrategy(
         entry="storedstrategy0",
-        bucket_count=30,
+        node_count=NODE_COUNT,
         slots=(
             _slot(odd),
             _slot(bytes(HOLDEM_CLASSES * ACTIONS)),
@@ -1065,7 +1548,7 @@ def test_slots_indexed_by_two_class_counts_at_once_are_refused(run_path):
     tree = read_tree(read_entries(run_path).read("tree"))
     strategy = MkrStrategy(
         entry="storedstrategy0",
-        bucket_count=30,
+        node_count=NODE_COUNT,
         slots=(
             _slot(bytes(HOLDEM_CLASSES * ACTIONS)),
             _slot(bytes(100 * ACTIONS)),
@@ -1082,7 +1565,7 @@ def test_a_tree_of_one_terminal_is_indexed_by_nothing():
     """A tree nobody acts in has no hand axis, so there is nothing to divide a length by."""
     tree = read_tree(tree_entry(nodes=struct.pack(">H", 0)))
     assert tree.decisions == ()
-    strategy = MkrStrategy(entry="storedstrategy0", bucket_count=30, slots=(MkrSlot(),))
+    strategy = MkrStrategy(entry="storedstrategy0", node_count=2, slots=(MkrSlot(),))
     with pytest.raises(NativeFormatError, match="no strategy to be indexed by anything"):
         class_count_of(tree, strategy)
 
@@ -1152,4 +1635,4 @@ def test_a_preflop_save_with_no_identifiable_blind_is_refused(tmp_path):
 
 
 def _slot(frequencies: bytes) -> MkrSlot:
-    return MkrSlot(frequencies=frequencies, regrets=tuple([0] * len(frequencies)))
+    return MkrSlot(frequencies=frequencies, evs=array("i", [0] * len(frequencies)))

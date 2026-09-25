@@ -77,15 +77,17 @@ def describe_tree(structure: MkrStructure) -> None:
     )
     print(f"          committed {tree.committed}, dead money {tree.dead_money}, stacks {tree.stacks}")
     print(f"          {len(tree.nodes)} nodes, {len(tree.decisions)} decisions, action codes {codes}")
-    print(f"          ranges block: {'present' if tree.has_ranges else 'absent'}")
+    ranges = f"{tree.range_combos} combos per player" if tree.has_ranges else "absent"
+    print(f"          ranges block: {ranges}")
 
 
 def describe_strategies(structure: MkrStructure) -> None:
-    """The hand axis and how many slots each stored strategy holds."""
-    print(f"strategy  {structure.class_count} hand classes, {structure.cards_per_hand} cards per hand")
-    for name, strategy in structure.strategies.items():
-        held = sum(1 for slot in strategy.slots if slot.present)
-        print(f"          {name:<16} {strategy.bucket_count} buckets, {held}/{len(strategy.slots)} slots held")
+    """Which kind of save this is, its hand axis, and what each player's EV works out to."""
+    print(f"strategy  saved for {structure.mode}: {structure.source.describe()}")
+    print(f"          {structure.class_count} hand classes, {structure.cards_per_hand} cards per hand")
+    evs = ", ".join("?" if ev is None else f"{ev:.1f}" for ev in structure.player_evs)
+    print(f"          EV per hand by player, in chips: {evs or 'not stated'}")
+    print(f"          locked nodes: {len(structure.locks)}")
 
 
 def describe_model(provider: MkrStrategyProvider, hands: list[str]) -> None:
@@ -103,8 +105,12 @@ def describe_model(provider: MkrStrategyProvider, hands: list[str]) -> None:
             if not results:
                 print(f"            {hand:<10} nothing stored")
                 continue
-            spelled = ", ".join(f"{result.action} {result.frequency:.4f}" for result in results)
-            print(f"            {hand:<10} bytes {stored} -> {spelled}")
+            spelled = ", ".join(f"{result.action} {result.frequency:.4f}{_ev(result.ev)}" for result in results)
+            print(f"            {hand:<10} stored {stored} -> {spelled}")
+
+
+def _ev(ev: float | None) -> str:
+    return "" if ev is None else f" (EV {ev:.1f})"
 
 
 def describe_crosscheck(structure: MkrStructure, folder: str) -> bool:

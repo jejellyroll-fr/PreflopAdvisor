@@ -2,13 +2,20 @@
 """Java object serialization, in the small part of it a saved simulation uses.
 
 Every entry of a ``.mkr`` but ``tree`` is a ``java.io.ObjectOutputStream`` stream: boxed
-scalars, primitive arrays, block data and nulls. :mod:`preflop_advisor.mkr_format` reads
-the archive and what those values mean; this module only turns the bytes into values.
+scalars, primitive arrays, arrays of arrays, ``Object[]``, ``HashMap``, block data and
+nulls. :mod:`preflop_advisor.mkr_format` reads the archive and what those values mean;
+this module only turns the bytes into values.
+
+A numeric array comes back as an :class:`array.array` rather than a list: a calculation
+store holds one ``long`` per hand, node and action, and a Python ``int`` per value would
+cost several times the bytes the entry itself does.
 """
 
 from __future__ import annotations
 
 import struct
+import sys
+from array import array
 from dataclasses import dataclass
 
 from .errors import NativeFormatError
@@ -30,6 +37,16 @@ _BASE_HANDLE = 0x7E0000
 #: The class-description flag that says a class wrote its own fields and ends them with a
 #: ``TC_ENDBLOCKDATA``; without it the field values simply stop.
 _SC_WRITE_METHOD = 0x01
+
+#: The ``java.util.HashMap`` class, whose contents are written by its own method.
+_HASH_MAP = "java.util.HashMap"
+#: How deeply arrays and objects may nest before the stream is called malformed. The
+#: deepest value a save holds is an ``int[][][]`` inside an ``Object[]``.
+MAX_NESTING = 16
+
+#: Java's primitive type codes, and the :mod:`array` type each one is kept as. Each
+#: typecode is checked for its width where it is used, since ``array`` sizes follow C.
+_ARRAY_TYPES: dict[str, str] = {"C": "H", "D": "d", "F": "f", "I": "i", "J": "q", "S": "h"}
 
 #: Java's primitive type codes, and how :mod:`struct` spells each one.
 _PRIMITIVES: dict[str, tuple[str, int]] = {
@@ -69,6 +86,7 @@ class _JavaStream:
         self._entry = entry
         self._offset = 0
         self._handles: list[object] = []
+        self._depth = 0
         if not data.startswith(JAVA_STREAM_MAGIC):
             raise NativeFormatError(
                 f"The {entry} entry does not begin with the Java serialization stream magic "
@@ -202,56 +220,113 @@ class _JavaStream:
                 format_code, size = _PRIMITIVES[type_code]
                 values[field_name] = self._unpack(format_code, size)
             if level.flags & _SC_WRITE_METHOD:
+                if level.name == _HASH_MAP:
+                    values = {_HASH_MAP: self._hash_map_contents()}
                 self._skip_annotation()
         return values
 
-    def _array(self) -> list[object] | bytes:
+    def _hash_map_contents(self) -> dict[object, object]:
+        """What ``HashMap.writeObject`` writes: a capacity and a size, then the pairs."""
+        header = self.read_value()
+        if not isinstance(header, bytes) or len(header) < 8:
+            raise NativeFormatError(f"The {self._entry} entry holds a map without its capacity and size.")
+        size = int(struct.unpack(">i", header[4:8])[0])
+        if size < 0:
+            raise NativeFormatError(f"The {self._entry} entry holds a map of {size} entries.")
+        contents: dict[object, object] = {}
+        for _ in range(size):
+            key = self.read_value()
+            if isinstance(key, (list, dict, array, bytes)):
+                raise NativeFormatError(f"The {self._entry} entry keys a map by a {type(key).__name__}.")
+            contents[key] = self.read_value()
+        return contents
+
+    def _array(self) -> object:
         description = self._class_desc()
         if description is None:
             raise NativeFormatError(f"The {self._entry} entry wrote an array with no class.")
         handle = self._reserve()
         element = description.name[1:]
         length = self._i32()
-        values: list[object] | bytes
+        values: object
         if element == "B":
             values = self._take(length)
-        elif element in _PRIMITIVES:
-            format_code, size = _PRIMITIVES[element]
-            values = list(struct.unpack(f">{length}{format_code}", self._take(length * size)))
+        elif element == "Z":
+            values = [bool(flag) for flag in self._take(length)]
+        elif element in _ARRAY_TYPES:
+            values = self._numbers(element, length)
+        elif element[:1] in ("[", "L"):
+            values = self._objects(length)
         else:
-            raise NativeFormatError(
-                f"The {self._entry} entry holds a {description.name} array, and only primitive arrays are read."
-            )
+            raise NativeFormatError(f"The {self._entry} entry holds a {description.name} array, which is not Java's.")
         self._handles[handle] = values
         return values
 
-    def read_value(self) -> object:
-        """The next value of the stream: a number, a primitive array, ``None``, or block data.
+    def _numbers(self, element: str, length: int) -> array[int] | array[float]:
+        """A primitive array, kept as the machine's own numbers rather than as objects."""
+        _, size = _PRIMITIVES[element]
+        numbers = array(_ARRAY_TYPES[element])
+        if numbers.itemsize != size:  # pragma: no cover - a platform whose C types differ
+            raise NativeFormatError(f"This platform cannot hold a Java {element!r} array in {numbers.itemsize} bytes.")
+        numbers.frombytes(self._take(length * size))
+        if sys.byteorder == "little":
+            numbers.byteswap()
+        return numbers
 
-        Block data comes back as the ``bytes`` it is, because the one entry that uses it
-        writes a bare integer that way and the meaning of those bytes is the caller's.
+    def _objects(self, length: int) -> list[object]:
+        """An array of objects or of arrays: each element a value of its own."""
+        if length < 0:
+            raise NativeFormatError(f"The {self._entry} entry declares an array of {length} elements.")
+        return [self.read_value() for _ in range(length)]
+
+    def read_value(self) -> object:
+        """The next value of the stream.
+
+        A number, a string, an array (``bytes`` for a ``byte[]``, a list of booleans for a
+        ``boolean[]``, an :class:`array.array` for any other primitive, a list for an array
+        of objects or arrays), a ``dict`` for a ``HashMap``, ``None``, or block data --
+        which comes back as the ``bytes`` it is, because the one entry that uses it on its
+        own writes a bare integer that way and the meaning of those bytes is the caller's.
         """
-        tag = self._u8()
+        if self._depth >= MAX_NESTING:
+            raise NativeFormatError(f"The {self._entry} entry nests values more than {MAX_NESTING} deep.")
+        self._depth += 1
+        try:
+            return self._value(self._u8())
+        finally:
+            self._depth -= 1
+
+    def _value(self, tag: int) -> object:
         if tag == _TC_NULL:
             return None
         if tag == _TC_REFERENCE:
             return self._reference()
         if tag == _TC_ARRAY:
             return self._array()
+        if tag == _TC_STRING:
+            return self._handle(self._utf())
         if tag == _TC_BLOCKDATA:
             return self._take(self._u8())
         if tag == _TC_BLOCKDATALONG:
             return self._take(self._i32())
         if tag == _TC_OBJECT:
-            description = self._class_desc()
-            if description is None:
-                raise NativeFormatError(f"The {self._entry} entry wrote an object with no class.")
-            handle = self._reserve()
-            values = self._field_values(description)
-            read = next(iter(values.values())) if len(values) == 1 else values
-            self._handles[handle] = read
-            return read
+            return self._object()
         raise NativeFormatError(f"The {self._entry} entry holds tag {tag:#02x}, which this reader does not read.")
+
+    def _object(self) -> object:
+        """A boxed number as the number it boxes, a map as a ``dict``, anything else by field."""
+        description = self._class_desc()
+        if description is None:
+            raise NativeFormatError(f"The {self._entry} entry wrote an object with no class.")
+        handle = self._reserve()
+        values = self._field_values(description)
+        read: object = values
+        if _HASH_MAP in values:
+            read = values[_HASH_MAP]
+        elif len(values) == 1:
+            read = next(iter(values.values()))
+        self._handles[handle] = read
+        return read
 
 
 def read_java_value(data: bytes, entry: str) -> object:

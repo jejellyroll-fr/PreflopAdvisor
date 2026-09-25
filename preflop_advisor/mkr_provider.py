@@ -10,7 +10,7 @@ simulation file can replace an export is answered by code rather than by argumen
 
 It is deliberately **not** reachable from :func:`preflop_advisor.strategy.provider_for`.
 Phase 3 is what promotes a reader into the application, and its gates are listed in
-``docs/native-import.md``; three of them are not met. Until they are, this is a prototype
+``docs/native-import.md``; two of them are not met. Until they are, this is a prototype
 that the suite exercises and a user can run over their own file with
 ``scripts/mkr_report.py``, and the import paths go on pointing at an export.
 
@@ -34,21 +34,17 @@ Model                       Where it comes from
                             an edge, so a path is explicit already -- there are no
                             implied folds to fill in, which is the one way this is
                             simpler than an export.
-``StrategyResult.frequency`` the stored byte over 256, renormalised because the format
-                            rounds each action on its own.
-``StrategyResult.ev``       ``None``, always. The file holds no per-action EV: see below.
+``StrategyResult.frequency`` the stored frequency -- a signed byte for a save made for
+                            storage, an accumulated count for one made for further
+                            calculation -- renormalised over the node's actions.
+``StrategyResult.ev``       the action's EV in the tree's own chips, which is the
+                            model's unit: big blinds times ``chips_per_bb``. ``None``
+                            where the run kept no EV for that player.
 =========================== =========================================================
 
-## The EV, and why it is absent rather than zero
-
-A stored strategy is frequencies. Beside each one the archive keeps an ``int`` array of
-the same length whose values have the shape of accumulated regret -- and a regret is not
-an EV, in any unit. The four ``evs`` at the root are one number per player for the whole
-game, in an accumulated unit whose divisor is not established. So every result from here
-carries ``ev=None``, which the model already reads as "the source does not report one"
-rather than as a zero expectation. The Trainer grades on frequencies; a consumer that
-needs EVs is reading the wrong source, and finds that out from a ``None`` rather than from
-a plausible number.
+Both come from :class:`~preflop_advisor.mkr_format.MkrStructure`, which answers the same
+way whichever kind of save it read, and in the tree's child order: the solver stores a
+node's actions in reverse, and that is undone once, there.
 """
 
 from __future__ import annotations
@@ -129,8 +125,6 @@ class MkrStrategyProvider:
                 + "; ".join(f"{check.name} ({check.detail})" for check in failures)
                 + ". A reading that fails one of these is reporting some other node's frequencies."
             )
-        if structure.strategy is None:  # pragma: no cover - read_structure refuses one first
-            raise NativeFormatError(f"{structure.path} holds no stored strategy for its preflop street.")
 
     @staticmethod
     def _seat_names(settings: Mapping[str, Any], players: int) -> tuple[str, ...]:
@@ -184,8 +178,8 @@ class MkrStrategyProvider:
             ante_bb=self._ante_bb(),
             chips_per_bb=unit,
             infos=(
-                f"MonkerSolver {version_name(structure.version)}, {len(tree.decisions)} decisions, "
-                f"{structure.class_count} hand classes{spread}"
+                f"MonkerSolver {version_name(structure.version)}, saved for {structure.mode}, "
+                f"{len(tree.decisions)} decisions, {structure.class_count} hand classes{spread}"
             ),
         )
 
@@ -297,7 +291,7 @@ class MkrStrategyProvider:
         return self._index_of(node) is not None
 
     def strategy(self, node: Node, hand: str) -> tuple[StrategyResult, ...]:
-        """Every action of a node, and how often this hand takes it.
+        """Every action of a node, how often this hand takes it, and what it is worth.
 
         The hand is a dealt hand -- ``"AhKs4h3s"`` -- and is read through the class its
         cards belong to, which is what the file is indexed by. A hand of the wrong size for
@@ -305,26 +299,25 @@ class MkrStrategyProvider:
         the card selector can produce either while a user is still choosing.
 
         Frequencies are renormalised over the actions present, because the format rounds
-        each action to a byte on its own and a hand's bytes therefore sum to 256 or, about
-        once in three thousand, to 257. A class the run never stored -- 87 of the save read
-        for this module -- comes back empty rather than uniform: "nothing stored here" is
-        an answer, and a uniform strategy is not it.
+        each action on its own. A hand the file holds nothing for comes back empty rather
+        than uniform: "nothing stored here" is an answer, and a uniform strategy is not it.
         """
         index = self._index_of(node)
         hand_class = self._class_of(hand)
         if index is None or hand_class is None:
             return EMPTY_NODE
-        row = self._stored_row(index, hand_class)
-        total = sum(row)
-        if total == 0:
+        frequencies = self.structure.frequencies(index, hand_class)
+        if frequencies is None:
             return EMPTY_NODE
+        evs = self.structure.evs(index, hand_class) or (None,) * len(frequencies)
+        total = sum(frequencies)
         tree = self.structure.tree
         results: list[StrategyResult] = []
-        for child, value in zip(tree.nodes[index].children, row, strict=True):
+        for child, frequency, ev in zip(tree.nodes[index].children, frequencies, evs, strict=True):
             name = action_name(tree.nodes[child].action or 0)
             if name is None:  # pragma: no cover - refused by the action-code check
                 return EMPTY_NODE
-            results.append(StrategyResult(action=name, frequency=value / total, ev=None))
+            results.append(StrategyResult(action=name, frequency=frequency / total, ev=ev))
         return tuple(results)
 
     def _class_of(self, hand: str) -> int | None:
@@ -338,30 +331,17 @@ class MkrStrategyProvider:
             return None
         return hand_class
 
-    def _stored_row(self, index: int, hand_class: int) -> bytes:
-        """A decision node's frequency bytes for one hand class, empty when nothing is stored."""
-        strategy = self.structure.strategy
-        if strategy is None:  # pragma: no cover - the constructor refuses such a save
-            return b""
-        tree = self.structure.tree
-        frequencies = strategy.slots[tree.slot_order.index(index)].frequencies
-        if frequencies is None:  # pragma: no cover - a decision node always has one
-            return b""
-        actions = len(tree.nodes[index].children)
-        return frequencies[hand_class * actions : (hand_class + 1) * actions]
-
     def raw_frequencies(self, node: Node, hand: str) -> tuple[int, ...]:
-        """The stored bytes behind a hand, unnormalised, for a reader checking this one.
+        """The stored numbers behind a hand, in the node's action order, before any arithmetic.
 
         Not part of the protocol. It exists because the only way to compare this against
-        another implementation of the format is to compare what was *stored*, before any
-        arithmetic of ours: a byte over ``FREQUENCY_SCALE`` is the frequency, and the rounding is the
-        file's, not this module's.
+        another implementation of the format is to compare what was *stored*: half-points
+        for a save made for storage, accumulated counts for one made for calculation.
         """
         index = self._index_of(node)
         if index is None:
             return ()
-        return tuple(self._stored_row(index, class_of_hand(hand)))
+        return self.structure.raw(index, class_of_hand(hand))
 
     def hands_at(self, node: Node) -> list[str]:
         """The hands this simulation holds behind a node, as its own keys.
@@ -369,23 +349,13 @@ class MkrStrategyProvider:
         Every hand class the strategy is indexed by, spelled the way the rest of the
         application spells hands -- ``"(3K)(4A)"``, ``"AAAA"``, ``"AKs"``. A simulation
         file is not a truncated export: it holds every class, so this is the whole axis
-        rather than a sample of it, minus the classes it stored nothing for.
+        rather than a sample of it, minus the classes it holds nothing for.
         """
         index = self._index_of(node)
-        strategy = self.structure.strategy
-        if index is None or strategy is None:
+        if index is None:
             return []
-        slot = strategy.slots[self.structure.tree.slot_order.index(index)]
-        frequencies = slot.frequencies
-        if frequencies is None:  # pragma: no cover - a decision node always has one
-            return []
-        actions = len(self.structure.tree.nodes[index].children)
         keys = class_table(self.structure.cards_per_hand).key
-        return [
-            key
-            for hand_class, key in enumerate(keys)
-            if any(frequencies[hand_class * actions : (hand_class + 1) * actions])
-        ]
+        return [key for hand_class, key in enumerate(keys) if self.structure.frequencies(index, hand_class) is not None]
 
     # ------------------------------------------------------------------
     # Internals

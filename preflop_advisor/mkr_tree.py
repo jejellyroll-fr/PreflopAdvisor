@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import cached_property
 
 from .errors import NativeFormatError
 
@@ -32,6 +33,11 @@ ALLIN_CODE = 3
 MAX_DEPTH = 256
 #: How many nodes a tree may hold before the same is said of it.
 MAX_NODES = 100_000
+#: How many starting combos a range block holds per player, by hand size: every two-card
+#: and every four-card combination of a deck.
+RANGE_COMBOS: dict[int, int] = {1326: 2, 270725: 4}
+#: A range block's weights are fixed point: this is a weight of one.
+RANGE_ONE = 2_147_483_647
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,18 @@ class MkrTree:
     nodes: tuple[MkrNode, ...]
     #: Whether a fixed-point range block follows the node stream.
     has_ranges: bool
+    #: How many combos each player's starting range covers, when there is a range block.
+    range_combos: int = 0
+    #: The range block itself: one big-endian ``int32`` per player and combo.
+    ranges: bytes = field(default=b"", repr=False)
+
+    def starting_range(self, player: int) -> tuple[float, ...]:
+        """One player's starting weights, from zero to one, in the block's combo order."""
+        if not self.range_combos:
+            return ()
+        width = self.range_combos * 4
+        chunk = self.ranges[player * width : (player + 1) * width]
+        return tuple(weight / RANGE_ONE for weight in struct.unpack(f">{self.range_combos}i", chunk))
 
     @property
     def decisions(self) -> tuple[int, ...]:
@@ -115,6 +133,21 @@ class MkrTree:
             actors.append(actor)
         return tuple(actors)
 
+    def player_at(self, index: int) -> int:
+        """The player acting at a node, numbered the way the file numbers players.
+
+        :meth:`actors_to` counts seats from the one that opens; the file numbers players by
+        their place at the table and says which of them opens, so this is that rotation.
+        The committed amounts, ``hasEv`` and a calculation store's groups are all indexed
+        this way.
+        """
+        return (self.first_to_act + self.actor_of(self.nodes[index])) % self.num_players
+
+    def acts_first_at(self, index: int) -> bool:
+        """Whether the player acting at a node has not acted before on the line to it."""
+        actors = self.actors_to(index)
+        return actors[-1] not in actors[:-1]
+
     def _next_in_hand(self, actor: int, out: set[int]) -> int:
         """The next seat after ``actor`` still able to act, or the next seat if none is."""
         for offset in range(1, self.num_players + 1):
@@ -132,16 +165,16 @@ class MkrTree:
             node = self.nodes[node.parent]
         return tuple(reversed(line))
 
-    @property
+    @cached_property
     def slot_order(self) -> tuple[int, ...]:
         """The node order a stored strategy's arrays are written in.
 
-        A preorder walk that visits each node's children **last to first**. It is not the
-        order the node stream is written in: read in stream order, thirteen of the
-        fourteen strategies of the save this was measured on land on the wrong node --
-        while parsing cleanly, summing to 256 and being exactly the right length. Which is
-        why the binding is validated against the tree rather than assumed; see
-        :func:`bind_slots`.
+        A preorder walk that visits each node's children **last to first** -- the order the
+        solver keeps a node's actions in, which is the reverse of the order the node stream
+        writes its children in (see :func:`stored_action`). Read in stream order instead,
+        thirteen of the fourteen strategies of the save this was measured on land on the
+        wrong node while parsing cleanly and being exactly the right length. Which is why
+        the binding is validated against the tree rather than assumed.
         """
         order: list[int] = []
 
@@ -154,14 +187,21 @@ class MkrTree:
             walk(0)
         return tuple(order)
 
+    @cached_property
+    def slot_of(self) -> dict[int, int]:
+        """The inverse of :attr:`slot_order`: the slot each node's arrays are written at."""
+        return {index: slot for slot, index in enumerate(self.slot_order)}
+
 
 def read_tree(data: bytes) -> MkrTree:
     """The tree entry, which is plain big-endian ``DataOutputStream`` fields.
 
     The layout, in order: a 64-bit signature, a 32-bit internal format, the player count,
     which player opens, the street, one committed amount per player **only at street
-    zero**, the dead money, one stack per player, the node stream, and a flag for the
-    optional range block. The node stream is preorder: each node writes its child count as
+    zero**, the dead money, one stack per player, the node stream, a flag for the optional
+    range block, and the block: one fixed-point ``int32`` per player and starting combo,
+    1326 of them for a two-card game and 270725 for a four-card one. The node stream is
+    preorder: each node writes its child count as
     a 16-bit value, and each *edge* writes its action code the same way immediately before
     the child it leads to. The root has no edge into it and therefore no action code.
 
@@ -182,7 +222,8 @@ def read_tree(data: bytes) -> MkrTree:
         dead_money = cursor.i32()
         stacks = tuple(cursor.i32() for _ in range(num_players))
         nodes = _read_nodes(cursor)
-        has_ranges = _read_range_flag(cursor)
+        has_ranges = bool(cursor.byte())
+        combos, ranges = _read_ranges(cursor, num_players) if has_ranges else (0, b"")
     except struct.error as error:
         raise NativeFormatError(f"The tree entry ends in the middle of a field ({error}).") from error
 
@@ -204,6 +245,8 @@ def read_tree(data: bytes) -> MkrTree:
         stacks=stacks,
         nodes=nodes,
         has_ranges=has_ranges,
+        range_combos=combos,
+        ranges=ranges,
     )
 
 
@@ -265,17 +308,23 @@ def _read_nodes(cursor: _TreeCursor) -> tuple[MkrNode, ...]:
     return tuple(nodes)
 
 
-def _read_range_flag(cursor: _TreeCursor) -> bool:
-    """The flag for the optional range block, which is refused when it is set."""
-    has_ranges = bool(cursor.byte())
-    if has_ranges:
-        raise NativeFormatError(
-            "The tree entry carries a range block after its node stream -- a tree solved from "
-            "given starting ranges -- and that block's layout is not established here, so the "
-            "save is refused rather than read around it. Save the simulation without starting "
-            "ranges, or export its ranges instead."
-        )
-    return has_ranges
+def _read_ranges(cursor: _TreeCursor, players: int) -> tuple[int, bytes]:
+    """The range block: every player's weight for every starting combo of the game.
+
+    The block states neither the game nor its own length, so the combo count is the one
+    that accounts for what is left of the entry exactly -- and a block that matches none
+    is refused, since reading it as either would misplace every weight after the first.
+    """
+    left = len(cursor.data) - cursor.offset
+    for combos in RANGE_COMBOS:
+        if left == players * combos * 4:
+            block = cursor.data[cursor.offset :]
+            cursor.offset = len(cursor.data)
+            return combos, block
+    raise NativeFormatError(
+        f"The tree entry carries a range block of {left} bytes, which is no whole number of weights for "
+        f"{players} players over {' or '.join(str(combos) for combos in RANGE_COMBOS)} combos."
+    )
 
 
 def chips_per_bb(tree: MkrTree) -> float | None:
@@ -298,6 +347,17 @@ def chips_per_bb(tree: MkrTree) -> float | None:
         logger.debug("The largest committed amount is not the last seat to act; no unit is derived")
         return None
     return float(largest)
+
+
+def stored_action(child: int, actions: int) -> int:
+    """Where a node's ``child``-th child sits in the arrays stored for that node.
+
+    The solver keeps a node's actions in the reverse of the order the tree entry writes its
+    children in, and every stored array -- frequencies and EVs, in both kinds of save --
+    follows the solver: action ``i`` of a node with ``n`` actions is child ``n - 1 - i``.
+    The root's first child in the file, a fold, is stored as its *last* action.
+    """
+    return actions - 1 - child
 
 
 def action_name(code: int) -> str | None:

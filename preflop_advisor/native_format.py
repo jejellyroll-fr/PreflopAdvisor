@@ -315,14 +315,14 @@ def _archive_members(source: str) -> tuple[tuple[str, ...], str]:
     we cannot read, and knowing that a save holds a thousand of them is the kind of fact
     Phase 1 of issue #24 is for.
 
-    The names go through :func:`~preflop_advisor.mkr_format.decode_entry_name` because a
+    The names go through :func:`~preflop_advisor.mkr_archive.decode_entry_name` because a
     real save proved this needs doing. MonkerSolver writes its entry names in UTF-16BE with
     a byte-order mark, and a stock ZIP reader both mis-decodes them *and* truncates each one
     at its first NUL byte -- so every member of a twenty-five member archive was reported
     under the same two unprintable characters. A diagnostic that names the wrong thing is
     worse than one that names nothing.
     """
-    from .mkr_format import decode_entry_name
+    from .mkr_archive import decode_entry_name
 
     try:
         with zipfile.ZipFile(source) as archive:

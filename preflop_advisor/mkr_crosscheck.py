@@ -4,12 +4,12 @@
 This is the instrument for the one promotion gate of issue #24 that nothing inside a
 ``.mkr`` can close. :mod:`preflop_advisor.mkr_format` relates the numbers a save states
 about itself -- its infoset count against its decision count times its class count, its
-frequency bytes against 256 -- and every one of those checks a reading against *itself*.
+fold EVs against the blinds -- and every one of those checks a reading against *itself*.
 A reading can be internally perfect and still be of the wrong thing.
 
 What settles it is the solver's own export of the same simulation, because it is produced
 by the program that wrote the save, in a format this application has read since before any
-of this existed. Three things get compared, in increasing order of what they prove:
+of this existed. Four things get compared, in increasing order of what they prove:
 
 1. **Topology.** An export writes one ``.rng`` file per *action*, named by the action codes
    from the root -- ``0.3.1.rng`` is the file for taking action ``1`` after ``0`` then
@@ -22,10 +22,12 @@ of this existed. Three things get compared, in increasing order of what they pro
    hand class. The two must cover the same keys, which is the bijection
    :mod:`preflop_advisor.mkr_classes` asserts, seen from the solver's side instead of from
    an enumeration of ours.
-3. **The values.** Every hand of every node, the stored byte against the exported
-   frequency. This is the gate. A save's frequency is a byte over 256, so the comparison is
-   to the format's own quantum (:data:`DEFAULT_TOLERANCE`) and not to floating-point
-   equality.
+3. **The values.** Every hand of every node, the stored frequency against the exported
+   one. This is the gate. A save made for storage keeps a frequency to half a percentage
+   point, so the comparison is to that quantum (:data:`DEFAULT_TOLERANCE`) and not to
+   floating-point equality.
+4. **The EVs**, where both sides have one: the save's EV of the action against the
+   exported one, in the same chips, to within :data:`EV_TOLERANCE`.
 
 The export is read here directly -- ``hand`` / ``freq;ev`` line pairs through
 :func:`~preflop_advisor.rng_format.parse_values`, hands through
@@ -37,7 +39,7 @@ names, no database, no sizing resolution. Two paths in, one report out.
 **A comparison is only evidence when the export is of the same simulation.** An export of
 the same *tree* solved on another board agrees on topology and on the hand axis and
 disagrees on every value, which is a true report of two different runs rather than a
-failure of the reader. :attr:`Crosscheck.summary` says which of the three agreed, so the
+failure of the reader. :attr:`Crosscheck.summary` says which of them agreed, so the
 difference is visible rather than collapsed into one boolean.
 """
 
@@ -51,17 +53,22 @@ from dataclasses import dataclass, field
 from .errors import NativeFormatError
 from .hand_convert_helper import normalize_monker_hand
 from .mkr_classes import class_table
-from .mkr_format import FREQUENCY_SCALE, MkrStructure
+from .mkr_format import MkrStructure
+from .mkr_stored import FREQUENCY_QUANTUM
 from .rng_format import parse_values
 
 logger = logging.getLogger(__name__)
 
 #: What an exported range file is called.
 RANGE_ENDING = ".rng"
-#: How close a stored frequency has to be to an exported one. A save keeps a frequency as
-#: one byte, so a byte is the finest it can express: anything inside one is agreement, and
-#: anything outside it is a difference the format could have represented and did not.
-DEFAULT_TOLERANCE = 1.0 / FREQUENCY_SCALE
+#: How close a stored frequency has to be to an exported one. A save made for storage keeps
+#: a frequency to half a percentage point, so that is the finest it can express: anything
+#: inside it is agreement, and anything outside it is a difference the format could have
+#: represented and did not.
+DEFAULT_TOLERANCE = FREQUENCY_QUANTUM
+#: How close a stored EV has to be to an exported one, in chips: a stored EV is rounded to
+#: the chip, and the export rounds its own.
+EV_TOLERANCE = 1.0
 #: How many differing hands a report names before it stops listing them. The count is
 #: whole either way -- see :attr:`Crosscheck.differing`.
 MISMATCH_LIMIT = 20
@@ -110,6 +117,10 @@ class Crosscheck:
     missing: int
     mismatches: tuple[Mismatch, ...]
     largest: float
+    #: EVs compared where both the save and the export hold one, and how many differed.
+    ev_compared: int = 0
+    ev_differing: int = 0
+    ev_largest: float = 0.0
 
     @property
     def topology_agrees(self) -> bool:
@@ -124,9 +135,14 @@ class Crosscheck:
         return self.differing == 0 and self.missing == 0 and self.compared > 0
 
     @property
+    def evs_agree(self) -> bool:
+        """Whether every EV both sides hold matches; true when neither side holds one."""
+        return self.ev_differing == 0
+
+    @property
     def agrees(self) -> bool:
         """Whether the export is of this simulation and every number of it matches."""
-        return self.topology_agrees and self.axis_agrees and self.values_agree
+        return self.topology_agrees and self.axis_agrees and self.values_agree and self.evs_agree
 
     def summary(self) -> str:
         """One line per verdict, so a partial agreement reads as one."""
@@ -139,7 +155,10 @@ class Crosscheck:
             f"values: {_verdict(self.values_agree)} "
             f"({self.compared} compared within {self.tolerance:.5f}, {self.differing} differing, "
             f"{self.missing} missing from an action file, "
-            f"{self.not_stored} skipped as unstored, largest difference {self.largest:.5f})"
+            f"{self.not_stored} skipped as unstored, largest difference {self.largest:.5f}); "
+            f"EVs: {_verdict(self.evs_agree) if self.ev_compared else 'not compared'} "
+            f"({self.ev_compared} compared within {EV_TOLERANCE:g}, {self.ev_differing} differing, "
+            f"largest difference {self.ev_largest:g})"
         )
 
 
@@ -185,14 +204,19 @@ def _codes_of(stem: str) -> tuple[int, ...]:
 
 
 def read_export_action(path: str) -> dict[str, float]:
-    """The frequency of one exported action, by hand, as the application reads a range file.
+    """The frequency of one exported action, by hand: :func:`read_export_rows` without the EVs."""
+    return {hand: frequency for hand, (frequency, _) in read_export_rows(path).items()}
+
+
+def read_export_rows(path: str) -> dict[str, tuple[float, float | None]]:
+    """The frequency and EV of one exported action, by hand, as the application reads a range file.
 
     Hands are normalised the way every other read path normalises them, so a Monker 2
     export's ``"(2A)AA"`` and a canonical ``"AA(2A)"`` are one key. A line that is neither
     a hand nor a pair of values is skipped with a note in the log: a cross-check reports
     what it could compare, and a malformed export line is the export's business.
     """
-    frequencies: dict[str, float] = {}
+    rows: dict[str, tuple[float, float | None]] = {}
     try:
         with open(path, encoding="utf-8") as handle:
             lines = handle.read().splitlines()
@@ -219,26 +243,20 @@ def read_export_action(path: str) -> dict[str, float]:
             pending = None
             continue
         try:
-            frequencies[normalize_monker_hand(pending)] = values[0]
+            rows[normalize_monker_hand(pending)] = values
         except (AttributeError, IndexError, KeyError):
             logger.debug("Skipping unreadable hand %r in %s", pending, path)
         pending = None
-    return frequencies
+    return rows
 
 
 def _stored_row(structure: MkrStructure, node: int, hand_class: int) -> tuple[float, ...]:
     """A node's stored frequencies for one hand class, renormalised, or ``()`` if unstored."""
-    strategy = structure.strategy
-    if strategy is None:  # pragma: no cover - read_structure refuses such a save
+    frequencies = structure.frequencies(node, hand_class)
+    if frequencies is None:
         return ()
-    slot = strategy.slots[structure.tree.slot_order.index(node)]
-    frequencies = slot.frequencies
-    if frequencies is None:  # pragma: no cover - a decision node always has one
-        return ()
-    actions = len(structure.tree.nodes[node].children)
-    row = frequencies[hand_class * actions : (hand_class + 1) * actions]
-    total = sum(row)
-    return () if total == 0 else tuple(value / total for value in row)
+    total = sum(frequencies)
+    return tuple(value / total for value in frequencies)
 
 
 def _node_and_action(structure: MkrStructure, codes: tuple[int, ...]) -> tuple[int, int] | None:
@@ -267,6 +285,9 @@ class _Tally:
     differing: int = 0
     largest: float = 0.0
     mismatches: list[Mismatch] = field(default_factory=list)
+    ev_compared: int = 0
+    ev_differing: int = 0
+    ev_largest: float = 0.0
     hands_by_stem: dict[str, set[str]] = field(default_factory=dict)
 
 
@@ -275,13 +296,13 @@ def _compare_action(
     structure: MkrStructure,
     stem: str,
     located: tuple[int, int],
-    frequencies: dict[str, float],
+    rows: dict[str, tuple[float, float | None]],
     tolerance: float,
 ) -> None:
-    """Compare one exported action file with the stored frequencies of the action it names."""
+    """Compare one exported action file with the stored numbers of the action it names."""
     node, action = located
     index_of_key = class_table(structure.cards_per_hand).index_of_key
-    for hand, exported_frequency in frequencies.items():
+    for hand, (exported_frequency, exported_ev) in rows.items():
         hand_class = index_of_key.get(hand)
         if hand_class is None:
             continue
@@ -296,6 +317,19 @@ def _compare_action(
             tally.differing += 1
             if len(tally.mismatches) < MISMATCH_LIMIT:
                 tally.mismatches.append(Mismatch(stem=stem, hand=hand, stored=row[action], exported=exported_frequency))
+        _compare_ev(tally, structure.evs(node, hand_class), action, exported_ev)
+
+
+def _compare_ev(tally: _Tally, stored: tuple[float | None, ...] | None, action: int, exported: float | None) -> None:
+    """One hand's EV of one action, when both the save and the export hold one."""
+    value = stored[action] if stored is not None else None
+    if value is None or exported is None or not math.isfinite(exported):
+        return
+    tally.ev_compared += 1
+    difference = abs(value - exported)
+    tally.ev_largest = max(tally.ev_largest, difference)
+    if difference > EV_TOLERANCE:
+        tally.ev_differing += 1
 
 
 def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_TOLERANCE) -> Crosscheck:
@@ -305,8 +339,8 @@ def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_
     :param folder: An exported range folder -- the files themselves, not the ``ranges/``
         container above them.
     :param tolerance: How far a frequency may differ and still count as agreement. The
-        default is one frequency byte, which is the finest difference the save could have
-        expressed.
+        default is half a percentage point, which is the finest difference a save made for
+        storage can express.
     :raises NativeFormatError: if the folder holds no range files, or the save holds no
         strategy to compare.
     """
@@ -324,9 +358,9 @@ def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_
         located = _node_and_action(structure, _codes_of(stem))
         if located is None:  # pragma: no cover - a shared stem is a path of this tree
             continue
-        frequencies = read_export_action(os.path.join(folder, f"{stem}{RANGE_ENDING}"))
-        tally.hands_by_stem[stem] = set(frequencies)
-        _compare_action(tally, structure, stem, located, frequencies, tolerance)
+        rows = read_export_rows(os.path.join(folder, f"{stem}{RANGE_ENDING}"))
+        tally.hands_by_stem[stem] = set(rows)
+        _compare_action(tally, structure, stem, located, rows, tolerance)
     export_hands = set().union(*tally.hands_by_stem.values())
 
     # Every action file is held to the whole axis the export names, not only to the rows it
@@ -346,4 +380,7 @@ def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_
         missing=sum(len(export_hands - hands) for hands in tally.hands_by_stem.values()),
         mismatches=tuple(tally.mismatches),
         largest=tally.largest,
+        ev_compared=tally.ev_compared,
+        ev_differing=tally.ev_differing,
+        ev_largest=tally.ev_largest,
     )

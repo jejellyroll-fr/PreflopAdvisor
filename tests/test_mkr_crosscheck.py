@@ -48,17 +48,33 @@ SAME_RUN: dict[str, dict[str, float]] = {
 }
 #: The one hand the synthetic save stores nothing for, at the two actions of its root.
 UNSTORED_AT_ROOT = 2
+#: What each action of the synthetic save is worth, by file stem: every hand's EV, and the
+#: hands worth something else. Folding costs the blind; the rest is the save's own numbers.
+SAME_RUN_EVS: dict[str, tuple[float, dict[str, float]]] = {
+    "0": (-1000.0, {}),
+    "3": (500.0, {"AA": 1500.0}),
+    "3.0": (-2000.0, {}),
+    "3.1": (-500.0, {"AA": 2600.0}),
+}
 
 
-def write_export(folder, actions: dict[str, dict[str, float]], default: float = 0.5, hands=None) -> str:
-    """An exported range folder: one ``<action codes>.rng`` per action, ``hand``/``freq;ev``."""
+def write_export(folder, actions: dict[str, dict[str, float]], default: float = 0.5, hands=None, evs=None) -> str:
+    """An exported range folder: one ``<action codes>.rng`` per action, ``hand``/``freq;ev``.
+
+    An action with no EV here is written the way Monker writes a hand without one: the
+    frequency alone.
+    """
     os.makedirs(folder, exist_ok=True)
     keys = class_table(2).key if hands is None else hands
+    evs = SAME_RUN_EVS if evs is None else evs
     for stem, overrides in actions.items():
+        ev_default, ev_overrides = evs.get(stem, (None, {}))
         lines: list[str] = []
         for key in keys:
             lines.append(key)
-            lines.append(f"{overrides.get(key, default)};0.0")
+            ev = ev_overrides.get(key, ev_default)
+            frequency = overrides.get(key, default)
+            lines.append(f"{frequency}" if ev is None else f"{frequency};{ev}")
         with open(os.path.join(folder, f"{stem}.rng"), "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
     return str(folder)
@@ -138,7 +154,7 @@ def test_an_export_file_that_cannot_be_read_is_named(tmp_path):
 # Comparing
 
 
-def test_an_export_of_the_same_run_agrees_on_all_three_counts(structure, export):
+def test_an_export_of_the_same_run_agrees_on_every_count(structure, export):
     report = crosscheck(structure, export())
 
     assert report.topology_agrees
@@ -150,11 +166,33 @@ def test_an_export_of_the_same_run_agrees_on_all_three_counts(structure, export)
     assert report.not_stored == UNSTORED_AT_ROOT
     assert report.differing == 0
     assert report.mismatches == ()
+    assert report.evs_agree
+    assert report.ev_compared == report.compared
     assert "topology: agree" in report.summary()
+    assert "EVs: agree" in report.summary()
 
 
-def test_a_difference_smaller_than_one_frequency_byte_is_not_a_difference(structure, export):
-    """A save keeps a frequency as one byte, so a byte is the finest it can disagree by."""
+def test_an_ev_the_export_states_differently_is_counted(structure, export):
+    """An EV is compared to the chip: the save rounds to one, and so does the export."""
+    evs = {**SAME_RUN_EVS, "3": (500.0, {"AA": 1400.0})}
+    report = crosscheck(structure, export(evs=evs))
+    assert report.values_agree
+    assert not report.evs_agree
+    assert not report.agrees
+    assert report.ev_differing == 1
+    assert report.ev_largest == pytest.approx(100.0)
+    assert "EVs: DIFFER" in report.summary()
+
+
+def test_an_export_without_evs_compares_frequencies_only(structure, export):
+    report = crosscheck(structure, export(evs={}))
+    assert report.ev_compared == 0
+    assert report.agrees
+    assert "EVs: not compared" in report.summary()
+
+
+def test_a_difference_smaller_than_the_stored_quantum_is_not_a_difference(structure, export):
+    """A save keeps a frequency to half a point, so that is the finest it can disagree by."""
     nudged = {**SAME_RUN, "0": {**SAME_RUN["0"], "AA": 0.25 + DEFAULT_TOLERANCE / 2}}
     report = crosscheck(structure, export(nudged))
 
@@ -162,7 +200,7 @@ def test_a_difference_smaller_than_one_frequency_byte_is_not_a_difference(struct
     assert report.largest == pytest.approx(DEFAULT_TOLERANCE / 2)
 
 
-def test_a_difference_larger_than_one_byte_is_named_with_its_hand_and_node(structure, export):
+def test_a_difference_larger_than_the_quantum_is_named_with_its_hand_and_node(structure, export):
     report = crosscheck(structure, export({**SAME_RUN, "0": {**SAME_RUN["0"], "AA": 0.26}}))
 
     assert not report.values_agree
@@ -248,7 +286,7 @@ def test_a_frequency_that_is_not_a_number_cannot_agree(structure, export):
     with open(path, encoding="utf-8") as handle:
         text = handle.read()
     with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text.replace("AA\n0.25;0.0\n", "AA\nnan;0.0\n", 1))
+        handle.write(text.replace("AA\n0.25;-1000.0\n", "AA\nnan;-1000.0\n", 1))
 
     assert "AA" not in read_export_action(path)
     report = crosscheck(structure, folder)
