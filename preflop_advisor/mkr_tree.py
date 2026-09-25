@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from functools import cached_property
 
 from .errors import NativeFormatError
+from .sizings import sizing_for_code
+from .table_state import raise_to
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +28,10 @@ PERCENT_BASE = 40000
 #: are the generic ones :mod:`preflop_advisor.strategy` uses for a line of play, so a node
 #: read out of a simulation file is spelled the way a node read out of an export is.
 ACTION_NAMES: dict[int, str] = {0: "Fold", 1: "Call", 2: "Pot", 3: "Allin"}
-#: The codes after which a seat takes no further part in the betting.
+#: The codes whose cost is known without a pot: a fold puts nothing in, a call matches the
+#: largest contribution, and a shove puts in the whole stack.
 FOLD_CODE = 0
+CALL_CODE = 1
 ALLIN_CODE = 3
 #: How deep a node stream is followed before it is called malformed rather than deep.
 MAX_DEPTH = 256
@@ -117,21 +121,50 @@ class MkrTree:
         """The seat that took each action on the line to a node, then the seat to act there.
 
         Seats are counted from the first to act and take turns in that order, except that a
-        seat which has folded or is all in is past: after UTG folds and the blinds raise and
-        re-raise, the next to act is the small blind, not UTG again. Depth alone says that
-        only for as long as nobody has left the hand. It is only true while no chance node
-        intervenes, which is why :attr:`MkrStructure.preflop_only` is a condition of
-        reading a node at all.
+        seat which has folded or has nothing left behind is past: after UTG folds and the
+        blinds raise and re-raise, the next to act is the small blind, not UTG again. A seat
+        is out of chips after a shove, and equally after a call or a raise that takes its
+        whole stack -- which the action code alone does not say, so every seat's
+        contribution is played out from the blinds up, with the same pot-limit arithmetic
+        the table view uses. It is only true while no chance node intervenes, which is why
+        :attr:`MkrStructure.preflop_only` is a condition of reading a node at all.
         """
         out: set[int] = set()
+        put_in: list[float] = [float(self._posted(seat)) for seat in range(self.num_players)]
         actor = 0
         actors = [actor]
         for code in self.line_to(index):
-            if code in (FOLD_CODE, ALLIN_CODE):
+            put_in[actor] = self._contribution(code, actor, put_in)
+            if code == FOLD_CODE or put_in[actor] >= self._stack(actor):
                 out.add(actor)
             actor = self._next_in_hand(actor, out)
             actors.append(actor)
         return tuple(actors)
+
+    def _posted(self, seat: int) -> int:
+        """What a seat, counted from the first to act, has in before anyone acts."""
+        return self.committed[(self.first_to_act + seat) % self.num_players] if self.committed else 0
+
+    def _stack(self, seat: int) -> int:
+        return self.stacks[(self.first_to_act + seat) % self.num_players]
+
+    def _contribution(self, code: int, seat: int, put_in: list[float]) -> float:
+        """What a seat has in after taking an action, never more than its stack.
+
+        A code without a known cost -- a fold, or one this reader has no reading for --
+        leaves the contribution where it was.
+        """
+        stack = self._stack(seat)
+        if code == ALLIN_CODE:
+            return float(stack)
+        if code == CALL_CODE:
+            return min(max(put_in), stack)
+        sizing = sizing_for_code(str(code))
+        if sizing.kind != "pot":
+            return put_in[seat]
+        pot = self.dead_money + sum(put_in)
+        total = raise_to(sizing, pot, max(put_in) - put_in[seat], put_in[seat], stack, pot_limit=False)
+        return min(total, stack)
 
     def player_at(self, index: int) -> int:
         """The player acting at a node, numbered the way the file numbers players.

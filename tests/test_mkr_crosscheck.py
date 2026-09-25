@@ -294,6 +294,15 @@ def test_a_frequency_that_is_not_a_number_cannot_agree(structure, export):
     assert not report.values_agree
 
 
+def test_an_export_whose_files_hold_no_hands_differs_in_its_axis(structure, export):
+    """Every file there and none of them readable: the topology agrees, the axis cannot."""
+    report = crosscheck(structure, export(hands=[]))
+    assert report.topology_agrees
+    assert not report.axis_agrees
+    assert len(report.hands_only_in_save) == HOLDEM_CLASSES
+    assert not report.agrees
+
+
 def test_a_tolerance_the_caller_sets_is_the_one_used(structure, export):
     nudged = {**SAME_RUN, "0": {**SAME_RUN["0"], "AA": 0.30}}
 

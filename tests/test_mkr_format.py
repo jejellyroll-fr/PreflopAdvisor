@@ -631,10 +631,37 @@ def test_a_seat_that_folded_is_skipped_when_the_action_comes_back_around():
 
 
 def test_a_seat_that_is_all_in_is_past_as_well():
-    # root -[allin]-> P1 -[call]-> P2 -[raise]-> P1: P0 cannot act again.
+    # root -[allin]-> P1 -[call]-> P2 -[raise]-> P1: P0 shoved 5000 and cannot act again,
+    # while P1 called it with 5000 of 10000 and still can.
     nodes = struct.pack(">9H", 1, 3, 1, 1, 1, 40050, 1, 0, 0)
-    tree = read_tree(tree_entry(players=3, committed=(0, 1000, 2000), stacks=(10000, 10000, 10000), nodes=nodes))
+    tree = read_tree(tree_entry(players=3, committed=(0, 1000, 2000), stacks=(5000, 10000, 10000), nodes=nodes))
     assert tree.actors_to(3) == (0, 1, 2, 1)
+
+
+def test_a_seat_whose_call_takes_its_whole_stack_is_past():
+    """A call is an all-in too when it costs everything: the code alone does not say so.
+
+    P0 raises half the pot to 4500, P1 calls with a stack of 3000 and is all in, P2 raises
+    and P0 raises again -- and the next to act is P2, not P1.
+    """
+    nodes = struct.pack(">11H", 1, 40050, 1, 1, 1, 40050, 1, 40050, 1, 0, 0)
+    tree = read_tree(tree_entry(players=3, committed=(0, 1000, 2000), stacks=(30000, 3000, 30000), nodes=nodes))
+    assert tree.actors_to(4) == (0, 1, 2, 0, 2)
+    deep = read_tree(tree_entry(players=3, committed=(0, 1000, 2000), stacks=(30000, 30000, 30000), nodes=nodes))
+    assert deep.actors_to(4) == (0, 1, 2, 0, 1)
+
+
+def test_a_code_with_no_known_cost_leaves_the_contribution_alone():
+    nodes = struct.pack(">7H", 1, 5, 1, 1, 1, 0, 0)
+    tree = read_tree(tree_entry(players=3, committed=(0, 1000, 2000), stacks=(10000, 10000, 10000), nodes=nodes))
+    assert tree.actors_to(3) == (0, 1, 2, 0)
+
+
+def test_bytes_after_a_stored_strategy_s_zlib_stream_are_refused(tmp_path):
+    entry = saved_run()["storedstrategy0"] + b"trailing"
+    path = write_mkr(tmp_path / "trailing.mkr", saved_run(storedstrategy0=entry))
+    with pytest.raises(NativeFormatError, match="8 bytes after its zlib stream"):
+        read_structure(path)
 
 
 def test_a_member_declaring_more_than_the_reader_holds_is_refused(run_path, monkeypatch):

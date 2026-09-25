@@ -112,6 +112,11 @@ class MkrArchive:
             raise NativeFormatError(
                 f"The {name} entry of {self.path} is not the zlib stream a stored strategy is (truncated)."
             )
+        if inflater.unused_data:
+            raise NativeFormatError(
+                f"The {name} entry of {self.path} carries {len(inflater.unused_data)} bytes after its zlib "
+                "stream, which a stored strategy never does."
+            )
         return data
 
 

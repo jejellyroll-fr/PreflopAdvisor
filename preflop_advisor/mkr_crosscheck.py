@@ -372,7 +372,7 @@ def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_
         edges=tuple(shared),
         edges_only_in_save=tuple(sorted(save_edges - exported, key=_codes_of)),
         edges_only_in_export=tuple(sorted(exported - save_edges, key=_codes_of)),
-        hands_only_in_save=tuple(sorted(save_hands - export_hands)) if export_hands else (),
+        hands_only_in_save=tuple(sorted(save_hands - export_hands)),
         hands_only_in_export=tuple(sorted(export_hands - save_hands)),
         compared=tally.compared,
         not_stored=tally.not_stored,
