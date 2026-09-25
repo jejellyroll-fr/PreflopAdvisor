@@ -61,11 +61,11 @@ logger = logging.getLogger(__name__)
 
 #: What an exported range file is called.
 RANGE_ENDING = ".rng"
-#: How close a stored frequency has to be to an exported one. A save made for storage keeps
-#: a frequency to half a percentage point, so that is the finest it can express: anything
-#: inside it is agreement, and anything outside it is a difference the format could have
-#: represented and did not.
-DEFAULT_TOLERANCE = FREQUENCY_QUANTUM
+#: How close a stored frequency has to be to an exported one. A save made for storage rounds
+#: a frequency to the nearest half percentage point, so it is off by at most half of that:
+#: anything inside is agreement, and anything outside is a difference the rounding cannot
+#: explain. The margin on top is floating point's, not an allowance.
+DEFAULT_TOLERANCE = FREQUENCY_QUANTUM / 2 + 1e-9
 #: How close a stored EV has to be to an exported one, in chips: a stored EV is rounded to
 #: the chip, and the export rounds its own.
 EV_TOLERANCE = 1.0
@@ -347,8 +347,8 @@ def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_
     :param folder: An exported range folder -- the files themselves, not the ``ranges/``
         container above them.
     :param tolerance: How far a frequency may differ and still count as agreement. The
-        default is half a percentage point, which is the finest difference a save made for
-        storage can express.
+        default is half of the half percentage point a save made for storage rounds to, which
+        is the most that rounding can move a frequency.
     :raises NativeFormatError: if the folder holds no range files, or the save holds no
         strategy to compare.
     """

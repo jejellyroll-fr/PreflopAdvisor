@@ -202,7 +202,7 @@ def test_an_export_without_evs_compares_frequencies_only(structure, export):
 
 
 def test_a_difference_smaller_than_the_stored_quantum_is_not_a_difference(structure, export):
-    """A save keeps a frequency to half a point, so that is the finest it can disagree by."""
+    """Rounding to the nearest half point moves a frequency by at most a quarter of one."""
     nudged = {**SAME_RUN, "0": {**SAME_RUN["0"], "AA": 0.25 + DEFAULT_TOLERANCE / 2}}
     report = crosscheck(structure, export(nudged))
 
@@ -311,6 +311,13 @@ def test_an_export_whose_files_hold_no_hands_differs_in_its_axis(structure, expo
     assert not report.axis_agrees
     assert len(report.hands_only_in_save) == HOLDEM_CLASSES
     assert not report.agrees
+
+
+def test_a_difference_rounding_to_another_stored_value_is_a_difference(structure, export):
+    """0.254 would have been stored as 0.255, so it cannot be the frequency stored as 0.250."""
+    report = crosscheck(structure, export({**SAME_RUN, "0": {**SAME_RUN["0"], "AA": 0.254}}))
+    assert not report.values_agree
+    assert report.differing == 1
 
 
 def test_a_tolerance_the_caller_sets_is_the_one_used(structure, export):

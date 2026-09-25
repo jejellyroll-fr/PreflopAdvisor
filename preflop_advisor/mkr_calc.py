@@ -36,6 +36,7 @@ exactly as wide as its nodes need.
 from __future__ import annotations
 
 import math
+import sys
 from array import array
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -145,7 +146,8 @@ def _read_reg(archive: MkrArchive) -> tuple[float, object]:
             f"The {REG_ENTRY} entry of {archive.path} is not the scale and two arrays its layout {REG_LAYOUT} holds."
         )
     scale = float(value[0])
-    if not math.isfinite(scale) or scale <= 0:
+    # A subnormal scale is finite and positive and still turns a finite EV into an infinity.
+    if not math.isfinite(scale) or scale < sys.float_info.min:
         raise NativeFormatError(
             f"The {REG_ENTRY} entry of {archive.path} scales its EVs by {scale}, which no EV can be divided by."
         )
@@ -270,7 +272,8 @@ class CalcSource:
             # "EV weights" check reports.
             return (None,) * actions
         regrets = row[start : start + actions]
-        return tuple((regret + value) / (weight * self.scale) for regret in reversed(regrets))
+        evs = ((regret + value) / (weight * self.scale) for regret in reversed(regrets))
+        return tuple(ev if math.isfinite(ev) else None for ev in evs)
 
     def describe(self) -> str:
         kept = [group for group, rows in enumerate(self.ev_rows) if rows is not None]

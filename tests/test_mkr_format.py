@@ -19,6 +19,7 @@ a real save is not this repository's to redistribute.
 import hashlib
 import os
 import struct
+import sys
 import zipfile
 import zlib
 from array import array
@@ -1163,11 +1164,26 @@ def test_ev_rows_for_fewer_hands_than_the_average_fail_a_check_rather_than_crash
     assert structure.evs(0, HOLDEM_CLASSES - 1) is None
 
 
-@pytest.mark.parametrize("scale", [float("nan"), float("inf"), 0.0, -2.0])
+@pytest.mark.parametrize("scale", [float("nan"), float("inf"), 0.0, -2.0, 5e-324])
 def test_a_scale_no_ev_can_be_divided_by_is_refused(tmp_path, scale):
     path = write_mkr(tmp_path / "bad-scale.mkr", calc_run(reg=reg_entry(scale, [None] * 8, [None] * 8)))
     with pytest.raises(NativeFormatError, match="which no EV can be divided by"):
         read_structure(path)
+
+
+def test_an_ev_that_overflows_to_an_infinity_is_no_ev(tmp_path):
+    """The smallest normal scale is accepted, and an EV it cannot hold comes back as none."""
+    path = write_mkr(
+        tmp_path / "overflow.mkr", calc_run(reg=reg_entry(sys.float_info.min, [None] * 8, _default_ev_groups()))
+    )
+    assert read_structure(path).evs(0, class_of_hand("AsAd")) == (None, None)
+
+
+def _default_ev_groups():
+    ev_groups = [None] * 8
+    ev_groups[0] = _hand_rows(_ev_block(ROOT_EVS, 10, 2000), {})
+    ev_groups[4] = _hand_rows(_ev_block(FACED_EVS, 5, 0), {})
+    return ev_groups
 
 
 def test_a_negative_accumulated_count_fails_a_check_and_is_no_frequency(tmp_path):
