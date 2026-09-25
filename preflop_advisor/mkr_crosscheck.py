@@ -24,8 +24,8 @@ of this existed. Four things get compared, in increasing order of what they prov
    an enumeration of ours.
 3. **The values.** Every hand of every node, the stored frequency against the exported
    one. This is the gate. A save made for storage keeps a frequency to half a percentage
-   point, so the comparison is to that quantum (:data:`DEFAULT_TOLERANCE`) and not to
-   floating-point equality.
+   point and an export writes it to a thousandth, so the comparison is to what those two
+   roundings allow (:func:`tolerance_for`) and not to floating-point equality.
 4. **The EVs**, where both sides have one: the save's EV of the action against the
    exported one, in the same chips, to within :data:`EV_TOLERANCE`.
 
@@ -61,11 +61,18 @@ logger = logging.getLogger(__name__)
 
 #: What an exported range file is called.
 RANGE_ENDING = ".rng"
+#: The step an export writes a frequency to: a thousandth, as every exported range file
+#: read so far spells it (``0.125``, ``0.002``, never a fourth decimal).
+EXPORT_QUANTUM = 0.001
+#: How close a calculation save's frequency has to be to an exported one. A ratio of
+#: accumulated counts is not rounded at all, so only the export's own rounding -- half a
+#: thousandth -- separates the two. The margin on top is floating point's, not an allowance.
+CALCULATION_TOLERANCE = EXPORT_QUANTUM / 2 + 1e-9
 #: How close a stored frequency has to be to an exported one. A save made for storage rounds
-#: a frequency to the nearest half percentage point, so it is off by at most half of that:
-#: anything inside is agreement, and anything outside is a difference the rounding cannot
-#: explain. The margin on top is floating point's, not an allowance.
-DEFAULT_TOLERANCE = FREQUENCY_QUANTUM / 2 + 1e-9
+#: a frequency to the nearest half percentage point, so it is off by at most half of that,
+#: and the export by at most half of its own step: anything inside is agreement, and
+#: anything outside is a difference neither rounding can explain.
+DEFAULT_TOLERANCE = FREQUENCY_QUANTUM / 2 + CALCULATION_TOLERANCE
 #: How close a stored EV has to be to an exported one, in chips: a stored EV is rounded to
 #: the chip, and the export rounds its own.
 EV_TOLERANCE = 1.0
@@ -351,18 +358,24 @@ def _compare_ev(tally: _Tally, stored: tuple[float | None, ...] | None, action: 
         tally.ev_differing += 1
 
 
-def crosscheck(structure: MkrStructure, folder: str, tolerance: float = DEFAULT_TOLERANCE) -> Crosscheck:
+def tolerance_for(structure: MkrStructure) -> float:
+    """The most rounding can move a frequency of this save away from its export."""
+    return DEFAULT_TOLERANCE if structure.mode == "storage" else CALCULATION_TOLERANCE
+
+
+def crosscheck(structure: MkrStructure, folder: str, tolerance: float | None = None) -> Crosscheck:
     """Compare a read save against an exported folder, action by action and hand by hand.
 
     :param structure: A save already read by :func:`~preflop_advisor.mkr_format.read_structure`.
     :param folder: An exported range folder -- the files themselves, not the ``ranges/``
         container above them.
     :param tolerance: How far a frequency may differ and still count as agreement. The
-        default is half of the half percentage point a save made for storage rounds to, which
-        is the most that rounding can move a frequency.
+        default is :func:`tolerance_for` the save: the most its rounding and the export's
+        can move a frequency between them.
     :raises NativeFormatError: if the folder holds no range files, or the save holds no
         strategy to compare.
     """
+    tolerance = tolerance_for(structure) if tolerance is None else tolerance
     tree = structure.tree
     stems = export_stems(folder)
     save_edges = {

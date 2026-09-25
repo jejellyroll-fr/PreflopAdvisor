@@ -14,18 +14,22 @@ opt-in pair at the bottom, run against a real save and a real export.
 """
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
 from preflop_advisor.errors import NativeFormatError
 from preflop_advisor.mkr_classes import class_table
 from preflop_advisor.mkr_crosscheck import (
+    CALCULATION_TOLERANCE,
     DEFAULT_TOLERANCE,
+    EXPORT_QUANTUM,
     MISMATCH_LIMIT,
     _node_and_action,
     crosscheck,
     export_stems,
     read_export_action,
+    tolerance_for,
 )
 from preflop_advisor.mkr_format import read_structure
 
@@ -336,6 +340,14 @@ def test_a_stored_row_is_compared_as_stored_not_renormalised(structure):
             return (0.015, 0.005, 0.985)
 
     assert _stored_row(Uneven(), 0, 0) == (0.015, 0.005, 0.985)
+
+
+def test_the_default_tolerance_is_what_the_save_s_own_rounding_and_the_export_s_allow():
+    """A calculation save is not rounded, so only the export's thousandth separates the two."""
+    assert tolerance_for(SimpleNamespace(mode="storage")) == DEFAULT_TOLERANCE
+    assert tolerance_for(SimpleNamespace(mode="calculation")) == CALCULATION_TOLERANCE
+    assert CALCULATION_TOLERANCE < 0.002 < DEFAULT_TOLERANCE
+    assert DEFAULT_TOLERANCE == pytest.approx(0.0025 + EXPORT_QUANTUM / 2, abs=1e-8)
 
 
 def test_a_tolerance_the_caller_sets_is_the_one_used(structure, export):

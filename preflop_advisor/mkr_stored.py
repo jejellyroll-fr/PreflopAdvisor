@@ -234,20 +234,36 @@ def class_count_of(tree: MkrTree, strategy: MkrStrategy) -> int:
 
 
 def read_stored(archive: MkrArchive, tree: MkrTree) -> tuple[dict[str, MkrStrategy], StoredSource]:
-    """Every stored-strategy entry of a save, and the source its populated street reads as.
+    """Every stored-strategy entry of a save, and the source the tree's own street reads as.
 
-    :raises NativeFormatError: if no entry holds a strategy, or the one that does does not
-        bind to the tree.
+    The entry is the one for the street the tree was solved from, never whichever happens
+    to hold something: another street's arrays can have exactly the right shape and still
+    be another street's strategy.
+
+    :raises NativeFormatError: if the tree's street has no entry or an empty one, or its
+        entry does not bind to the tree.
     """
     names = set(archive.names)
     strategies = {name: read_strategy(archive, name) for name in STRATEGY_ENTRIES if name in names}
-    populated = [strategy for strategy in strategies.values() if strategy.populated]
-    if not populated:
+    entry = STRATEGY_ENTRIES[tree.street] if 0 <= tree.street < len(STRATEGY_ENTRIES) else None
+    own = strategies.get(entry) if entry is not None else None
+    if own is None:
+        raise NativeFormatError(
+            f"{archive.path} is a tree solved from street {tree.street} and holds no stored-strategy entry "
+            "for that street."
+        )
+    if not own.populated:
+        others = sorted(name for name, strategy in strategies.items() if strategy.populated)
+        if others:
+            raise NativeFormatError(
+                f"{archive.path} is a tree solved from street {tree.street}, whose {entry} is empty while "
+                f"{', '.join(others)} holds a strategy: the archive is truncated or mixed."
+            )
         raise NativeFormatError(
             f"{archive.path} holds {len(strategies)} stored-strategy entries and every slot of every one of them "
             "is empty: the run was saved before it had a strategy to save."
         )
-    return strategies, StoredSource(tree, populated[0], class_count_of(tree, populated[0]))
+    return strategies, StoredSource(tree, own, class_count_of(tree, own))
 
 
 class StoredSource:

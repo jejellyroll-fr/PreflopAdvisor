@@ -145,7 +145,9 @@ def split_arguments(argv: list[str]) -> tuple[str, list[str], str | None]:
     folder: str | None = None
     index = 0
     while index < len(argv):
-        if argv[index] == "--export" and index + 1 < len(argv):
+        if argv[index] == "--export":
+            if index + 1 == len(argv):
+                raise ValueError("--export names no folder")
             folder = argv[index + 1]
             index += 2
             continue
@@ -158,7 +160,11 @@ def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
-    path, hands, folder = split_arguments(sys.argv[1:])
+    try:
+        path, hands, folder = split_arguments(sys.argv[1:])
+    except ValueError as error:
+        print(f"usage error: {error}")
+        return 2
     try:
         structure = read_structure(path)
     except NativeFormatError as error:

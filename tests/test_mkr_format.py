@@ -700,6 +700,20 @@ def test_a_later_stored_strategy_without_the_first_is_refused_rather_than_read(t
         read_structure(path)
 
 
+def test_the_strategy_is_read_from_the_tree_s_own_street_and_not_the_first_populated(tmp_path):
+    stored = saved_run()
+    entries = saved_run(storedstrategy0=stored["storedstrategy1"], storedstrategy1=stored["storedstrategy0"])
+    path = write_mkr(tmp_path / "mixed.mkr", entries)
+    with pytest.raises(NativeFormatError, match="storedstrategy0 is empty while storedstrategy1 holds a strategy"):
+        read_structure(path)
+
+
+def test_a_tree_whose_street_has_no_stored_strategy_entry_is_refused(tmp_path):
+    path = write_mkr(tmp_path / "street2.mkr", saved_run(tree=tree_entry(street=2)))
+    with pytest.raises(NativeFormatError, match="no stored-strategy entry for that street"):
+        read_structure(path)
+
+
 def test_a_member_declaring_more_than_the_reader_holds_is_refused(run_path, monkeypatch):
     monkeypatch.setattr("preflop_advisor.mkr_archive.MAX_ENTRY_BYTES", 8)
     with pytest.raises(NativeFormatError, match="declares"):
@@ -1496,7 +1510,13 @@ def test_a_line_this_tree_does_not_hold_resolves_to_nothing(provider):
 
 
 def test_a_postflop_run_is_refused_because_its_nodes_have_no_seats(tmp_path):
-    path = write_mkr(tmp_path / "postflop.mkr", saved_run(tree=tree_entry(street=1)))
+    stored = saved_run()
+    entries = saved_run(
+        tree=tree_entry(street=1),
+        storedstrategy0=stored["storedstrategy1"],
+        storedstrategy1=stored["storedstrategy0"],
+    )
+    path = write_mkr(tmp_path / "postflop.mkr", entries)
     with pytest.raises(NativeFormatError, match="reads preflop trees only"):
         MkrStrategyProvider(path, SEATS)
 
@@ -1526,6 +1546,13 @@ def test_the_report_names_the_seats_of_a_full_ring_table():
     report = _mkr_report()
     for players in (8, 9):
         assert len(seats_for(report.SEATS, players, [])) == players
+
+
+def test_the_report_refuses_an_export_option_that_names_no_folder(tmp_path, monkeypatch, capsys):
+    path = write_mkr(tmp_path / "run.mkr", saved_run())
+    monkeypatch.setattr(sys, "argv", ["mkr_report.py", path, "--export"])
+    assert _mkr_report().main() == 2
+    assert "--export names no folder" in capsys.readouterr().out
 
 
 def test_a_game_that_disagrees_with_its_own_hand_size_is_refused(tmp_path):
