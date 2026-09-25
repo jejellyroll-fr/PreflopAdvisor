@@ -38,6 +38,11 @@ _BASE_HANDLE = 0x7E0000
 #: ``TC_ENDBLOCKDATA``; without it the field values simply stop.
 _SC_WRITE_METHOD = 0x01
 
+#: How many elements an array of objects may declare. The largest a save writes is one row
+#: per hand class, 16432; a count far past that is a crafted stream, and every element --
+#: even a one-byte null -- would cost a list slot before anything else could be checked.
+MAX_OBJECT_ELEMENTS = 1_000_000
+
 #: The ``java.util.HashMap`` class, whose contents are written by its own method.
 _HASH_MAP = "java.util.HashMap"
 #: How deeply arrays and objects may nest before the stream is called malformed. The
@@ -275,7 +280,7 @@ class _JavaStream:
 
     def _objects(self, length: int) -> list[object]:
         """An array of objects or of arrays: each element a value of its own."""
-        if length < 0:
+        if not 0 <= length <= min(MAX_OBJECT_ELEMENTS, len(self._data) - self._offset):
             raise NativeFormatError(f"The {self._entry} entry declares an array of {length} elements.")
         return [self.read_value() for _ in range(length)]
 
@@ -330,5 +335,13 @@ class _JavaStream:
 
 
 def read_java_value(data: bytes, entry: str) -> object:
-    """The single value one Java-serialized entry holds."""
-    return _JavaStream(data, entry).read_value()
+    """The single value one Java-serialized entry holds, and nothing after it.
+
+    :raises NativeFormatError: if the value is followed by anything: a single-value entry
+        with bytes left over is not the layout it claims to be.
+    """
+    stream = _JavaStream(data, entry)
+    value = stream.read_value()
+    if not stream.exhausted:
+        raise NativeFormatError(f"The {entry} entry holds more after its single value, which it never does.")
+    return value

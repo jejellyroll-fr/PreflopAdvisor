@@ -293,11 +293,14 @@ def _identify(found: Container | None, prefix: bytes) -> tuple[str, list[str]]:
 
 def _describe_archive(source: str, name: str, diagnostics: list[str]) -> tuple[tuple[str, ...], str]:
     """An archive's members and the name it is reported under, adding to its diagnostics."""
-    members, archive_note = _archive_members(source)
+    names, archive_note = _archive_members(source)
+    # Identified on every member, since a ZIP's order means nothing; only the listing shown
+    # is cut to MEMBER_LIMIT.
+    members = names[:MEMBER_LIMIT]
     if archive_note:
         diagnostics.append(archive_note)
         return members, f"{name} (index unreadable)"
-    if SIMULATION_ENTRY in members:
+    if SIMULATION_ENTRY in names:
         diagnostics.append(
             f"The archive holds a {SIMULATION_ENTRY} member, which is where a saved simulation keeps "
             "its game tree: its structure is read by preflop_advisor.mkr_format and reported by "
@@ -331,7 +334,7 @@ def _archive_members(source: str) -> tuple[tuple[str, ...], str]:
         return (), f"The archive's index could not be read ({error}), which is what a truncated save looks like."
     if not names:
         return (), "The archive holds no members at all."
-    return tuple(names[:MEMBER_LIMIT]), ""
+    return tuple(names), ""
 
 
 def describe_refusal(native: NativeProbe) -> str:

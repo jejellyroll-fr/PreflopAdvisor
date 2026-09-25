@@ -1059,6 +1059,7 @@ def test_a_save_for_further_calculation_is_read_and_agrees_with_itself(calc_path
         "infoset count",
         "group widths",
         "average counts",
+        "EV weights",
         "EV groups",
         "group order",
         "fold EV",
@@ -1164,6 +1165,26 @@ def test_a_negative_accumulated_count_fails_a_check_and_is_no_frequency(tmp_path
     structure = read_structure(path)
     assert [check.name for check in structure.failures] == ["average counts"]
     assert structure.frequencies(0, class_of_hand("AsAd")) is None
+
+
+def test_a_negative_weight_fails_a_check_and_is_no_ev(tmp_path):
+    ev_groups = [None] * 8
+    ev_groups[0] = _hand_rows(
+        _ev_block(ROOT_EVS, 10, 2000),
+        {"AsAd": _ev_block((-1000, 1500), -10, 2000), "2s3d": _ev_block((-1000, -1500), 10, 2000)},
+    )
+    ev_groups[4] = _hand_rows(_ev_block(FACED_EVS, 5, 0), {"AsAd": _ev_block((-2000, 2600), 5, 0)})
+    path = write_mkr(tmp_path / "negative-weight.mkr", calc_run(reg=reg_entry(SCALE, [None] * 8, ev_groups)))
+    structure = read_structure(path)
+    assert [check.name for check in structure.failures] == ["EV weights"]
+    assert structure.evs(0, class_of_hand("AsAd")) == (None, None)
+
+
+def test_an_average_store_that_stops_before_a_group_fails_a_check_rather_than_crash(tmp_path):
+    average_groups = [_hand_rows([1, 1], {})]
+    path = write_mkr(tmp_path / "iavg-short.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[I", average_groups)))
+    structure = read_structure(path)
+    assert "group widths" in {check.name for check in structure.failures}
 
 
 def test_an_iavg_layout_no_save_has_been_seen_with_is_refused_by_name(tmp_path):
@@ -1463,6 +1484,16 @@ def test_unequal_stacks_are_reported_in_the_metadata(tmp_path):
 # The Phase 1 probe, which a real save taught to decode a name
 
 
+def test_the_probe_finds_the_tree_wherever_the_archive_keeps_it(tmp_path):
+    """A ZIP's order means nothing: a tree past the listing's limit still names the file."""
+    entries = {f"filler{index}": b"" for index in range(25)}
+    entries.update(saved_run())
+    native = probe(write_mkr(tmp_path / "late-tree.mkr", entries))
+    assert native.container == "saved simulation archive"
+    assert len(native.members) == 20
+    assert "tree" not in native.members
+
+
 def test_the_probe_names_a_saved_simulation_and_still_refuses_it(run_path):
     native = probe(run_path)
     assert native.container == "saved simulation archive"
@@ -1580,6 +1611,17 @@ def test_a_map_keyed_by_an_array_is_refused():
 def test_an_object_array_of_a_negative_length_is_refused():
     with pytest.raises(NativeFormatError, match="array of -1 elements"):
         read_java_value(MAGIC + array_body("[Ljava.lang.Object;", struct.pack(">i", -1)), "reg")
+
+
+def test_bytes_after_a_single_value_are_refused():
+    with pytest.raises(NativeFormatError, match="holds more after its single value"):
+        read_java_value(java_int(7) + b"\x70", "game")
+
+
+def test_an_object_array_longer_than_any_save_writes_is_refused():
+    stream = MAGIC + array_body("[Ljava.lang.Object;", struct.pack(">i", 2_000_000) + b"\x70" * 16)
+    with pytest.raises(NativeFormatError, match="array of 2000000 elements"):
+        read_java_value(stream, "reg")
 
 
 def test_an_empty_object_array_is_an_empty_list():

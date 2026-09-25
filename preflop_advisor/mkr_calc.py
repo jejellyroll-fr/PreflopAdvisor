@@ -265,7 +265,9 @@ class CalcSource:
         row = rows[hand_class]
         start, actions = place.ev_offset, place.actions
         weight, value = row[start + actions], row[start + actions + 1]
-        if not weight:
+        if weight <= 0:
+            # Zero is a hand never weighted; below zero is no weight at all, which the
+            # "EV weights" check reports.
             return (None,) * actions
         regrets = row[start : start + actions]
         return tuple((regret + value) / (weight * self.scale) for regret in reversed(regrets))
@@ -278,7 +280,13 @@ class CalcSource:
         )
 
     def checks(self) -> tuple[MkrCheck, ...]:
-        checks = [self._width_check(), self._count_check(), self._ev_group_check(), self._order_check()]
+        checks = [
+            self._width_check(),
+            self._count_check(),
+            self._weight_check(),
+            self._ev_group_check(),
+            self._order_check(),
+        ]
         agreement = self._agreement_check()
         if agreement is not None:
             checks.append(agreement)
@@ -328,13 +336,33 @@ class CalcSource:
 
     def _count_check(self) -> MkrCheck:
         """Accumulated counts only grow from zero: a negative one is a corrupt or overflowed row."""
-        negative = sum(1 for group in self.members for row in self.average_rows[group] or () if row and min(row) < 0)
+        negative = sum(1 for row in self._rows_of(self.average_rows) if row and min(row) < 0)
         return MkrCheck(
             name="average counts",
             passed=not negative,
             detail=f"every {IAVG_ENTRY} count is zero or more"
             if not negative
             else f"{negative} {IAVG_ENTRY} rows hold a negative count, which no accumulated count is",
+        )
+
+    def _rows_of(self, store: list[list[Sequence[int]] | None]) -> list[Sequence[int]]:
+        """Every hand row of a store's groups that hold nodes, skipping a group it omits."""
+        return [row for group in self.members if group < len(store) for row in store[group] or ()]
+
+    def _weight_check(self) -> MkrCheck:
+        """A weight accumulates from zero: a negative one would turn every EV of its node over."""
+        negative = 0
+        if self.widths_agree:
+            for place in self.layout.values():
+                rows = self.ev_rows[place.group] if place.group < len(self.ev_rows) else None
+                weight_at = place.ev_offset + place.actions
+                negative += sum(1 for row in rows or () if row[weight_at] < 0)
+        return MkrCheck(
+            name="EV weights",
+            passed=not negative,
+            detail=f"every {REG_ENTRY} weight is zero or more"
+            if not negative
+            else f"{negative} {REG_ENTRY} weights are negative, which no accumulated weight is",
         )
 
     def _ev_group_check(self) -> MkrCheck:
