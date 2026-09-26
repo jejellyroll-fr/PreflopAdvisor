@@ -41,7 +41,7 @@ from preflop_advisor.mkr_classes import (
     class_table,
     hand_indices,
 )
-from preflop_advisor.mkr_format import read_structure
+from preflop_advisor.mkr_format import read_scalars, read_structure
 from preflop_advisor.mkr_java import MAX_NESTING, read_java_value
 from preflop_advisor.mkr_provider import MkrStrategyProvider, version_name
 from preflop_advisor.mkr_stored import (
@@ -1231,6 +1231,37 @@ def _default_ev_groups():
     return ev_groups
 
 
+def test_an_average_store_of_another_primitive_type_is_refused(tmp_path):
+    """Counts written as doubles have the right shape and would be truncated into ints."""
+    average_groups = [None] * 8
+    average_groups[0] = _hand_rows([1.5, 1.5], {})
+    average_groups[4] = _hand_rows([1.5, 1.5], {})
+    path = write_mkr(tmp_path / "doubles.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[D", average_groups)))
+    with pytest.raises(NativeFormatError, match="not one row of ints per hand"):
+        read_structure(path)
+
+
+def test_player_evs_that_are_not_numbers_are_not_divided(tmp_path):
+    strings = MAGIC + nested("[Ljava.lang.Object;", [b"\x74" + utf("one"), b"\x74" + utf("two")])
+    path = write_mkr(tmp_path / "evs-objects.mkr", saved_run(evs=strings))
+    assert read_structure(path).player_evs == ()
+
+
+def test_the_small_entries_are_read_through_one_opening_of_the_archive(run_path, monkeypatch):
+    opened = []
+    original = zipfile.ZipFile.__init__
+
+    def counting(self, *args, **kwargs):
+        opened.append(args[0] if args else kwargs.get("file"))
+        original(self, *args, **kwargs)
+
+    archive = read_entries(run_path)
+    monkeypatch.setattr(zipfile.ZipFile, "__init__", counting)
+    scalars = read_scalars(archive)
+    assert "game" in scalars and "evs" in scalars
+    assert len(opened) == 1
+
+
 def test_a_negative_accumulated_count_fails_a_check_and_is_no_frequency(tmp_path):
     average_groups = [None] * 8
     average_groups[0] = _hand_rows([1, 1], {"AsAd": [3, -1], "2s3d": [1, 3]})
@@ -1345,7 +1376,7 @@ def test_an_average_store_that_is_not_one_row_per_group_is_refused(tmp_path):
     deeper = [None] * 8
     deeper[0] = [[[1, 1]]]
     path = write_mkr(tmp_path / "iavg-deep.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[[I", deeper)))
-    with pytest.raises(NativeFormatError, match="not one row of numbers per hand"):
+    with pytest.raises(NativeFormatError, match="not one row of ints per hand"):
         read_structure(path)
 
 

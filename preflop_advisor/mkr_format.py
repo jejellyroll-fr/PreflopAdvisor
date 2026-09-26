@@ -54,6 +54,7 @@ the ratios sum to minus the rake.
 from __future__ import annotations
 
 import logging
+import math
 from array import array
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -174,6 +175,8 @@ class MkrStructure:
         sums, counts = self.scalars.get("evs"), self.scalars.get("eviters")
         if not isinstance(sums, list) or not isinstance(counts, list):
             return ()
+        if not all(_is_number(value) for value in (*sums, *counts)):
+            return ()
         return tuple(total / count if count else None for total, count in zip(sums, counts))
 
     @property
@@ -201,6 +204,11 @@ class MkrStructure:
         )
 
 
+def _is_number(value: object) -> bool:
+    """A finite ``int`` or ``float``, which is all a per-player sum or count can be."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def read_scalars(archive: MkrArchive) -> dict[str, object]:
     """Every small Java-serialized entry of the archive, under its decoded name.
 
@@ -210,15 +218,18 @@ def read_scalars(archive: MkrArchive) -> dict[str, object]:
     as lists, since these are small and read as values rather than as stores.
     """
     values: dict[str, object] = {}
-    for entry in archive.entries:
-        if entry.name in _NOT_SCALARS or (entry.size > _SCALAR_LIMIT and entry.name != LOCKS_ENTRY):
-            continue
+    names = [
+        entry.name
+        for entry in archive.entries
+        if entry.name not in _NOT_SCALARS and (entry.size <= _SCALAR_LIMIT or entry.name == LOCKS_ENTRY)
+    ]
+    for name, payload in archive.read_many(names):
         try:
-            value = read_java_value(archive.read(entry.name), entry.name)
+            value = read_java_value(payload, name)
         except NativeFormatError as error:
-            logger.debug("The %s entry of %s was not read as a scalar: %s", entry.name, archive.path, error)
+            logger.debug("The %s entry of %s was not read as a scalar: %s", name, archive.path, error)
             continue
-        values[entry.name] = value.tolist() if isinstance(value, array) else value
+        values[name] = value.tolist() if isinstance(value, array) else value
     return values
 
 

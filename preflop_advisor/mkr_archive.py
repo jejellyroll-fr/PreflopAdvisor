@@ -12,11 +12,15 @@ them, bounded, read-only.
 
 from __future__ import annotations
 
+import logging
 import zipfile
 import zlib
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from .errors import NativeFormatError
+
+logger = logging.getLogger(__name__)
 
 #: The byte-order mark a Java ZIP writer puts in front of a UTF-16BE entry name.
 UTF16BE_BOM = b"\xfe\xff"
@@ -73,6 +77,33 @@ class MkrArchive:
 
         :raises NativeFormatError: if the member is absent, or its payload is corrupt.
         """
+        try:
+            with zipfile.ZipFile(self.path) as archive:
+                return self._member(archive, name)
+        except (zipfile.BadZipFile, OSError) as error:
+            raise NativeFormatError(f"The {name} entry of {self.path} could not be read ({error}).") from error
+
+    def read_many(self, names: Sequence[str]) -> Iterator[tuple[str, bytes]]:
+        """Several members' bytes through one opening of the archive, skipping unreadable ones.
+
+        Opening the archive parses its whole index, so a member at a time would cost the
+        index once per member: quadratic in a save of many small entries.
+
+        :raises NativeFormatError: if the archive itself cannot be opened.
+        """
+        try:
+            archive = zipfile.ZipFile(self.path)
+        except (zipfile.BadZipFile, OSError) as error:
+            raise NativeFormatError(f"{self.path} could not be read as an archive ({error}).") from error
+        with archive:
+            for name in names:
+                try:
+                    yield name, self._member(archive, name)
+                except NativeFormatError as error:
+                    logger.debug("Skipping the %s entry of %s: %s", name, self.path, error)
+
+    def _member(self, archive: zipfile.ZipFile, name: str) -> bytes:
+        """One member of an opened archive, bounded by :data:`MAX_ENTRY_BYTES`."""
         found = self.entry(name)
         if found is None:
             raise NativeFormatError(f"{self.path} holds no {name} entry.")
@@ -82,9 +113,9 @@ class MkrArchive:
                 f"{MAX_ENTRY_BYTES} a saved simulation's entry is read up to."
             )
         try:
-            with zipfile.ZipFile(self.path) as archive, archive.open(archive.infolist()[found.position]) as member:
+            with archive.open(archive.infolist()[found.position]) as member:
                 data = member.read(MAX_ENTRY_BYTES + 1)
-        except (zipfile.BadZipFile, OSError, ValueError, RuntimeError) as error:
+        except (zipfile.BadZipFile, OSError, ValueError, RuntimeError, IndexError) as error:
             raise NativeFormatError(f"The {name} entry of {self.path} could not be read ({error}).") from error
         if len(data) > MAX_ENTRY_BYTES:  # pragma: no cover - only a header that understates its size
             raise NativeFormatError(f"The {name} entry of {self.path} inflates past {MAX_ENTRY_BYTES} bytes.")

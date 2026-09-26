@@ -51,6 +51,8 @@ IAVG_ENTRY = "iavg"
 HAS_EV_ENTRY = "hasEv"
 #: The entries that mark a save made for further calculation.
 CALCULATION_ENTRIES: tuple[str, ...] = (REG_ENTRY, IAVG_ENTRY)
+#: The Java type each kind of row is written in, by its ``array`` typecode.
+_ROW_TYPES = {"i": "ints", "q": "longs"}
 #: The one ``reg`` layout this reads: a scale, then ``int`` rows and ``long`` rows.
 REG_LAYOUT = 3
 #: The layouts the format also defines -- a ``double`` store and a ``short``/``int`` one --
@@ -127,7 +129,9 @@ def read_calculation(archive: MkrArchive, tree: MkrTree) -> CalcSource:
     has_ev = read_java_value(archive.read(HAS_EV_ENTRY), HAS_EV_ENTRY)
     if not isinstance(has_ev, list) or not all(isinstance(flag, bool) for flag in has_ev):
         raise NativeFormatError(f"The {HAS_EV_ENTRY} entry of {archive.path} is not one boolean per group.")
-    return CalcSource(tree, scale, _groups(ev_rows, REG_ENTRY), _groups(average_rows, IAVG_ENTRY), has_ev, average_tag)
+    return CalcSource(
+        tree, scale, _groups(ev_rows, REG_ENTRY, "q"), _groups(average_rows, IAVG_ENTRY, "i"), has_ev, average_tag
+    )
 
 
 def _read_tagged(archive: MkrArchive, entry: str) -> tuple[int, object]:
@@ -165,13 +169,22 @@ def _require_layout(archive: MkrArchive, entry: str, layout: int, read: int, uns
         raise NativeFormatError(f"The {entry} entry of {archive.path} uses layout {layout}, which is unknown.")
 
 
-def _groups(value: object, entry: str) -> list[list[Sequence[int]] | None]:
-    """An ``[][][]`` store as groups of hand rows, each group a list or ``None``."""
+def _groups(value: object, entry: str, typecode: str) -> list[list[Sequence[int]] | None]:
+    """An ``[][][]`` store as groups of hand rows, each group a list or ``None``.
+
+    Every row must be of the one primitive type the entry is written in -- ``int`` counts,
+    ``long`` sums -- since a row of another type would read as the right shape and the
+    wrong numbers.
+    """
     if not isinstance(value, list):
         raise NativeFormatError(f"The {entry} entry does not hold one row of hands per group.")
     for rows in value:
-        if rows is not None and not (isinstance(rows, list) and all(isinstance(row, array) for row in rows)):
-            raise NativeFormatError(f"The {entry} entry holds a group that is not one row of numbers per hand.")
+        if rows is not None and not (
+            isinstance(rows, list) and all(isinstance(row, array) and row.typecode == typecode for row in rows)
+        ):
+            raise NativeFormatError(
+                f"The {entry} entry holds a group that is not one row of {_ROW_TYPES[typecode]} per hand."
+            )
     return value
 
 
