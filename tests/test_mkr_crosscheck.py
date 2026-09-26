@@ -156,6 +156,17 @@ def test_a_frequency_outside_zero_to_one_is_no_frequency(tmp_path):
     assert read_export_action(str(path)) == {"32o": 1.0}
 
 
+def test_a_linked_range_file_is_not_followed(tmp_path, export):
+    folder = export()
+    outside = tmp_path / "outside.rng"
+    outside.write_text("AA\n1.0\n", encoding="utf-8")
+    try:
+        os.symlink(outside, os.path.join(folder, "9.rng"))
+    except (OSError, NotImplementedError):  # pragma: no cover - Windows without the privilege
+        pytest.skip("this platform cannot create a symbolic link")
+    assert "9" not in export_stems(folder)
+
+
 def test_an_export_file_that_cannot_be_read_is_named(tmp_path):
     with pytest.raises(NativeFormatError, match="could not be read"):
         read_export_action(str(tmp_path / "absent.rng"))

@@ -48,6 +48,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from .errors import NativeFormatError
@@ -185,7 +186,13 @@ def export_stems(folder: str) -> tuple[str, ...]:
     :raises NativeFormatError: if the folder cannot be listed, or holds no range files.
     """
     try:
-        names = [entry.name for entry in os.scandir(folder) if entry.is_file() and entry.name.endswith(RANGE_ENDING)]
+        # A link is not followed: the comparison is of the files the folder holds, and a
+        # link could name a file anywhere.
+        names = [
+            entry.name
+            for entry in os.scandir(folder)
+            if entry.is_file(follow_symlinks=False) and entry.name.endswith(RANGE_ENDING)
+        ]
     except OSError as error:
         raise NativeFormatError(f"{folder} could not be read as an exported folder ({error}).") from error
     stems = tuple(
@@ -225,13 +232,21 @@ def read_export_rows(path: str) -> dict[str, tuple[float, float | None]]:
     """
     rows: dict[str, tuple[float, float | None]] = {}
     try:
+        # Read a line at a time: only the rows are kept, never the whole file.
         with open(path, encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
-    except OSError as error:
+            _pair_lines(handle, rows, path)
+    except (OSError, UnicodeDecodeError) as error:
         raise NativeFormatError(f"{path} could not be read ({error}).") from error
-    # Paired the way the store's range reader pairs them: a line that does not read as
-    # values is the pending hand, so a header or a stray line resynchronises the pairing
-    # at the next hand instead of shifting every record behind it.
+    return rows
+
+
+def _pair_lines(lines: Iterable[str], rows: dict[str, tuple[float, float | None]], path: str) -> None:
+    """Pair ``hand`` / ``freq;ev`` lines into rows.
+
+    Paired the way the store's range reader pairs them: a line that does not read as
+    values is the pending hand, so a header or a stray line resynchronises the pairing at
+    the next hand instead of shifting every record behind it.
+    """
     pending: str | None = None
     for position, raw in enumerate(lines):
         line = raw.strip()
@@ -245,7 +260,6 @@ def read_export_rows(path: str) -> dict[str, tuple[float, float | None]]:
             continue
         _add_row(rows, pending, values, path)
         pending = None
-    return rows
 
 
 def _add_row(

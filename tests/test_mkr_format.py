@@ -1319,11 +1319,21 @@ def test_a_negative_weight_fails_a_check_and_is_no_ev(tmp_path):
     assert structure.evs(0, class_of_hand("AsAd")) == (None, None)
 
 
-def test_an_average_store_that_stops_before_a_group_fails_a_check_rather_than_crash(tmp_path):
+def test_an_average_store_that_stops_before_a_group_is_refused_rather_than_crash(tmp_path):
+    """The big blind's group 4 is past the end of a one-group store: it has no rows at all."""
     average_groups = [_hand_rows([1, 1], {})]
     path = write_mkr(tmp_path / "iavg-short.mkr", calc_run(iavg=b"\x01" + MAGIC + nested("[[[I", average_groups)))
-    structure = read_structure(path)
-    assert "group widths" in {check.name for check in structure.failures}
+    with pytest.raises(NativeFormatError, match=r"rows per group: \[0, 169\]"):
+        read_structure(path)
+
+
+def test_a_regret_store_that_is_not_one_entry_per_group_is_refused(tmp_path):
+    scale = boxed_body("java.lang.Double", "D", struct.pack(">d", 2.0))
+    regrets = boxed_body("java.lang.Integer", "I", struct.pack(">i", 3))
+    body = nested("[Ljava.lang.Object;", [scale, regrets, nested("[[[J", [None] * 8)])
+    path = write_mkr(tmp_path / "reg-a.mkr", calc_run(reg=b"\x03" + MAGIC + body))
+    with pytest.raises(NativeFormatError, match="is not the scale and two arrays"):
+        read_structure(path)
 
 
 def test_an_iavg_layout_no_save_has_been_seen_with_is_refused_by_name(tmp_path):

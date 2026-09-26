@@ -145,7 +145,14 @@ def _read_tagged(archive: MkrArchive, entry: str) -> tuple[int, object]:
 def _read_reg(archive: MkrArchive) -> tuple[float, object]:
     layout, value = _read_tagged(archive, REG_ENTRY)
     _require_layout(archive, REG_ENTRY, layout, REG_LAYOUT, UNSEEN_REG_LAYOUTS)
-    if not isinstance(value, list) or len(value) != 3 or not isinstance(value[0], (int, float)):
+    # ``a`` holds regrets, which neither a frequency nor an EV is computed from, so only its
+    # shape is required: one entry per group, as ``b`` has.
+    if (
+        not isinstance(value, list)
+        or len(value) != 3
+        or not isinstance(value[0], (int, float))
+        or not isinstance(value[1], list)
+    ):
         raise NativeFormatError(
             f"The {REG_ENTRY} entry of {archive.path} is not the scale and two arrays its layout {REG_LAYOUT} holds."
         )
@@ -222,7 +229,10 @@ class CalcSource:
         self.widths_agree = self._widths_agree()
 
     def _class_count(self) -> int:
-        counts = {len(self.average_rows[group] or ()) for group in self.members if group < len(self.average_rows)}
+        # A group past the end of the store counts as empty rather than being passed over.
+        counts = {
+            len(self.average_rows[group] or ()) if group < len(self.average_rows) else 0 for group in self.members
+        }
         if len(counts) != 1 or 0 in counts:
             raise NativeFormatError(
                 f"The {IAVG_ENTRY} entry does not hold one row per hand for every group a player acts in "
