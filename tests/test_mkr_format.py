@@ -725,6 +725,23 @@ def test_the_strategy_is_read_from_the_tree_s_own_street_and_not_the_first_popul
         read_structure(path)
 
 
+def test_only_the_tree_s_own_street_is_read_when_it_holds_a_strategy(run_path, monkeypatch):
+    """Four entries near the size limit would add up; the others are never opened."""
+    import preflop_advisor.mkr_stored as stored
+
+    opened = []
+    original = stored.read_strategy
+
+    def counting(archive, name):
+        opened.append(name)
+        return original(archive, name)
+
+    monkeypatch.setattr(stored, "read_strategy", counting)
+    structure = read_structure(run_path)
+    assert opened == ["storedstrategy0"]
+    assert list(structure.strategies) == ["storedstrategy0"]
+
+
 def test_a_tree_whose_street_has_no_stored_strategy_entry_is_refused(tmp_path):
     path = write_mkr(tmp_path / "street2.mkr", saved_run(tree=tree_entry(street=2)))
     with pytest.raises(NativeFormatError, match="no stored-strategy entry for that street"):

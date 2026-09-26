@@ -234,36 +234,43 @@ def class_count_of(tree: MkrTree, strategy: MkrStrategy) -> int:
 
 
 def read_stored(archive: MkrArchive, tree: MkrTree) -> tuple[dict[str, MkrStrategy], StoredSource]:
-    """Every stored-strategy entry of a save, and the source the tree's own street reads as.
+    """The stored-strategy entry of the tree's own street, and the source it reads as.
 
     The entry is the one for the street the tree was solved from, never whichever happens
     to hold something: another street's arrays can have exactly the right shape and still
-    be another street's strategy.
+    be another street's strategy. It is the only one kept. The others are only opened when
+    it is empty, one at a time, to say whether the archive is mixed -- so a save carrying
+    four entries, each near the size limit, never holds more than one of them at once.
 
     :raises NativeFormatError: if the tree's street has no entry or an empty one, or its
         entry does not bind to the tree.
     """
     names = set(archive.names)
-    strategies = {name: read_strategy(archive, name) for name in STRATEGY_ENTRIES if name in names}
     entry = STRATEGY_ENTRIES[tree.street] if 0 <= tree.street < len(STRATEGY_ENTRIES) else None
-    own = strategies.get(entry) if entry is not None else None
-    if own is None:
+    if entry is None or entry not in names:
         raise NativeFormatError(
             f"{archive.path} is a tree solved from street {tree.street} and holds no stored-strategy entry "
             "for that street."
         )
+    own = read_strategy(archive, entry)
     if not own.populated:
-        others = sorted(name for name, strategy in strategies.items() if strategy.populated)
-        if others:
-            raise NativeFormatError(
-                f"{archive.path} is a tree solved from street {tree.street}, whose {entry} is empty while "
-                f"{', '.join(others)} holds a strategy: the archive is truncated or mixed."
-            )
+        _refuse_empty(archive, entry, tree.street)
+    return {entry: own}, StoredSource(tree, own, class_count_of(tree, own))
+
+
+def _refuse_empty(archive: MkrArchive, entry: str, street: int) -> None:
+    """Say why a tree's own stored strategy is empty: a mixed archive, or an unsolved run."""
+    present = [name for name in STRATEGY_ENTRIES if name in set(archive.names)]
+    others = [name for name in present if name != entry and read_strategy(archive, name).populated]
+    if others:
         raise NativeFormatError(
-            f"{archive.path} holds {len(strategies)} stored-strategy entries and every slot of every one of them "
-            "is empty: the run was saved before it had a strategy to save."
+            f"{archive.path} is a tree solved from street {street}, whose {entry} is empty while "
+            f"{', '.join(others)} holds a strategy: the archive is truncated or mixed."
         )
-    return strategies, StoredSource(tree, own, class_count_of(tree, own))
+    raise NativeFormatError(
+        f"{archive.path} holds {len(present)} stored-strategy entries and every slot of every one of them "
+        "is empty: the run was saved before it had a strategy to save."
+    )
 
 
 class StoredSource:
