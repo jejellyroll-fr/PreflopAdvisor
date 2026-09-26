@@ -128,6 +128,8 @@ class MkrStructure:
     chips_per_bb: float | None
     #: The frequencies a user locked, by the solver's node number: ``-1`` is unlocked.
     locks: dict[object, object] = field(default_factory=dict)
+    #: Whether the archive carries a lock entry this could not read as a map of locks.
+    locks_unreadable: bool = False
     checks: tuple[MkrCheck, ...] = field(default_factory=tuple)
 
     @property
@@ -258,6 +260,7 @@ def read_structure(path: str) -> MkrStructure:
         cards_per_hand=cards_per_hand_for(source.class_count),
         chips_per_bb=chips_per_bb(tree),
         locks=locks if isinstance(locks, dict) else {},
+        locks_unreadable=LOCKS_ENTRY in names and not isinstance(locks, dict),
     )
     return MkrStructure(**{**structure.__dict__, "checks": run_checks(structure)})
 
@@ -369,9 +372,16 @@ def _locks_check(structure: MkrStructure) -> MkrCheck | None:
     calculation store holds the average before the locks are applied, keyed by a node
     numbering that is not in the file, so a calculation save with locks is not read.
     """
+    applied = structure.mode == "storage"
+    if structure.locks_unreadable:
+        return MkrCheck(
+            name="locks",
+            passed=applied,
+            detail=f"the {LOCKS_ENTRY} entry is not a readable map of locks, "
+            + ("and the stored strategy already applies them" if applied else "so what it locks cannot be known"),
+        )
     if not structure.locks:
         return None
-    applied = structure.mode == "storage"
     return MkrCheck(
         name="locks",
         passed=applied,
@@ -413,11 +423,12 @@ def _version_check(structure: MkrStructure) -> MkrCheck:
 
 def _action_code_check(structure: MkrStructure) -> MkrCheck:
     unnamed = structure.unnamed_action_codes
+    repeated = structure.tree.repeated_actions
     codes = ", ".join(str(code) for code in (unnamed or structure.tree.action_codes))
-    return MkrCheck(
-        name="action codes",
-        passed=not unnamed,
-        detail=f"every action code of the tree has a reading ({codes})"
-        if not unnamed
-        else f"no reading for action code {codes}",
-    )
+    if unnamed:
+        detail = f"no reading for action code {codes}"
+    elif repeated:
+        detail = f"node {', '.join(str(index) for index in repeated)} offers the same action code twice"
+    else:
+        detail = f"every action code of the tree has a reading, once per decision ({codes})"
+    return MkrCheck(name="action codes", passed=not unnamed and not repeated, detail=detail)

@@ -153,6 +153,8 @@ def split_arguments(argv: list[str]) -> tuple[str, list[str], str | None]:
             continue
         rest.append(argv[index])
         index += 1
+    if not rest:
+        raise ValueError("no saved simulation named")
     return rest[0], rest[1:], folder
 
 

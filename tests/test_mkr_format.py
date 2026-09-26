@@ -1024,6 +1024,16 @@ def test_an_action_code_with_no_reading_fails_a_check_rather_than_being_named(tm
     assert {check.name for check in structure.failures} == {"action codes"}
 
 
+def test_a_decision_offering_the_same_action_twice_fails_a_check(tmp_path):
+    nodes = struct.pack(">9H", 2, 3, 0, 3, 2, 0, 0, 1, 0)
+    path = write_mkr(tmp_path / "repeated-action.mkr", saved_run(tree=tree_entry(nodes=nodes)))
+    structure = read_structure(path)
+    assert structure.tree.repeated_actions == (0,)
+    assert "action codes" in {check.name for check in structure.failures}
+    with pytest.raises(NativeFormatError):
+        MkrStrategyProvider(path, SEATS)
+
+
 def test_an_archive_with_no_tree_is_not_a_saved_simulation(tmp_path):
     entries = saved_run()
     del entries["tree"]
@@ -1296,6 +1306,18 @@ def test_a_calculation_store_with_locks_is_not_read(tmp_path):
     assert {check.name for check in read_structure(path).failures} == {"locks"}
 
 
+def test_a_calculation_store_whose_locks_cannot_be_read_is_not_read(tmp_path):
+    path = write_mkr(tmp_path / "calc-bad-locks.mkr", calc_run(presetsmap=MAGIC + b"\x70\x70"))
+    assert {check.name for check in read_structure(path).failures} == {"locks"}
+
+
+def test_a_stored_save_whose_locks_cannot_be_read_already_applies_them(tmp_path):
+    path = write_mkr(tmp_path / "bad-locks.mkr", saved_run(presetsmap=b"not a stream"))
+    structure = read_structure(path)
+    assert not structure.failures
+    assert "stored strategy already applies them" in {check.name: check.detail for check in structure.checks}["locks"]
+
+
 def test_a_calculation_store_says_what_it_holds(calc_path, run_path):
     calculated, stored = read_structure(calc_path), read_structure(run_path)
     assert "scale 2" in calculated.source.describe()
@@ -1553,6 +1575,12 @@ def test_the_report_refuses_an_export_option_that_names_no_folder(tmp_path, monk
     monkeypatch.setattr(sys, "argv", ["mkr_report.py", path, "--export"])
     assert _mkr_report().main() == 2
     assert "--export names no folder" in capsys.readouterr().out
+
+
+def test_the_report_refuses_an_export_option_without_a_save(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["mkr_report.py", "--export", str(tmp_path)])
+    assert _mkr_report().main() == 2
+    assert "no saved simulation named" in capsys.readouterr().out
 
 
 def test_a_game_that_disagrees_with_its_own_hand_size_is_refused(tmp_path):

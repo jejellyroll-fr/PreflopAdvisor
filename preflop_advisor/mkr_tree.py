@@ -102,6 +102,20 @@ class MkrTree:
         return tuple(node.index for node in self.nodes if node.decision)
 
     @property
+    def repeated_actions(self) -> tuple[int, ...]:
+        """The decisions two of whose children carry the same action code.
+
+        A line of play is spelled by its codes, so two siblings under one code are two
+        branches no line can tell apart.
+        """
+        repeated = []
+        for index in self.decisions:
+            codes = [self.nodes[child].action for child in self.nodes[index].children]
+            if len(set(codes)) != len(codes):
+                repeated.append(index)
+        return tuple(repeated)
+
+    @property
     def action_codes(self) -> tuple[int, ...]:
         """Every action code the tree uses, in ascending order."""
         return tuple(sorted({node.action for node in self.nodes if node.action is not None}))
