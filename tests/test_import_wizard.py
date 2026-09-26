@@ -412,7 +412,7 @@ def test_a_folder_of_solver_simulations_is_refused_with_what_the_files_are(qapp,
     assert wizard.folder_page.isComplete() is False
     assert report.startswith("HUNL100.mkr:")
     assert "ZIP archive" in report
-    assert "no parser" in report.lower()
+    assert "is read as a strategy source yet" in report
     assert "CSV tables" in report, "and the path that does work"
 
 

@@ -51,6 +51,10 @@ PREFIX = 4096
 MEMBER_LIMIT = 20
 #: What a container this module does not recognise is called.
 UNKNOWN = "unknown container"
+#: The archive member a saved simulation keeps its game tree in, which is what tells one
+#: apart from any other ZIP a user might point at. Named here rather than imported so the
+#: probe stays a module with no reader behind it.
+SIMULATION_ENTRY = "tree"
 
 #: The container signatures, each written once and named where it is used, so the probe and
 #: the table below cannot drift apart.
@@ -248,31 +252,15 @@ def probe(path: str | os.PathLike[str]) -> NativeProbe:
         raise NativeFormatError(f"{os.path.basename(source)} could not be read: {error}") from error
 
     found = container_of(prefix)
-    diagnostics: list[str] = []
+    name, diagnostics = _identify(found, prefix)
     members: tuple[str, ...] = ()
-    name = found.name if found is not None else UNKNOWN
-
-    if found is not None:
-        diagnostics.append(found.note)
-    elif not prefix:
-        name = "empty file"
-        diagnostics.append("The file holds no bytes at all, so it is a failed save rather than a simulation.")
-    else:
-        diagnostics.append(
-            f"The first bytes ({' '.join(f'{byte:02x}' for byte in prefix[:8])}) match no container this "
-            "application knows, so nothing can be said about what it holds."
-        )
-
     if found is not None and found.magic == ZIP_LOCAL_HEADER:
-        members, archive_note = _archive_members(source)
-        if archive_note:
-            diagnostics.append(archive_note)
-            name = f"{name} (index unreadable)"
+        members, name = _describe_archive(source, name, diagnostics)
 
     diagnostics.insert(
         0,
-        f"No parser for {NATIVE_EXTENSIONS[0]} files is verified, so no strategy is read from this file: "
-        "export the simulation's ranges instead (Monker's own export, or a CSV table).",
+        f"No {NATIVE_EXTENSIONS[0]} file is read as a strategy source yet, so no strategy is read from "
+        "this file: export the simulation's ranges instead (Monker's own export, or a CSV table).",
     )
     if found is not None and size <= len(found.magic):
         diagnostics.append(
@@ -290,21 +278,63 @@ def probe(path: str | os.PathLike[str]) -> NativeProbe:
     )
 
 
+def _identify(found: Container | None, prefix: bytes) -> tuple[str, list[str]]:
+    """What a file's first bytes say it is, and the diagnostic that says so."""
+    if found is not None:
+        return found.name, [found.note]
+    if not prefix:
+        return "empty file", ["The file holds no bytes at all, so it is a failed save rather than a simulation."]
+    shown = " ".join(f"{byte:02x}" for byte in prefix[:8])
+    return UNKNOWN, [
+        f"The first bytes ({shown}) match no container this application knows, so nothing can be said "
+        + "about what it holds."
+    ]
+
+
+def _describe_archive(source: str, name: str, diagnostics: list[str]) -> tuple[tuple[str, ...], str]:
+    """An archive's members and the name it is reported under, adding to its diagnostics."""
+    names, archive_note = _archive_members(source)
+    # Identified on every member, since a ZIP's order means nothing; only the listing shown
+    # is cut to MEMBER_LIMIT.
+    members = names[:MEMBER_LIMIT]
+    if archive_note:
+        diagnostics.append(archive_note)
+        return members, f"{name} (index unreadable)"
+    if SIMULATION_ENTRY in names:
+        diagnostics.append(
+            f"The archive holds a {SIMULATION_ENTRY} member, which is where a saved simulation keeps "
+            "its game tree: its structure is read by preflop_advisor.mkr_format and reported by "
+            "scripts/mkr_report.py. That reader is a prototype and is not selectable as a strategy "
+            "source, so the import still asks for an export."
+        )
+        return members, "saved simulation archive"
+    return members, name
+
+
 def _archive_members(source: str) -> tuple[tuple[str, ...], str]:
     """The member names of an archive, and why they could not be listed when they could not.
 
     Listing a name is not interpreting it: the members of a solver's archive are still files
     we cannot read, and knowing that a save holds a thousand of them is the kind of fact
     Phase 1 of issue #24 is for.
+
+    The names go through :func:`~preflop_advisor.mkr_archive.decode_entry_name` because a
+    real save proved this needs doing. MonkerSolver writes its entry names in UTF-16BE with
+    a byte-order mark, and a stock ZIP reader both mis-decodes them *and* truncates each one
+    at its first NUL byte -- so every member of a twenty-five member archive was reported
+    under the same two unprintable characters. A diagnostic that names the wrong thing is
+    worse than one that names nothing.
     """
+    from .mkr_archive import decode_entry_name
+
     try:
         with zipfile.ZipFile(source) as archive:
-            names = archive.namelist()
+            names = [decode_entry_name(info)[0] for info in archive.infolist()]
     except (zipfile.BadZipFile, OSError, ValueError) as error:
         return (), f"The archive's index could not be read ({error}), which is what a truncated save looks like."
     if not names:
         return (), "The archive holds no members at all."
-    return tuple(names[:MEMBER_LIMIT]), ""
+    return tuple(names), ""
 
 
 def describe_refusal(native: NativeProbe) -> str:

@@ -182,7 +182,7 @@ def test_no_container_is_claimed_to_hold_a_readable_strategy(request, fixture):
     found = probe(request.getfixturevalue(fixture))
 
     assert found.supported is False
-    assert "No parser" in found.diagnostics[0]
+    assert "is read as a strategy source yet" in found.diagnostics[0]
 
 
 def test_the_refusal_says_what_the_file_is_and_what_to_do_instead(archive):
@@ -199,7 +199,7 @@ def test_opening_a_native_file_raises_with_its_diagnostics(archive):
         open_native(archive)
 
     assert "ZIP archive" in str(raised.value)
-    assert "no parser" in str(raised.value).lower()
+    assert "is read as a strategy source yet" in str(raised.value)
     assert "50 4b 03 04" in str(raised.value), "the magic goes into the message, for a bug report"
 
 
@@ -351,7 +351,7 @@ def test_a_folder_of_native_files_is_refused_with_what_the_file_is(tmp_path, tre
     message = str(raised.value)
     assert message.startswith("HUNL100.mkr:")
     assert "ZIP archive" in message
-    assert "No parser" in message, "the reason comes before the advice"
+    assert "is read as a strategy source yet" in message, "the reason comes before the advice"
     assert "CSV tables" in message
 
 
