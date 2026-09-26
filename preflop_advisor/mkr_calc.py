@@ -94,20 +94,27 @@ def group_layout(tree: MkrTree) -> tuple[dict[int, GroupLayout], dict[int, tuple
     order is established.
 
     The order is :attr:`~preflop_advisor.mkr_tree.MkrTree.slot_order`'s: depth first, each
-    node's children last to first. When a breadth-first walk taking children in that same
-    order, or the tree's own order reversed, would order some group differently, the file
-    does not say which of them it used, and the last value comes back ``False``.
+    node's children last to first. It was measured on a tree where every player acts at a
+    single depth, and there two other walks give the same order: breadth first with
+    children last to first, and the tree's own order reversed. They part as soon as a
+    player acts twice on one line -- opening, then facing a re-raise -- and the file does
+    not say which of the three it used. Such a tree comes back ``False`` and is refused
+    rather than read in the walk that merely fits the one tree measured.
     """
     slot = tree.slot_of
     members: dict[int, list[int]] = {}
     for node in sorted(tree.decisions, key=slot.__getitem__):
         group = GROUPS_PER_PLAYER * tree.player_at(node) + tree.street
         members.setdefault(group, []).append(node)
+    # ``members`` is in the stored strategy's walk already; each group is held to the two
+    # walks the measured tree could not tell it from.
     breadth = {node: position for position, node in enumerate(_breadth_first_last_to_first(tree))}
-    established = all(
-        nodes == sorted(nodes, key=breadth.__getitem__) and nodes == sorted(nodes, reverse=True)
-        for nodes in members.values()
+    alternatives = (
+        lambda nodes: sorted(nodes, key=breadth.__getitem__),
+        # Node indices are the tree's preorder, so a reverse sort is its order reversed.
+        lambda nodes: sorted(nodes, reverse=True),
     )
+    established = all(nodes == walk(nodes) for nodes in members.values() for walk in alternatives)
     layout: dict[int, GroupLayout] = {}
     for group, nodes in members.items():
         average = ev = 0
