@@ -20,9 +20,24 @@ from .table_state import raise_to
 
 logger = logging.getLogger(__name__)
 
-#: The ``.tree`` signatures this reads. 33487 is what the save at hand carries; 33486 is
-#: accepted by the solver's own reader and is taken on that authority, not from a fixture.
-TREE_SIGNATURES: tuple[int, ...] = (33487, 33486)
+#: The ``.tree`` signatures this reads. 33487 is what MonkerSolver 2.1.9 writes and 33490 what
+#: 2.3.10-beta writes, both read from real saves; 33486 is accepted by the solver's own
+#: reader and is taken on that authority, not from a fixture. 33488 and 33489 sit between
+#: them and are refused: no save carries them to check a reading against.
+TREE_SIGNATURES: tuple[int, ...] = (33487, 33486, 33490)
+#: The build that writes each signature a real save has been read with. The archive's
+#: ``version`` cannot say: both builds write 20109 there.
+TREE_WRITERS: dict[int, str] = {33487: "MonkerSolver 2.1.9", 33490: "MonkerSolver 2.3.10-beta"}
+#: The first signatures that carry each field the solver's reader added over time: the
+#: internal format, the list of node groups after the node stream, the seat names, and the
+#: tree's own game with a bit mask and a list of weight arrays.
+INTERNAL_FORMAT_SINCE = 33487
+NODE_GROUPS_SINCE = 33488
+SEAT_NAMES_SINCE = 33489
+GAME_SINCE = 33490
+#: The game a tree written before :data:`GAME_SINCE` is taken to be, as the solver's reader
+#: takes it: none stated.
+NO_GAME = -1
 #: Raises are coded as this plus their percentage of the pot, the same base
 #: :mod:`preflop_advisor.sizings` reads an exported folder's action names by.
 PERCENT_BASE = 40000
@@ -89,6 +104,11 @@ class MkrTree:
     range_combos: int = 0
     #: The range block itself: one big-endian ``int32`` per player and combo.
     ranges: bytes = field(default=b"", repr=False)
+    #: The game the tree states, from signature 33490 on -- the solver sizes its combo
+    #: arrays by it -- or ``None`` when the tree states none.
+    game: int | None = None
+    #: The seats the tree names, as ``(player, name)`` pairs, from signature 33489 on.
+    seat_names: tuple[tuple[int, str], ...] = ()
 
     def starting_range(self, player: int) -> tuple[float, ...]:
         """One player's starting weights, from zero to one, in the block's combo order."""
@@ -248,11 +268,16 @@ class MkrTree:
 def read_tree(data: bytes) -> MkrTree:
     """The tree entry, which is plain big-endian ``DataOutputStream`` fields.
 
-    The layout, in order: a 64-bit signature, a 32-bit internal format, the player count,
-    which player opens, the street, one committed amount per player **only at street
+    The layout, in order: a 64-bit signature; from 33490 on, a bit mask and the tree's
+    game; from 33487 on, a 32-bit internal format; the player count; from 33489 on, the
+    seat names, a count then an index and a ``writeUTF`` string each; which player opens,
+    the street, one committed amount per player **only at street
     zero**, the dead money, one stack per player, the node stream, a flag for the optional
     range block, and the block: one fixed-point ``int32`` per player and starting combo,
-    1326 of them for a two-card game and 270725 for a four-card one. The node stream is
+    1326 of them for a two-card game and 270725 for a four-card one. From 33488 on, a list
+    of node groups sits between the node stream and the range flag, and from 33490 on a
+    list of weight arrays after it; each is read as its count and refused unless empty,
+    since what a non-empty one means is not established. The node stream is
     preorder: each node writes its child count as
     a 16-bit value, and each *edge* writes its action code the same way immediately before
     the child it leads to. The root has no edge into it and therefore no action code.
@@ -264,10 +289,17 @@ def read_tree(data: bytes) -> MkrTree:
     try:
         signature = cursor.i64()
         _require_signature(signature)
-        internal_format = cursor.i32()
+        mask, game = (cursor.i32(), cursor.i32()) if signature >= GAME_SINCE else (0, NO_GAME)
+        if mask:
+            raise NativeFormatError(
+                f"The tree entry sets bit mask {mask:#x}, whose meaning is not established; only a tree "
+                "that sets none is read."
+            )
+        internal_format = cursor.i32() if signature >= INTERNAL_FORMAT_SINCE else 0
         num_players = cursor.i32()
         if not 2 <= num_players <= 10:
             raise NativeFormatError(f"The tree entry declares {num_players} players, which is not a table.")
+        seat_names = _read_seat_names(cursor, num_players) if signature >= SEAT_NAMES_SINCE else ()
         first_to_act = cursor.i32()
         street = cursor.i32()
         if not 0 <= street < STREETS:
@@ -276,6 +308,10 @@ def read_tree(data: bytes) -> MkrTree:
         dead_money = cursor.i32()
         stacks = tuple(cursor.i32() for _ in range(num_players))
         nodes = _read_nodes(cursor)
+        if signature >= NODE_GROUPS_SINCE:
+            _require_empty(cursor, "node groups")
+        if signature >= GAME_SINCE:
+            _require_empty(cursor, "weight arrays")
         has_ranges = bool(cursor.byte())
         combos, ranges = _read_ranges(cursor, num_players) if has_ranges else (0, b"")
     except struct.error as error:
@@ -302,7 +338,33 @@ def read_tree(data: bytes) -> MkrTree:
         has_ranges=has_ranges,
         range_combos=combos,
         ranges=ranges,
+        game=None if game == NO_GAME else game,
+        seat_names=seat_names,
     )
+
+
+def _read_seat_names(cursor: _TreeCursor, players: int) -> tuple[tuple[int, str], ...]:
+    """The seats a tree names: a count, then a player index and a ``writeUTF`` string each."""
+    count = cursor.i32()
+    if not 0 <= count <= players:
+        raise NativeFormatError(f"The tree entry names {count} seats at a table of {players}.")
+    names = []
+    for _ in range(count):
+        player = cursor.i32()
+        if not 0 <= player < players:
+            raise NativeFormatError(f"The tree entry names seat {player} at a table of {players}.")
+        names.append((player, cursor.utf()))
+    return tuple(names)
+
+
+def _require_empty(cursor: _TreeCursor, what: str) -> None:
+    """A list the reader does not interpret: its count must be zero, or the tree is refused."""
+    count = cursor.i32()
+    if count:
+        raise NativeFormatError(
+            f"The tree entry holds {count} {what}, which this reader does not interpret; only a tree "
+            f"with no {what} is read."
+        )
 
 
 class _TreeCursor:
@@ -325,6 +387,23 @@ class _TreeCursor:
 
     def u16(self) -> int:
         return self._unpack(">H", 2)
+
+    def utf(self) -> str:
+        """A ``DataOutputStream.writeUTF`` string: a 16-bit byte length, then the bytes.
+
+        Java writes a *modified* UTF-8, which differs from UTF-8 only for the NUL character
+        and for characters outside the Basic Multilingual Plane -- neither of which a seat
+        name holds -- so a name that is not UTF-8 is refused rather than guessed at.
+        """
+        length = self.u16()
+        raw = self.data[self.offset : self.offset + length]
+        if len(raw) != length:
+            raise NativeFormatError("The tree entry ends in the middle of a seat name.")
+        self.offset += length
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise NativeFormatError(f"The tree entry holds a seat name that is not UTF-8 ({error}).") from error
 
     def byte(self) -> int:
         if self.offset >= len(self.data):
