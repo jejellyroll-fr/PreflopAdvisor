@@ -63,6 +63,12 @@ REG_LAYOUT = 3
 #: The layouts the format also defines -- a ``double`` store and a ``short``/``int`` one --
 #: which no save has been seen with. Refused by name rather than guessed at.
 UNSEEN_REG_LAYOUTS: tuple[int, ...] = (0, 2)
+#: The tag MonkerSolver 2.3.10-beta writes on every ``reg``. Its rows parse as layout 3's,
+#: but its ``hasEv`` is one flag per street rather than per group, and read with layout 3's
+#: formula its fold EVs come out a hundredth of the blind, so its EV rows are not what
+#: layout 3's are. Refused by name until a calculation save of that build and its export of
+#: the same simulation settle how it reads.
+BETA_REG_LAYOUT = 4
 #: The one ``iavg`` layout this reads: accumulated ``int`` action counts.
 IAVG_LAYOUT = 1
 #: The ``iavg`` layout the format also defines and no save has been seen with.
@@ -192,6 +198,12 @@ def _read_reg(archive: MkrArchive) -> tuple[float, object]:
 
 def _require_layout(archive: MkrArchive, entry: str, layout: int, read: int, unseen: tuple[int, ...]) -> None:
     """Refuse an entry laid out in any way but the one read, naming the ones never seen."""
+    if entry == REG_ENTRY and layout == BETA_REG_LAYOUT:
+        raise NativeFormatError(
+            f"The {entry} entry of {archive.path} uses layout {layout}, the calculation store MonkerSolver "
+            "2.3.10-beta writes, which is not read yet: its EVs and its hasEv differ from layout "
+            f"{read}'s. A save of it made for storage is read."
+        )
     if layout in unseen:
         raise NativeFormatError(
             f"The {entry} entry of {archive.path} uses layout {layout}, which the format defines and no save "

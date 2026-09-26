@@ -69,11 +69,12 @@ from .mkr_tree import FOLD_CODE, RANGE_COMBOS, MkrTree, action_name, chips_per_b
 
 logger = logging.getLogger(__name__)
 
-#: The producer builds a save has been read from end to end, packed the way the archive
-#: writes them: 20109 is MonkerSolver 2.1.9. A save carrying anything else -- or nothing --
-#: fails the ``format version`` check and is refused by the provider rather than read as
-#: though it were one of these. The tree signature is a coarser guard: two builds can share
-#: it and still disagree about an entry, which is what this list is for.
+#: The ``version`` a save states, for the saves read from end to end. It is the save
+#: format's version, not the application's build: MonkerSolver 2.1.9 (build 20109) and
+#: 2.3.10-beta (build 20310) both write 20109. A save carrying anything else -- or nothing
+#: -- fails the ``format version`` check and is refused by the provider rather than read
+#: as though it were one of these. The tree signature is the other guard, and the one the
+#: two builds differ by: 33487 against 33490.
 KNOWN_VERSIONS: tuple[int, ...] = (20109,)
 #: The entry holding the game tree, which is the one entry that is not a Java stream.
 TREE_ENTRY = "tree"
@@ -161,7 +162,7 @@ class MkrStructure:
 
     @property
     def version(self) -> int | None:
-        """The producer build, packed: 20109 is MonkerSolver 2.1.9."""
+        """The save format's version, packed: 20109, which 2.1.9 and 2.3.10-beta both write."""
         return self._integer("version")
 
     @property
@@ -197,7 +198,8 @@ class MkrStructure:
         """One line: what the file is, and whether its own numbers agree with each other."""
         failed = len(self.failures)
         return (
-            f"{self.path}: MonkerSolver {self.version}, saved for {self.mode}, game {self.game_code}, "
+            f"{self.path}: format version {self.version}, tree {self.tree.signature}, saved for {self.mode}, "
+            f"game {self.game_code}, "
             f"{self.tree.num_players} players, street {self.tree.street}, "
             f"{len(self.tree.decisions)} decisions, {self.class_count} hand classes, "
             f"{len(self.checks) - failed}/{len(self.checks)} checks passed"
@@ -288,6 +290,7 @@ def run_checks(structure: MkrStructure) -> tuple[MkrCheck, ...]:
         _range_block_check(structure),
         _locks_check(structure),
         _big_blind_check(structure) if structure.tree.street == 0 else None,
+        _tree_game_check(structure),
     )
     checks.extend(check for check in optional if check is not None)
     checks.append(_version_check(structure))
@@ -414,6 +417,18 @@ def _big_blind_check(structure: MkrStructure) -> MkrCheck:
     )
 
 
+def _tree_game_check(structure: MkrStructure) -> MkrCheck | None:
+    """The game the tree states against the archive's ``game``, where the tree states one."""
+    stated, archived = structure.tree.game, structure.game_code
+    if stated is None:
+        return None
+    return MkrCheck(
+        name="tree game",
+        passed=stated == archived,
+        detail=f"the tree states game {stated} and the archive game {archived}",
+    )
+
+
 def _version_check(structure: MkrStructure) -> MkrCheck:
     version = structure.version
     known = version in KNOWN_VERSIONS
@@ -421,10 +436,10 @@ def _version_check(structure: MkrStructure) -> MkrCheck:
         name="format version",
         passed=known,
         detail=(
-            f"the save was written by build {version}, which has been read end to end"
+            f"the save states format version {version}, which has been read end to end"
             if known
             else (
-                f"build {version} is not one this reader has read end to end "
+                f"format version {version} is not one this reader has read end to end "
                 f"({', '.join(str(read) for read in KNOWN_VERSIONS)}); its entries may differ "
                 "in ways nothing here would notice"
             )

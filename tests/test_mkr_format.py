@@ -46,7 +46,7 @@ from preflop_advisor.mkr_classes import (
 )
 from preflop_advisor.mkr_format import read_scalars, read_structure
 from preflop_advisor.mkr_java import MAX_NESTING, read_java_value
-from preflop_advisor.mkr_provider import MkrStrategyProvider, version_name
+from preflop_advisor.mkr_provider import MkrStrategyProvider, version_name, writer_name
 from preflop_advisor.mkr_stored import (
     MkrSlot,
     MkrStrategy,
@@ -667,6 +667,86 @@ def test_the_slot_order_visits_children_last_to_first():
 def test_a_signature_this_reader_does_not_know_is_refused():
     with pytest.raises(NativeFormatError, match="carries signature 12345"):
         read_tree(tree_entry(signature=12345))
+
+
+def beta_tree_entry(
+    *,
+    signature: int = 33490,
+    mask: int = 0,
+    game: int = 0,
+    names: tuple[tuple[int, str | bytes], ...] = (),
+    node_groups: int = 0,
+    weight_arrays: int = 0,
+) -> bytes:
+    """The heads-up tree of :func:`tree_entry`, as MonkerSolver 2.3.10-beta writes it (33490).
+
+    Over 33487: a bit mask and the game after the signature, the seat names after the
+    player count, and two lists -- node groups, weight arrays -- after the node stream,
+    each written here as its count alone.
+    """
+    body = struct.pack(">qiiii", signature, mask, game, 0, 2)
+    body += struct.pack(">i", len(names))
+    for player, name in names:
+        encoded = name if isinstance(name, bytes) else name.encode("utf-8")
+        body += struct.pack(">iH", player, len(encoded)) + encoded
+    body += struct.pack(">ii", 0, 0)
+    body += struct.pack(">2i", 1000, 2000) + struct.pack(">i", 0) + struct.pack(">2i", 10000, 10000)
+    body += HEADS_UP_NODES + struct.pack(">ii", node_groups, weight_arrays)
+    return body + bytes([0])
+
+
+def test_a_33490_tree_reads_as_the_same_tree_with_its_game_and_seat_names():
+    """The beta's tree: the same fields, nodes and seats as 33487, plus what it adds."""
+    older, beta = read_tree(tree_entry()), read_tree(beta_tree_entry(names=((1, "BB"),)))
+    assert beta.signature == 33490
+    assert beta.game == 0 and older.game is None
+    assert beta.seat_names == ((1, "BB"),) and older.seat_names == ()
+    for name in ("internal_format", "num_players", "first_to_act", "street", "committed", "stacks", "nodes"):
+        assert getattr(beta, name) == getattr(older, name)
+
+
+def test_a_33490_tree_with_what_this_reader_does_not_interpret_is_refused():
+    with pytest.raises(NativeFormatError, match="sets bit mask 0x2"):
+        read_tree(beta_tree_entry(mask=2))
+    with pytest.raises(NativeFormatError, match="holds 1 node groups"):
+        read_tree(beta_tree_entry(node_groups=1))
+    with pytest.raises(NativeFormatError, match="holds 3 weight arrays"):
+        read_tree(beta_tree_entry(weight_arrays=3))
+    with pytest.raises(NativeFormatError, match="names seat 5 at a table of 2"):
+        read_tree(beta_tree_entry(names=((5, "UTG"),)))
+    with pytest.raises(NativeFormatError, match="names seat 1 twice"):
+        read_tree(beta_tree_entry(names=((1, "BB"), (1, "SB"))))
+
+
+def test_a_seat_name_is_read_as_the_modified_utf_8_java_writes():
+    """NUL as ``C0 80``, and a character past the BMP as two separately encoded surrogates."""
+    nul = b"A\xc0\x80B"
+    card = "🂡".encode("utf-16-be")
+    high, low = int.from_bytes(card[:2], "big"), int.from_bytes(card[2:], "big")
+    pair = chr(high).encode("utf-8", "surrogatepass") + chr(low).encode("utf-8", "surrogatepass")
+    for raw, expected in ((nul, "A\x00B"), (pair, "🂡"), ("Hôte".encode(), "Hôte")):
+        assert read_tree(beta_tree_entry(names=((1, raw),))).seat_names == ((1, expected),)
+    lone = chr(high).encode("utf-8", "surrogatepass")
+    with pytest.raises(NativeFormatError, match="not modified UTF-8"):
+        read_tree(beta_tree_entry(names=((1, lone),)))
+
+
+def test_the_signatures_between_the_two_read_builds_are_refused():
+    for signature in (33488, 33489):
+        with pytest.raises(NativeFormatError, match=f"carries signature {signature}"):
+            read_tree(beta_tree_entry(signature=signature))
+
+
+def test_a_beta_save_for_storage_is_read_and_checks_the_tree_s_game(tmp_path):
+    path = write_mkr(tmp_path / "beta.mkr", saved_run(tree=beta_tree_entry()))
+    structure = read_structure(path)
+    assert not structure.failures, structure.summary()
+    assert "tree game" in {check.name for check in structure.checks}
+    mismatch = write_mkr(tmp_path / "beta-omaha.mkr", saved_run(tree=beta_tree_entry(game=1)))
+    assert {check.name for check in read_structure(mismatch).failures} == {"tree game"}
+    # -1 is the solver's own "no game stated", which its reader skips rather than applies.
+    unstated = read_structure(write_mkr(tmp_path / "beta-unstated.mkr", saved_run(tree=beta_tree_entry(game=-1))))
+    assert unstated.tree.game is None and not unstated.failures
 
 
 def test_a_tree_whose_fields_do_not_account_for_its_entry_is_refused():
@@ -1423,6 +1503,12 @@ def test_an_iavg_layout_no_save_has_been_seen_with_is_refused_by_name(tmp_path):
         read_structure(path)
 
 
+def test_the_beta_s_calculation_store_is_refused_by_name(tmp_path):
+    path = write_mkr(tmp_path / "reg-4.mkr", calc_run(reg=b"\x04" + calc_run()["reg"][1:]))
+    with pytest.raises(NativeFormatError, match="layout 4, the calculation store MonkerSolver 2.3.10-beta writes"):
+        read_structure(path)
+
+
 def test_a_reg_entry_that_is_not_a_scale_and_two_arrays_is_refused(tmp_path):
     path = write_mkr(tmp_path / "reg-shape.mkr", calc_run(reg=b"\x03" + java_array("[D", [1.0])))
     with pytest.raises(NativeFormatError, match="is not the scale and two arrays"):
@@ -2116,26 +2202,27 @@ def test_a_node_this_tree_does_not_hold_answers_with_nothing(provider):
     assert provider.raw_frequencies(absent, "AsAd") == ()
 
 
-def test_a_save_from_a_build_nothing_has_read_end_to_end_is_refused(tmp_path):
+def test_a_save_stating_a_format_version_nothing_has_read_is_refused(tmp_path):
     """Two builds can share a tree signature and still disagree about an entry.
 
-    The signature is the coarse guard; the producer build is the fine one. A save written
-    by a build nothing has read through is *detected* rather than read as though it were
-    one that has been, which is the issue's "version detection is reliable" made into a
-    condition that can fail.
+    The signature is one guard and the save's own format version the other -- which is not
+    the application's build: 2.1.9 (20109) and 2.3.10-beta (20310) both state 20109. A save
+    stating a version nothing has read through is *detected* rather than read as though it
+    were one that has been, which is the issue's "version detection is reliable" made into
+    a condition that can fail.
     """
-    path = write_mkr(tmp_path / "newer.mkr", saved_run(version=java_long(20310)))
+    path = write_mkr(tmp_path / "newer.mkr", saved_run(version=java_long(20200)))
     structure = read_structure(path)
     assert {check.name for check in structure.failures} == {"format version"}
-    with pytest.raises(NativeFormatError, match="build 20310 is not one this reader has read"):
+    with pytest.raises(NativeFormatError, match="format version 20200 is not one this reader has read"):
         MkrStrategyProvider(path, SEATS)
 
 
-def test_a_save_that_does_not_state_its_build_at_all_is_refused(tmp_path):
+def test_a_save_that_does_not_state_its_format_version_at_all_is_refused(tmp_path):
     entries = saved_run()
     del entries["version"]
     path = write_mkr(tmp_path / "unversioned.mkr", entries)
-    with pytest.raises(NativeFormatError, match="build None is not one this reader has read"):
+    with pytest.raises(NativeFormatError, match="format version None is not one this reader has read"):
         MkrStrategyProvider(path, SEATS)
 
 
@@ -2145,6 +2232,12 @@ def test_a_build_number_is_named_by_the_shape_the_one_observed_build_has():
     assert version_name(20310) == "2.3.10"
     assert version_name(None) == "of an unstated version"
     assert version_name(7) == "7"
+
+
+def test_the_writer_is_named_by_the_tree_signature_not_the_format_version():
+    assert writer_name(33487, 20109) == "MonkerSolver 2.1.9"
+    assert writer_name(33490, 20109) == "MonkerSolver 2.3.10-beta"
+    assert writer_name(33486, 20109) == "a MonkerSolver build writing save format 2.1.9"
 
 
 def test_a_preflop_save_with_no_identifiable_blind_is_refused(tmp_path):

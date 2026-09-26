@@ -11,7 +11,7 @@ undocumented guesses without fixture-based validation*.
 | --- | --- |
 | 1 — research / format characterization | **Complete.** The container, the tree, the scalars, both kinds of strategy store and the hand-class numbering are read from real saves and written down below, each row marked as measured, derived or `UNKNOWN`. |
 | 2 — feasibility prototype | **Delivered, behind a gate.** `preflop_advisor/mkr_format.py` reads the structure — the container through `mkr_archive.py`, the `tree` entry through `mkr_tree.py`, the Java-serialized entries through `mkr_java.py`, a save made for storage through `mkr_stored.py` and one made for further calculation through `mkr_calc.py`; `preflop_advisor/mkr_provider.py` answers the `StrategyProvider` questions of #15 from it, frequencies **and EVs**; `scripts/mkr_report.py` runs both over a file of your own. |
-| 3 — production integration | **Not met.** The gate that matters now passes for a save made for storage: the AoF save and the solver's own export of that same simulation agree on all 460 096 frequencies and EVs. It passes only since that comparison exposed, and this reader corrected, a wrong hand-class numbering (see *The hand axis*). It passes for a save made for further calculation too, since the same comparison exposed a wrong node order in that store. The second-version gate is still open. |
+| 3 — production integration | **Not met.** The gate that matters now passes for a save made for storage: the AoF save and the solver's own export of that same simulation agree on all 460 096 frequencies and EVs. It passes only since that comparison exposed, and this reader corrected, a wrong hand-class numbering (see *The hand axis*). It passes for a save made for further calculation too, since the same comparison exposed a wrong node order in that store. A second solver version is read for saves made for storage: MonkerSolver 2.3.10-beta writes a new tree format, 33490, which is now read and agrees with the beta's own export. The beta's calculation store is refused by name. |
 
 The prototype is therefore **not reachable from `strategy.provider_for`**, no tree entry
 `kind` selects it, and the import wizard still answers a folder of `.mkr` files by naming
@@ -33,6 +33,7 @@ and a second implementation of the same format to disagree with.
 | Same-run exports of both saves, `ggpoker-aof-plo.same-run-export/` and `validated-holdem.same-run-export/`, made 2026-09-26 by reopening each save in MonkerSolver 2.1.9 and exporting its preflop ranges | The solver's own reading of each save, hand by hand, in the `.rng` format this application already reads. | Primary for the values, the EVs and the class order. |
 | `poker-eval`'s `pe_monker` reader (`include/poker_eval/solver/pe_monker*.h`, `src/solver/adapters/monker_*.c`) | An independent C implementation of the same container, tree, slot binding and class numbering. | Corroborating for the container, the tree and the slot binding. **Not** for the class numbering: it was written from the same wrong rules as this reader's first one, so the two agreeing proved nothing. The byte-sum histogram it quotes (229 887 / 74 / 87 over 230 048 rows) is the one measured here, and is now *explained* rather than taken as a property: see *Frequencies*. |
 | MonkerSolver's own guide, <https://monkerware.com/guide.html> (read 2026-09-22) | Documents installing, building a tree, abstraction, solving and viewing. **No file format, anywhere.** | Primary, negative. The vendor still does not specify `.mkr`. |
+| Two saves of the calculation pair's run re-saved by MonkerSolver 2.3.10-beta (build 20310), one for storage and one for further calculation, and the beta's export of the storage one, made 2026-09-26; the beta's own classes, extracted from its launcher cache and disassembled | What the beta writes differently: the tree format 33490 (its writer `c.a.n.a(DataOutputStream, boolean)` and reader `c.a.n.a(DataInputStream, boolean, Charset)`), a `reg` tagged 4, and a `hasEv` of one flag per street. The three files are three states of the run (1.31 billion, 821 million iterations, and the export of the latter), so only the storage save has an export of the same simulation. | Primary for the 33490 tree and for the beta's storage saves. |
 | Pokersolving.com FAQ, Monkerguy.com help, Two Plus Two *GTO MonkerSolver* thread | That `.mkr` files are distributed and opened in a viewer, and that exports exist beside them. | Secondary, unchanged from Phase 1. |
 
 Negative finding, still a search rather than a fact about the world: no vendor
@@ -82,7 +83,7 @@ fact.
 | Property | Status | Reading |
 | --- | --- | --- |
 | Container structure | **Measured** | ZIP, deflate, UTF-16BE entry names with BOM. |
-| Version markers | **Measured, one value, and refused otherwise** | `version` is a boxed long: `20109` for MonkerSolver 2.1.9. The reading of it as `major.minor.patch` fits the one build observed and is stated as that, not as a documented encoding. The `tree` entry carries its own signature, `33487`. A save carrying any other build — or none — fails the `format version` check and is refused: two builds can share a signature and still disagree about an entry. |
+| Version markers | **Measured, two builds, and refused otherwise** | `version` is a boxed long, `20109`, and it is the save format's version, not the application's: MonkerSolver 2.1.9 (build 20109) and 2.3.10-beta (build 20310, the launcher's own number) both write it. The `tree` entry carries its own signature, and that is what the two builds differ by: `33487` for 2.1.9, `33490` for the beta. A save stating any other format version — or none — fails the `format version` check and is refused. |
 | Compression / serialization | **Measured** | Java object serialization throughout; `storedstrategyN` additionally zlib. |
 | Game metadata | **Measured for 0 and 1, characterized for 2** | `game` is a boxed int: `1` on the PLO4 save, `0` on the hold'em one, `2` for Omaha hi-lo with no fixture here. The integer is **never trusted on its own**: it is checked against the hand size the strategy is indexed by, and a disagreement is a refusal. |
 | Seats / stacks / blinds | **Measured** | The `tree` entry holds the player count, which player opens, and one `int32` stack per player. At street 0 it also holds one committed amount per player, which is where the blinds are: `(0, 1000, 2000, 0)` against stacks of `10000`. |
@@ -96,7 +97,7 @@ fact.
 | Buckets / abstraction | **Measured as numbers, `UNKNOWN` as meaning** | `flopBuckets` / `turnBuckets` / `riverBuckets` / `turnTextureBuckets` / `riverTextureBuckets` / `isoLevel` are boxed ints. Preflop they do not enter the hand axis — the strategy is indexed by class, not by bucket — so they are reported and not used. The `30` a stored strategy begins with, once read as a bucket count, is its **node count**: the AoF tree has 29 nodes, and the solver numbers them from one. |
 | Locks | **Read** | `presetsmap` is a `HashMap` from node to one locked frequency per hand and action, `−1` for unlocked. A save for storage writes the strategy the solver displays, which already has them applied; a calculation store does not apply them and keys them by a node numbering that is not in the file, so a calculation save carrying locks fails a check — as does one whose `presetsmap` is there but cannot be read, since what it locks is then unknown. |
 | Rake | **Measured as numbers, `UNKNOWN` as semantics** | `rakepercent = 1.0`, `rakecap = 30`, `rakeflags = 12`. Not modelled: the EVs already net it out, which is why the players' EVs sum to a small negative number. |
-| Differences between versions | **`UNKNOWN`** | One `version` observed. The signature check accepts `33487` and `33486` (the latter on the solver's own reader's authority, not from a fixture) and refuses anything else, so a save from another format version is a named refusal rather than a wrong read. |
+| Differences between versions | **Measured for 2.1.9 against 2.3.10-beta** | The tree: 33490 adds a bit mask and the tree's game after the signature, the seat names after the player count (a count, then an index and a `writeUTF` string each), and two lists after the node stream, node groups and weight arrays. The fields 33487 has, and the node stream, are unchanged. The reader follows the beta's own: the internal format is read from 33487 on (so 33486 has none), the node groups from 33488, the seat names from 33489, the rest from 33490. The mask and the two lists are read and refused unless empty, since what a non-empty one means is not established, and so is a seat named twice; a name is decoded as the modified UTF-8 Java writes; 33488 and 33489 are refused, no save carrying them. The tree's game is checked against the archive's `game`. The calculation store: the beta tags `reg` 4 and writes one `hasEv` flag per street, and layout 3's formula gives its fold EVs a hundredth of the blind, so it is refused by name. A save for storage has the same entries in both builds. |
 | Postflop | **Not read** | A tree solved from street 1 or later carries no committed amounts and no board: the money unit cannot be derived and a node's seat cannot be named, so the provider refuses it. The structural read still reports it. |
 
 ### A save for storage, and the two things that are easy to get silently wrong
@@ -284,7 +285,7 @@ both — with the EV missing only for a player whose EV the run did not keep.
 | A save from an unread build is refused rather than read | **Supported** | `tests/test_mkr_format.py` |
 | Values cross-validated against an export of the same simulation | **Supported for a save made for storage**: 460 096 frequencies and EVs, 0 differing. **Supported for a save made for further calculation**: 4 732 frequencies and EVs, 0 differing | `test_a_real_export_of_the_same_run_agrees_hand_by_hand`, opt-in on a real pair |
 | A calculation store's nodes are read in the solver's order | **Supported**, measured against a same-run export | `test_a_group_s_nodes_are_stored_last_node_first` |
-| Parsing read through on a second solver version | **Not done**: one build read end to end | — |
+| Parsing read through on a second solver version | **Supported for a save made for storage**: a 2.3.10-beta save agrees with the beta's own export on all 4 732 frequencies and EVs. **Refused for its calculation store**, by name | `test_a_33490_tree_reads_as_the_same_tree_with_its_game_and_seat_names`, `test_a_beta_save_for_storage_is_read_and_checks_the_tree_s_game`, `test_the_beta_s_calculation_store_is_refused_by_name`, and the same-run test on the real pair |
 | Five- and six-card Omaha | **Refused**: no confirmed class count | `test_a_hand_size_with_no_confirmed_count_is_refused_rather_than_enumerated` |
 
 ## Fixture and test strategy
@@ -375,11 +376,11 @@ The provider stays out of the application until all of these hold. Current state
       one borrowed function decodes archive names rather than strategies, and nothing
       selects it as a source;
 - [x] `docs/native-import.md` states, per property, what is supported and what is not;
-- [x] **a save written by a build nothing has read end to end is refused.** `KNOWN_VERSIONS`
-      lists the builds a save has been read through — one, 20109 — and a save carrying
-      anything else, or nothing, fails the `format version` check and is refused. Two
-      builds can share a tree signature and still disagree about an entry, so the signature
-      is the coarse guard and the build number is the fine one.
+- [x] **a save in a format nothing has read end to end is refused.** `KNOWN_VERSIONS`
+      lists the format versions a save has been read through — one, 20109, which both
+      builds write — and a save stating anything else, or nothing, fails the
+      `format version` check and is refused. The tree signature is the other guard, and
+      the one the builds actually differ by: each signature read has a real save behind it.
 - [x] **both kinds of save are read end to end from a real file, every check passing.** The
       storage save and the calculation save above, 8 / 8 and 10 / 10, with frequencies and
       EVs through the provider.
@@ -395,11 +396,12 @@ The provider stays out of the application until all of these hold. Current state
       it when `PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN` names the export.
 - [x] **the same, for a save made for further calculation.** A hold'em calculation save
       and its export agree on all 4 732 frequencies and EVs, the same test asserting it.
-- [ ] **parsing is deterministic across two solver versions.** The refusal above makes an
-      unread build *safe*; it does not make it *read*. Two builds are installed on the
-      machine this was written on (2.1.9 and 2.3.10-beta), so the gate needs one run
-      re-saved from the second and its `version` added to `KNOWN_VERSIONS` once its
-      entries are read through.
+- [x] **parsing is deterministic across two solver versions, for saves made for
+      storage.** A run re-saved by 2.3.10-beta is read through its new tree format and
+      agrees with the beta's own export on every frequency and EV.
+- [ ] **the same, for the beta's calculation store.** Its `reg` is tagged 4, its `hasEv`
+      is per street, and its EVs do not read by layout 3's formula. It needs a calculation
+      save of the beta and an export of that same state to be read rather than refused.
 - [x] **EV magnitudes in the provider's own unit.** Both kinds of save hold a per-action
       EV in the tree's chips, which is the model's unit, and the fold EV checks the reading
       on every node that can fold. What is left open is the same-run comparison above,

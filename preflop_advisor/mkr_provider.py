@@ -57,7 +57,7 @@ from .errors import NativeFormatError
 from .hand_classes import CARDS_PER_GAME
 from .mkr_classes import class_of_hand, class_table
 from .mkr_format import MkrStructure, read_structure
-from .mkr_tree import action_name
+from .mkr_tree import TREE_WRITERS, action_name
 from .settings import ConfigSource, normalize, seats_for
 from .sizings import Sizing, sizing_for_code
 from .strategy import EMPTY_NODE, Node, SimulationMetadata, StrategyResult
@@ -178,7 +178,7 @@ class MkrStrategyProvider:
             ante_bb=self._ante_bb(),
             chips_per_bb=unit,
             infos=(
-                f"MonkerSolver {version_name(structure.version)}, saved for {structure.mode}, "
+                f"{writer_name(tree.signature, structure.version)}, saved for {structure.mode}, "
                 f"{len(tree.decisions)} decisions, {structure.class_count} hand classes{spread}"
             ),
         )
@@ -380,12 +380,22 @@ def _key(node: Node) -> str:
     return f"{node.hero}:{line}".lower()
 
 
-def version_name(version: int | None) -> str:
-    """A packed build number as a version string: 20109 reads as ``2.1.9``.
+def writer_name(signature: int, version: int | None) -> str:
+    """The build that wrote a save: by its tree signature, which is what the builds differ by.
 
-    Stated as a reading of the one value observed, not as a documented encoding: the save
-    at hand was written by 2.1.9 and carries 20109. A number that does not fit the shape is
-    shown as itself rather than forced into it.
+    Both builds read so far state format version 20109, so the version alone would name
+    every save 2.1.9. A signature no real save has been read with falls back to it.
+    """
+    return TREE_WRITERS.get(signature, f"a MonkerSolver build writing save format {version_name(version)}")
+
+
+def version_name(version: int | None) -> str:
+    """A save's packed format version as a version string: 20109 reads as ``2.1.9``.
+
+    It is the save format's version, not the build that wrote the save: 2.1.9 and
+    2.3.10-beta both state 20109, which is the version 2.1.9 introduced. The ``major.minor
+    .patch`` reading is stated as a reading of the one value observed, not as a documented
+    encoding, and a number that does not fit the shape is shown as itself.
     """
     if version is None:
         return "of an unstated version"
