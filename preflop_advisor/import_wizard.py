@@ -38,7 +38,6 @@ from .hand_classes import ranks_of
 from .hand_convert_helper import normalize_monker_hand
 from .native_format import describe_refusal, native_count, native_files, probe
 from .paths import (
-    MKR_ENDING,
     SOURCE_CSV,
     SOURCE_MKR,
     SOURCE_MONKER,
@@ -106,6 +105,9 @@ class SimulationScan:
     #: Rows that could not be read, with their file and line. Empty for a range folder,
     #: whose entries are read as a whole or not at all.
     problems: tuple[str, ...] = ()
+    #: Whether :attr:`ante_bb` is known. A save with dead money it does not size leaves the
+    #: ante to the user, which is not the same as an ante of zero.
+    ante_known: bool = True
 
     @property
     def needs_conversion(self) -> bool:
@@ -152,7 +154,7 @@ class SimulationScan:
                     f"Game: {self.game}",
                     f"EV data: {'yes' if self.has_ev else 'no'}",
                     f"Stack: {self.stack_bb}bb",
-                    f"Ante: {self.ante_bb or '0'}",
+                    f"Ante: {(self.ante_bb or '0') if self.ante_known else 'unknown (declare it)'}",
                     f"Source: {self.export}",
                 ]
             )
@@ -684,17 +686,62 @@ def _single_save(folder: str | None) -> str | None:
     absolute = resolve_range_folder(folder)
     if absolute is None or holds_range_files(absolute):
         return None
-    saves = [name for name in native_files(absolute) if name.lower().endswith(MKR_ENDING)]
-    if not saves:
-        return None
-    total = sum(1 for entry in Path(absolute).iterdir() if entry.is_file() and entry.name.lower().endswith(MKR_ENDING))
+    saves, total = native_files(absolute), native_count(absolute)
     if total > 1:
         more = f", and {total - len(saves)} more" if total > len(saves) else ""
         raise SimulationScanError(
             f"{absolute} holds {total} saved simulations ({', '.join(saves)}{more}). A tree reads one: "
             "choose the .mkr file to import."
         )
-    return str(Path(absolute) / saves[0])
+    return str(Path(absolute) / saves[0]) if saves else None
+
+
+def _open_save(path: str, tree_configs: ConfigSource) -> Any:
+    """The reader over one save, or the reason it refuses, as the wizard says it.
+
+    :raises SimulationScanError: if the file cannot be found or read as a simulation.
+    """
+    # Imported here: the reader is only needed by an import that names a save.
+    from .mkr_provider import MkrStrategyProvider
+
+    resolved = resolve_simulation_file(path)
+    if resolved is None:
+        raise SimulationScanError(f"Simulation file not found: {path}")
+    try:
+        return MkrStrategyProvider(resolved, tree_configs)
+    except NativeFormatError as error:
+        raise SimulationScanError(
+            f"{Path(resolved).name} cannot be read directly: {error} Select the folder the solver exported its "
+            "ranges to, or a folder of CSV tables, and the import will read that."
+        ) from error
+
+
+def _holds_ev(structure: Any) -> bool:
+    """Whether a save keeps an EV for any hand at any decision.
+
+    Every class is looked at, not one: a calculation store leaves a class it never weighted
+    without EVs, and a stored one can do the same, while the other hands are gradable.
+    """
+    return any(
+        any(ev is not None for ev in structure.evs(node, hand_class) or ())
+        for node in structure.tree.decisions
+        for hand_class in range(structure.class_count)
+    )
+
+
+def _save_notes(metadata: Any, stack: int, has_ev: bool) -> list[str]:
+    """What a scanned save leaves the user to know or to declare."""
+    notes = ["Read directly from the solver's save: no export is needed."]
+    if not has_ev:
+        notes.append("No EV data in this save: the trainer can ask its nodes but cannot grade an answer.")
+    if metadata.stack_bb != stack:
+        notes.append(f"Stack depth: the save's {metadata.stack_bb:g}bb is entered as {stack}bb.")
+    if metadata.ante_bb is None:
+        notes.append(
+            "Ante: the save carries dead money it does not size as an ante. Declare the ante on the next "
+            "page; the import is refused without it."
+        )
+    return notes
 
 
 def scan_mkr_simulation(
@@ -704,38 +751,23 @@ def scan_mkr_simulation(
 ) -> SimulationScan:
     """Open one ``.mkr`` save, and report it the way a scanned folder is reported.
 
-    The save states its game, its seats, its depth and its ante itself, so none of them is
-    assumed and nothing is asked for that the file already answered. What it refuses to
-    read -- a format it has not read, a postflop tree, a store whose own numbers disagree --
-    is refused here, in the reader's own words, before anything is written.
+    The save states its game, its seats and its depth itself, so none of them is assumed
+    and nothing is asked for that the file already answered. Its ante is stated when it has
+    no dead money, and left for the user to declare when it has some. What the reader
+    refuses -- a format it has not read, a postflop tree, a store whose own numbers
+    disagree -- is refused here, in the reader's own words, before anything is written.
 
     :raises SimulationScanError: if the file cannot be found or read as a simulation.
     """
-    # Imported here: the reader is only needed by an import that names a save.
-    from .mkr_provider import MkrStrategyProvider, writer_name
+    from .mkr_provider import writer_name
 
-    resolved = resolve_simulation_file(path)
-    if resolved is None:
-        raise SimulationScanError(f"Simulation file not found: {path}")
-    try:
-        provider = MkrStrategyProvider(resolved, tree_configs)
-    except NativeFormatError as error:
-        raise SimulationScanError(
-            f"{Path(resolved).name} cannot be read directly: {error} Select the folder the solver exported its "
-            "ranges to, or a folder of CSV tables, and the import will read that."
-        ) from error
-    metadata = provider.metadata()
-    structure = provider.structure
-    decisions = structure.tree.decisions
+    provider = _open_save(path, tree_configs)
+    metadata, structure = provider.metadata(), provider.structure
     stack = round(metadata.stack_bb)
-    has_ev = any(any(ev is not None for ev in structure.evs(node, 0) or ()) for node in decisions)
-    notes: list[str] = ["Read directly from the solver's save: no export is needed."]
-    if not has_ev:
-        notes.append("No EV data in this save: the trainer can ask its nodes but cannot grade an answer.")
-    if metadata.stack_bb != stack:
-        notes.append(f"Stack depth: the save's {metadata.stack_bb:g}bb is entered as {stack}bb.")
+    has_ev = _holds_ev(structure)
+    notes = _save_notes(metadata, stack, has_ev)
     same_folder, same_size = _duplicates(
-        str(resolved), (str(metadata.num_players), str(stack), metadata.game), tree_infos
+        str(provider.path), (str(metadata.num_players), str(stack), metadata.game), tree_infos
     )
     if same_folder:
         notes.append(f"Already configured as {', '.join(same_folder)}: importing again adds a second entry.")
@@ -743,15 +775,16 @@ def scan_mkr_simulation(
         notes.append(f"Likely duplicates of a simulation you already have: {', '.join(same_size)}.")
     return SimulationScan(
         folder=str(path),
-        absolute_folder=str(resolved),
-        name=Path(resolved).stem,
+        absolute_folder=str(provider.path),
+        name=Path(provider.path).stem,
         game=metadata.game,
         players=metadata.num_players,
         seats=tuple(metadata.seats),
         stack_bb=stack,
         ante_bb=f"{metadata.ante_bb:g}" if metadata.ante_bb else "",
+        ante_known=metadata.ante_bb is not None,
         range_files=0,
-        nodes=len(decisions),
+        nodes=len(structure.tree.decisions),
         action_codes=(),
         names={},
         sizings={},

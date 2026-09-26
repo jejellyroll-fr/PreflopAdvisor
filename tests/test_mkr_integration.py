@@ -22,7 +22,20 @@ from preflop_advisor.tree_reader import TreeReader
 from preflop_advisor.tree_selector import kind_of
 
 from .test_import_wizard import make_config
-from .test_mkr_format import SEATS, java_long, saved_run, write_mkr
+from .test_mkr_format import (
+    FACED_EVS,
+    ROOT_EVS,
+    SCALE,
+    SEATS,
+    _ev_block,
+    _hand_rows,
+    calc_run,
+    java_long,
+    reg_entry,
+    saved_run,
+    tree_entry,
+    write_mkr,
+)
 
 
 @pytest.fixture
@@ -166,3 +179,52 @@ def test_the_wizard_page_reads_a_save_typed_into_its_box(qapp, save, tmp_path):
     assert wizard.folder_page.isComplete()
     assert "Source: MonkerSolver 2.1.9 save, for storage" in wizard.folder_page.report.text()
     assert wizard.folder_page.scan is not None and wizard.folder_page.scan.kind == SOURCE_MKR
+
+
+# --------------------------------------------------------------------------------------
+# What a save cannot say for itself
+
+
+@pytest.fixture
+def dead_money_save(tmp_path) -> str:
+    """A save whose tree carries dead money, which the file does not size as an ante."""
+    return str(write_mkr(tmp_path / "hu-dead.mkr", saved_run(tree=tree_entry(dead_money=250))))
+
+
+def test_a_save_with_dead_money_leaves_its_ante_to_be_declared(dead_money_save, tree_configs):
+    scan = scan_simulation(dead_money_save, tree_configs)
+
+    assert not scan.ante_known and scan.ante_bb == ""
+    assert "Ante: unknown (declare it)" in scan.summary()
+    assert any("Declare the ante" in note for note in scan.notes)
+
+    ok, why = validate_tree(entry(dead_money_save), False, SEATS, SOURCE_MKR)
+    assert not ok and "dead money" in why
+    assert validate_tree(entry(dead_money_save), True, SEATS, SOURCE_MKR) == (True, "")
+
+
+def test_the_entry_s_ante_is_the_save_s_where_the_save_cannot_size_it(dead_money_save, save):
+    declared = {"kind": SOURCE_MKR, "folder": dead_money_save, "ante": 0.125}
+    assert provider_for(declared, SEATS).metadata().ante_bb == 0.125
+    assert provider_for({**declared, "ante": 0.0}, SEATS).metadata().ante_bb is None
+    # A save with no dead money has no ante, whatever an entry says.
+    assert provider_for({"kind": SOURCE_MKR, "folder": save, "ante": 0.125}, SEATS).metadata().ante_bb == 0.0
+
+
+def test_a_save_holding_evs_for_some_hands_only_is_gradable(tmp_path, tree_configs):
+    """Class 0 never weighted: its EVs are all absent, and the other classes still have theirs."""
+    unweighted = [0, 0, 0, 0]
+    ev_groups = [None] * 8
+    # calc_run's own rows, with class 0 -- deuces -- never weighted at either node.
+    ev_groups[0] = _hand_rows(
+        _ev_block(ROOT_EVS, 10, 2000),
+        {
+            "AsAd": _ev_block((-1000, 1500), 10, 2000),
+            "2s3d": _ev_block((-1000, -1500), 10, 2000),
+            "2s2h": unweighted,
+        },
+    )
+    ev_groups[4] = _hand_rows(_ev_block(FACED_EVS, 5, 0), {"AsAd": _ev_block((-2000, 2600), 5, 0), "2s2h": unweighted})
+    path = write_mkr(tmp_path / "partial-ev.mkr", calc_run(reg=reg_entry(SCALE, [None] * 8, ev_groups)))
+
+    assert scan_simulation(str(path), tree_configs).has_ev

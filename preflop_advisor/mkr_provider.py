@@ -87,8 +87,10 @@ class MkrStrategyProvider:
         a node whose seat or sizing is guessed is a node that cannot be keyed on.
     """
 
-    def __init__(self, path: str, configs: ConfigSource) -> None:
+    def __init__(self, path: str, configs: ConfigSource, declared_ante: float | None = None) -> None:
         self.path = path
+        #: The ante the tree entry declares, used only where the save cannot say its own.
+        self.declared_ante = declared_ante
         self.structure = read_structure(path)
         self._require_readable(self.structure)
         # Checked here rather than on the first metadata() call, so a file whose game is
@@ -212,13 +214,16 @@ class MkrStrategyProvider:
 
         A preflop tree keeps its posted blinds in the committed array and everything else
         in one dead-money figure, which an ante is one of and is not the only one. Zero is
-        reported as zero; anything else is reported as *unknown* rather than as an ante,
-        because the table arithmetic reads ``None`` as "numbers unknown" and an ante of the
-        wrong size is worse than no ante at all.
+        reported as zero. Anything else is the ante the tree entry declares, when it
+        declares one -- the user knows what the dead money was, and the file does not --
+        and *unknown* otherwise rather than a guess, because the table arithmetic reads
+        ``None`` as "numbers unknown" and an ante of the wrong size is worse than no ante.
         """
         dead = self.structure.tree.dead_money
         if dead == 0:
             return 0.0
+        if self.declared_ante:
+            return self.declared_ante
         logger.debug("%s carries %d in dead money, which is not necessarily an ante", self.path, dead)
         return None
 

@@ -186,11 +186,9 @@ def validate_tree(
             return False, f"folder holds no .rng files: {folder}{_native_hint(folder)}"
         if not holds_csv_files(folder):
             return False, f"folder holds no .csv files: {folder}{_native_hint(folder)}"
-    description = ",".join(parts[4:]).strip()
-    mentions_ante = bool(re.search(r"\bantes?\b", description, re.IGNORECASE))
-    denies_ante = bool(re.search(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", description, re.IGNORECASE))
-    if mentions_ante and not denies_ante and not ante_declared:
-        return False, "description mentions an ante but TableN.ante is not declared"
+    reason = _undeclared_ante(",".join(parts[4:]).strip(), ante_declared)
+    if reason:
+        return False, reason
     if kind != SOURCE_CSV and not _tree_seats_match_files(parts, config):
         return False, "declared player count does not match the range files"
     return True, ""
@@ -210,26 +208,45 @@ def _validate_simulation_file(parts: list[str], ante_declared: bool, config: Con
     path = resolve_simulation_file(parts[3])
     if path is None:
         return False, f"simulation file not found: {parts[3]}"
+    metadata, refusal = _save_metadata(path, config)
+    if metadata is None:
+        return False, refusal
+    reason = _contradiction(parts, metadata) or _undeclared_ante(",".join(parts[4:]), ante_declared)
+    if not reason and metadata.ante_bb is None and not ante_declared:
+        reason = "the save carries dead money it does not size as an ante: declare TableN.ante"
+    return not reason, reason
+
+
+def _save_metadata(path: str, config: ConfigSource | None) -> tuple[Any, str]:
+    """A save's own metadata, or ``None`` and the reader's reason for refusing it."""
     # Imported here: opening a save pulls in the whole reader, which nothing else needs.
     from .errors import NativeFormatError
     from .mkr_provider import MkrStrategyProvider
 
     try:
-        metadata = MkrStrategyProvider(path, config or {}).metadata()
+        return MkrStrategyProvider(path, config or {}).metadata(), ""
     except NativeFormatError as error:
-        return False, str(error)
+        return None, str(error)
+
+
+def _contradiction(parts: list[str], metadata: Any) -> str:
+    """What an entry declares that its save does not: players, depth or game."""
     if not parts[0].isdigit() or int(parts[0]) != metadata.num_players:
-        return False, f"declared player count {parts[0]} is not the save's {metadata.num_players}"
+        return f"declared player count {parts[0]} is not the save's {metadata.num_players}"
     if int(parts[1]) != round(metadata.stack_bb):
-        return False, f"declared stack depth {parts[1]}bb is not the save's {metadata.stack_bb:g}bb"
+        return f"declared stack depth {parts[1]}bb is not the save's {metadata.stack_bb:g}bb"
     if parts[2].strip().lower() != metadata.game.lower():
-        return False, f"declared game {parts[2]} is not the save's {metadata.game}"
-    description = ",".join(parts[4:]).strip()
+        return f"declared game {parts[2]} is not the save's {metadata.game}"
+    return ""
+
+
+def _undeclared_ante(description: str, ante_declared: bool) -> str:
+    """Why a description that mentions an ante needs its size declared, or ``""``."""
     mentions_ante = bool(re.search(r"\bantes?\b", description, re.IGNORECASE))
     denies_ante = bool(re.search(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", description, re.IGNORECASE))
     if mentions_ante and not denies_ante and not ante_declared:
-        return False, "description mentions an ante but TableN.ante is not declared"
-    return True, ""
+        return "description mentions an ante but TableN.ante is not declared"
+    return ""
 
 
 def _native_hint(folder: str) -> str:

@@ -231,7 +231,7 @@ def provider_for(tree: dict[str, Any], configs: ConfigSource) -> StrategyProvide
         path = resolve_simulation_file(str(tree.get("folder", "")))
         if path is None:
             raise RangeFolderNotFound(f"Simulation file not found: {tree.get('folder', '')}")
-        return MkrStrategyProvider(path, configs)
+        return MkrStrategyProvider(path, configs, declared_ante=tree.get("ante"))
     from .monker_provider import MonkerRangeProvider
 
     return MonkerRangeProvider(tree, configs)

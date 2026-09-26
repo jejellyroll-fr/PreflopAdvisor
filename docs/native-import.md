@@ -20,7 +20,9 @@ path is resolved like a range folder's (as given, then under each search root, t
 `ranges/` by its name), and an entry whose field ends in `.mkr` is read as a save even with
 no `kind` declared. Saving the entry opens the save and holds the entry to it: the player
 count, the depth and the game must be the save's, since the Advisor seats its grid by what
-the entry says.
+the entry says. The ante is the one thing a save may not say: a tree with no dead money has
+none, but dead money is not necessarily an ante, so a save carrying some is imported only
+with `TableN.ante` declared, and that declaration is what the reader then reports.
 
 What changed since Phase 1 is not an opinion, it is two artefacts: a real save to read,
 and a second implementation of the same format to disagree with.
