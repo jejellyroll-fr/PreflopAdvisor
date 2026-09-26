@@ -27,10 +27,15 @@ Every block is in the solver's action order, the reverse of the tree's child ord
 
 Two things are not in the file and are rebuilt from the tree here, each under a check that
 fails rather than guesses: which group a node is in, and the order of a group's nodes. The
-nodes of a group follow the tree's own order -- measured on a tree where every player acts
-at a single depth, which cannot tell a depth-first walk from a breadth-first one. A tree
-where the two differ is reported as such and refused, and so is a group whose rows are not
-exactly as wide as its nodes need.
+nodes of a group follow :attr:`~preflop_advisor.mkr_tree.MkrTree.slot_order`, the walk a
+stored strategy is written in, which takes each node's children last to first. So the
+last node of the tree's own order comes first. That was measured against the solver's own
+export of a calculation save: read in the tree's order, every group of more than one node
+put each block on another node's line, while every check the file can make about itself
+passed, because ``iavg`` and ``reg`` were misread in step. The tree it was measured on has
+every player act at a single depth, which cannot tell that walk from a breadth-first one,
+or from the tree's order reversed. A tree where those differ is reported as such and
+refused, and so is a group whose rows are not exactly as wide as its nodes need.
 """
 
 from __future__ import annotations
@@ -88,16 +93,28 @@ def group_layout(tree: MkrTree) -> tuple[dict[int, GroupLayout], dict[int, tuple
     """Every decision node's group and offsets, the nodes of each group, and whether their
     order is established.
 
-    The order is the tree's own, depth first. When a breadth-first walk would order some
-    group differently, the file does not say which of the two it used, and the last value
-    comes back ``False``.
+    The order is :attr:`~preflop_advisor.mkr_tree.MkrTree.slot_order`'s: depth first, each
+    node's children last to first. It was measured on a tree where every player acts at a
+    single depth, and there two other walks give the same order: breadth first with
+    children last to first, and the tree's own order reversed. They part as soon as a
+    player acts twice on one line -- opening, then facing a re-raise -- and the file does
+    not say which of the three it used. Such a tree comes back ``False`` and is refused
+    rather than read in the walk that merely fits the one tree measured.
     """
+    slot = tree.slot_of
     members: dict[int, list[int]] = {}
-    for node in tree.decisions:
+    for node in sorted(tree.decisions, key=slot.__getitem__):
         group = GROUPS_PER_PLAYER * tree.player_at(node) + tree.street
         members.setdefault(group, []).append(node)
+    # ``members`` is in the stored strategy's walk already; each group is held to the two
+    # walks the measured tree could not tell it from.
+    breadth = {node: position for position, node in enumerate(_breadth_first_last_to_first(tree))}
     established = all(
-        nodes == sorted(nodes, key=lambda node: (tree.nodes[node].depth, node)) for nodes in members.values()
+        # Breadth first, children last to first.
+        nodes == sorted(nodes, key=breadth.__getitem__)
+        # Node indices are the tree's preorder, so a reverse sort is its order reversed.
+        and nodes == sorted(nodes, reverse=True)
+        for nodes in members.values()
     )
     layout: dict[int, GroupLayout] = {}
     for group, nodes in members.items():
@@ -108,6 +125,14 @@ def group_layout(tree: MkrTree) -> tuple[dict[int, GroupLayout], dict[int, tuple
             average += actions
             ev += actions + EV_EXTRA_CELLS
     return layout, {group: tuple(nodes) for group, nodes in members.items()}, established
+
+
+def _breadth_first_last_to_first(tree: MkrTree) -> list[int]:
+    """Every node, level by level, each node's children taken last to first."""
+    order = [0] if tree.nodes else []
+    for index in order:
+        order.extend(reversed(tree.nodes[index].children))
+    return order
 
 
 def read_calculation(archive: MkrArchive, tree: MkrTree) -> CalcSource:
@@ -411,8 +436,9 @@ class CalcSource:
         return MkrCheck(
             name="group order",
             passed=self.ordered,
-            detail="a depth-first and a breadth-first walk put every group's nodes in the same order"
+            detail="the stored strategy's walk, a breadth-first walk and the tree's order reversed put every "
+            "group's nodes in the same order"
             if self.ordered
-            else "a depth-first and a breadth-first walk order some group's nodes differently, and which of "
-            "the two the store follows is not established",
+            else "the stored strategy's walk, a breadth-first walk and the tree's order reversed order some "
+            "group's nodes differently, and which of them the store follows is not established",
         )
