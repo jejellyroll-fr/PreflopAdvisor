@@ -16,32 +16,43 @@ things the file itself carries:
   map is a bijection, asserted in the suite, and that is what makes a simulation file and
   an exported range folder two spellings of the same hand axis rather than two hand axes.
 
-Three things define the numbering, and getting any one of them wrong yields a *different*
-bijection onto the same 16432 classes -- which is the trap: a wrong numbering does not
-fail, it silently reads another hand's strategy. They are stated here so they can be
-argued with:
+The numbering is the solver's, and it is **not** an enumeration of the deck. A class is a
+hand up to suit isomorphism, which is the multiset of the rank sets its suits hold: ``AhKs4h3s``
+holds ``{4, A}`` in one suit and ``{3, K}`` in another. The solver numbers those multisets
+block by block, one block per *suit pattern* -- the sizes of those rank sets, largest first:
 
-* the deck is **suit-major**: card ``i`` has suit ``i // 13`` and rank ``i % 13``, suits in
-  the order ``s h c d``, ranks ``2`` through ``A``. A rank-major deck also yields 16432
-  classes, and disagrees with this one;
-* hands are enumerated **lexicographically** over sorted four-tuples of card indices --
-  the plain nested ``c0 < c1 < c2 < c3`` loop;
-* a class index is minted **the first time** a canonical form appears in that enumeration.
-  It is not a sort of anything, so there is no arithmetic shortcut: the enumeration is run
-  once, into a table this module caches.
+* the patterns in ascending order of their size tuples: for four cards ``1111`` (rainbow),
+  ``211``, ``22``, ``31``, ``4`` (monotone); for two cards ``11`` (offsuit, pairs included),
+  then ``2`` (suited);
+* inside a pattern, the rank sets of the largest size vary slowest. Rank sets of one size
+  are the ``k``-card combinations of the thirteen ranks in lexicographic order, ``2``
+  through ``A``, and several sets of one size are taken as a multiset, lexicographically.
 
-The canonical form of a hand is the smallest of its 24 suit relabellings. That definition,
-and only that definition, is what produced the counts above.
+So four-card class ``0`` is ``2222`` rainbow, ``1819`` is ``AAAA``, ``1820`` opens the
+``211`` block with ``23`` suited and ``22`` beside it, and ``16431`` is ``JQKA`` monotone.
+The block sizes are the class counts' own decomposition: 1820 + 7098 + 3081 + 3718 + 715
+= 16432, and 91 + 78 = 169.
 
-The numbering is reproduced independently in a C reader of the same format
-(``poker-eval``'s ``pe_monker_classes``), from the same three rules; the two agreeing is
-the reason this is written as a derivation rather than as a guess.
+That this is the solver's numbering is measured, not argued. A save of the AoF run and the
+solver's own export of that same simulation agree under it on every one of 460096
+frequencies and EVs (see ``docs/native-import.md``). The numbering this module used to derive
+-- a suit-major deck enumerated lexicographically, a class minted where its canonical form
+first appears -- produced the same 16432 classes in another order, and read every hand
+under another hand's strategy while each of the file's own checks passed. That is the
+trap a numbering sets: a wrong one does not fail, it silently reads another hand. The
+C reader in ``poker-eval`` (``pe_monker_classes``) was written from the same wrong rules,
+so its agreement with this module was never evidence.
+
+A dealt hand finds its class through its canonical form, the smallest of its 24 suit
+relabellings over the suit-major deck below; the deck only names cards, it does not order
+classes.
 """
 
 from __future__ import annotations
 
 import itertools
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 from itertools import permutations
@@ -51,8 +62,9 @@ from .hand_convert_helper import convert_hand
 
 logger = logging.getLogger(__name__)
 
-#: The deck the numbering is defined over: card ``i`` is ``DECK_RANKS[i % 13]`` of
-#: ``DECK_SUITS[i // 13]``. Suit-major, and in this suit order, or the numbering changes.
+#: The deck cards are named over: card ``i`` is ``DECK_RANKS[i % 13]`` of
+#: ``DECK_SUITS[i // 13]``. It names cards and canonical forms; the class order is
+#: :func:`_solver_order`'s, not the deck's.
 DECK_RANKS = "23456789TJQKA"
 DECK_SUITS = "shcd"
 #: Cards in the deck, which is the only constant here that needs no evidence.
@@ -100,6 +112,42 @@ def canonical(cards: tuple[int, ...]) -> tuple[int, ...]:
     )
 
 
+def _suit_patterns(cards_per_hand: int) -> list[tuple[int, ...]]:
+    """The ways a hand's cards split across suits, largest part first, in ascending order.
+
+    At most four parts, one per suit: for four cards ``(1, 1, 1, 1)``, ``(2, 1, 1)``,
+    ``(2, 2)``, ``(3, 1)``, ``(4,)``.
+    """
+
+    def split(total: int, largest: int) -> list[tuple[int, ...]]:
+        if total == 0:
+            return [()]
+        return [(part, *rest) for part in range(min(total, largest), 0, -1) for rest in split(total - part, part)]
+
+    return sorted(pattern for pattern in split(cards_per_hand, cards_per_hand) if len(pattern) <= len(DECK_SUITS))
+
+
+def _solver_order(cards_per_hand: int) -> Iterator[tuple[tuple[int, ...], ...]]:
+    """Every class as the rank sets its suits hold, in the order the solver numbers them.
+
+    One block per suit pattern (:func:`_suit_patterns`). Inside a block, the sets of the
+    largest size vary slowest; the sets of one size are a multiset of the ``k``-rank
+    combinations, each in lexicographic order.
+    """
+    for pattern in _suit_patterns(cards_per_hand):
+        sizes = sorted(set(pattern), reverse=True)
+        choices = [
+            list(
+                itertools.combinations_with_replacement(
+                    itertools.combinations(range(len(DECK_RANKS)), size), pattern.count(size)
+                )
+            )
+            for size in sizes
+        ]
+        for picked in itertools.product(*choices):
+            yield tuple(ranks for same_size in picked for ranks in same_size)
+
+
 @dataclass(frozen=True)
 class ClassTable:
     """The numbering for one hand size, in both directions, with the names it maps onto.
@@ -128,14 +176,13 @@ class ClassTable:
 
 @lru_cache(maxsize=4)
 def class_table(cards_per_hand: int) -> ClassTable:
-    """The numbering for hands of this many cards, enumerated once and cached.
+    """The numbering for hands of this many cards, built once and cached.
 
-    Roughly a quarter of a million canonical forms for four cards, which is a couple of
-    seconds and half a megabyte -- paid once per process, on the first read of a file that
-    needs it, and never at import time.
+    One canonical form per class, so 16432 of them for four cards -- paid once per process,
+    on the first read of a file that needs it, and never at import time.
 
     :raises NativeFormatError: for a hand size whose class count nothing has confirmed.
-        Five- and six-card Omaha are in that position: the enumeration would run and
+        Five- and six-card Omaha are in that position: the numbering would run and
         produce a number, and no archive here has an ``iscount`` to check it against.
     """
     expected = CLASS_COUNTS.get(cards_per_hand)
@@ -149,15 +196,19 @@ def class_table(cards_per_hand: int) -> ClassTable:
 
     index_of: dict[tuple[int, ...], int] = {}
     representative: list[tuple[int, ...]] = []
-    for combination in itertools.combinations(range(DECK_SIZE), cards_per_hand):
-        form = canonical(combination)
-        if form not in index_of:
-            index_of[form] = len(representative)
-            representative.append(combination)
+    for rank_sets in _solver_order(cards_per_hand):
+        hand = tuple(sorted(suit * 13 + rank for suit, ranks in enumerate(rank_sets) for rank in ranks))
+        form = canonical(hand)
+        if form in index_of:
+            raise NativeFormatError(
+                f"The {cards_per_hand}-card numbering names one class twice, so it is not the solver's numbering."
+            )
+        index_of[form] = len(representative)
+        representative.append(hand)
 
     if len(representative) != expected:
         raise NativeFormatError(
-            f"The {cards_per_hand}-card enumeration produced {len(representative)} classes where "
+            f"The {cards_per_hand}-card numbering produced {len(representative)} classes where "
             f"{expected} are expected, so the numbering in this build is not the one the format uses."
         )
 
