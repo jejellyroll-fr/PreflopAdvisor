@@ -284,6 +284,7 @@ def read_tree(data: bytes) -> MkrTree:
         )
     if not 0 <= first_to_act < num_players:
         raise NativeFormatError(f"The tree entry opens on player {first_to_act} of {num_players}.")
+    _require_amounts(committed, dead_money, stacks)
     return MkrTree(
         signature=signature,
         internal_format=internal_format,
@@ -356,6 +357,20 @@ def _read_nodes(cursor: _TreeCursor) -> tuple[MkrNode, ...]:
 
     walk(-1, None, 0)
     return tuple(nodes)
+
+
+def _require_amounts(committed: tuple[int, ...], dead_money: int, stacks: tuple[int, ...]) -> None:
+    """Refuse chips no table holds: a negative amount, or a player committing past a stack."""
+    if min((*committed, dead_money, *stacks)) < 0:
+        raise NativeFormatError(
+            f"The tree entry states a negative amount (committed {committed}, dead money {dead_money}, "
+            f"stacks {stacks})."
+        )
+    over = [player for player, (put, stack) in enumerate(zip(committed, stacks)) if put > stack]
+    if over:
+        raise NativeFormatError(
+            f"The tree entry has player {over[0]} commit {committed[over[0]]} from a stack of {stacks[over[0]]}."
+        )
 
 
 def _require_weights(block: bytes) -> None:

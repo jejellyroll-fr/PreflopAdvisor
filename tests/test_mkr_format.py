@@ -631,6 +631,17 @@ def test_a_tree_that_ends_mid_field_is_refused():
         read_tree(tree_entry()[:20])
 
 
+def test_a_tree_stating_a_negative_amount_is_refused():
+    for fields in ({"stacks": (-10000, 10000)}, {"committed": (-1000, 2000)}, {"dead_money": -1}):
+        with pytest.raises(NativeFormatError, match="negative amount"):
+            read_tree(tree_entry(**fields))
+
+
+def test_a_tree_committing_more_than_a_stack_is_refused():
+    with pytest.raises(NativeFormatError, match="player 1 commit 2000 from a stack of 1500"):
+        read_tree(tree_entry(stacks=(10000, 1500)))
+
+
 def test_a_tree_that_ends_before_its_range_flag_is_refused():
     with pytest.raises(NativeFormatError, match="ends before its range flag"):
         read_tree(tree_entry()[:-1])
