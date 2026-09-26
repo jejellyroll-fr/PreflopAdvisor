@@ -15,7 +15,15 @@ from PySide6.QtWidgets import (
 )
 
 from .csv_format import ROLES
-from .paths import SOURCE_CSV, SOURCE_MONKER, holds_csv_files, holds_range_files, resolve_range_folder
+from .paths import (
+    SOURCE_CSV,
+    SOURCE_MKR,
+    SOURCE_MONKER,
+    holds_csv_files,
+    holds_range_files,
+    names_simulation_file,
+    resolve_range_folder,
+)
 from .settings import ConfigSource, Settings, get
 from .simulation_catalog import declared_meta
 from .tooltip import CreateToolTip
@@ -68,10 +76,15 @@ def kind_of(table: str, tree_infos: ConfigSource) -> str:
     own answer instead of as a tree with no reader at all.
     """
     declared = str(get(tree_infos, f"{table}.kind") or "").strip().lower()
-    if declared in (SOURCE_MONKER, SOURCE_CSV):
+    if declared in (SOURCE_MONKER, SOURCE_CSV, SOURCE_MKR):
         return declared
     if declared:
         logger.warning("Ignoring %s.kind=%r: not a kind of simulation this reads", table, declared)
+    # The entry's own folder field, which for a save names the file: a path ending in the
+    # save's extension is a simulation file whatever the entry forgot to declare.
+    fields = str(get(tree_infos, table, "") or "").split(",")
+    if len(fields) > 3 and names_simulation_file(fields[3]):
+        return SOURCE_MKR
     folder = resolve_range_folder(str(get(tree_infos, f"{table}.folder", "") or ""))
     if folder and not holds_range_files(folder) and holds_csv_files(folder):
         return SOURCE_CSV

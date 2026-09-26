@@ -25,11 +25,16 @@ PROJECT_ROOT = os.path.dirname(PACKAGE_ROOT)
 #: Name of the directory holding range trees, relative to a search root.
 RANGES_DIRNAME = "ranges"
 
-#: The two kinds of simulation a tree entry can point at: a folder of Monker range files,
-#: and a folder of strategy tables in CSV. Written in the configuration as ``Table5.kind``,
-#: filled in by the import wizard and detected from the folder's contents when it is absent.
+#: The kinds of simulation a tree entry can point at: a folder of Monker range files, a
+#: folder of strategy tables in CSV, and one of MonkerSolver's own saved simulations. Written
+#: in the configuration as ``Table5.kind``, filled in by the import wizard and detected from
+#: what the entry points at when it is absent.
 SOURCE_MONKER = "monker"
 SOURCE_CSV = "csv"
+#: A ``.mkr`` save, read directly: the entry's folder field names the file itself.
+SOURCE_MKR = "mkr"
+#: What a MonkerSolver save is called.
+MKR_ENDING = ".mkr"
 #: What the ``*.csv`` files of a CSV simulation are called. Simpler than the range ending,
 #: which is a configuration setting because Monker exports have more than one spelling.
 CSV_ENDING = ".csv"
@@ -86,6 +91,34 @@ def resolve_range_folder(folder: str | None) -> str | None:
     return None
 
 
+def names_simulation_file(value: str | None) -> bool:
+    """Whether an entry's folder field names a ``.mkr`` save rather than a folder."""
+    return bool(value) and str(value).strip().lower().endswith(MKR_ENDING)
+
+
+def resolve_simulation_file(path: str | None) -> str | None:
+    """Locate a configured ``.mkr`` save, the way :func:`resolve_range_folder` locates a folder.
+
+    Tries the path as given, then relative to each search root, then
+    ``<root>/ranges/<basename>`` -- so a save kept beside the shipped trees, or moved with
+    them to another machine, is found as a folder would be.
+
+    :return: An existing file path, or ``None`` if nothing matches.
+    """
+    if not path:
+        return None
+    if os.path.isfile(path):
+        return path
+    basename = os.path.basename(path)
+    for root in search_roots():
+        for candidate in (os.path.join(root, path), os.path.join(root, RANGES_DIRNAME, basename)):
+            if os.path.isfile(candidate):
+                logger.debug("Resolved simulation file %r to %s", path, candidate)
+                return candidate
+    logger.warning("Simulation file not found: %r (searched %s)", path, search_roots())
+    return None
+
+
 def package_file(*parts: str) -> str:
     """Path to a file shipped inside the package (config.ini, popup-pics, ...)."""
     return os.path.join(PACKAGE_ROOT, *parts)
@@ -138,6 +171,8 @@ def validate_tree(
     parts = [p.strip() for p in value.split(",")]
     if len(parts) < 5 or not parts[3]:
         return False, "missing folder"
+    if kind == SOURCE_MKR:
+        return _validate_simulation_file(parts, ante_declared, config)
     # The depth is read back with ``int()`` wherever a tree is enumerated, so a value
     # that is not a number has to be refused here -- accepting it would save an entry
     # that raises on the next refresh, and leave it saved.
@@ -161,6 +196,42 @@ def validate_tree(
     return True, ""
 
 
+def _validate_simulation_file(parts: list[str], ante_declared: bool, config: ConfigSource | None) -> tuple[bool, str]:
+    """The checks a ``.mkr`` entry is held to: the save opens, and says what the entry does.
+
+    Opening it is the whole range-file check at once -- the reader refuses a save whose own
+    numbers disagree, a format it has not read, a postflop tree -- and what the entry
+    declares beside it is then held to what the save states, since the entry is what the
+    Advisor seats its grid by: a player count or a depth the save does not have would draw
+    a table the simulation never solved.
+    """
+    if not parts[1].isdigit():
+        return False, f"stack depth is not a number: {parts[1]}"
+    path = resolve_simulation_file(parts[3])
+    if path is None:
+        return False, f"simulation file not found: {parts[3]}"
+    # Imported here: opening a save pulls in the whole reader, which nothing else needs.
+    from .errors import NativeFormatError
+    from .mkr_provider import MkrStrategyProvider
+
+    try:
+        metadata = MkrStrategyProvider(path, config or {}).metadata()
+    except NativeFormatError as error:
+        return False, str(error)
+    if not parts[0].isdigit() or int(parts[0]) != metadata.num_players:
+        return False, f"declared player count {parts[0]} is not the save's {metadata.num_players}"
+    if int(parts[1]) != round(metadata.stack_bb):
+        return False, f"declared stack depth {parts[1]}bb is not the save's {metadata.stack_bb:g}bb"
+    if parts[2].strip().lower() != metadata.game.lower():
+        return False, f"declared game {parts[2]} is not the save's {metadata.game}"
+    description = ",".join(parts[4:]).strip()
+    mentions_ante = bool(re.search(r"\bantes?\b", description, re.IGNORECASE))
+    denies_ante = bool(re.search(r"\b(no|non|sans|without|zero)[\s-]+antes?\b", description, re.IGNORECASE))
+    if mentions_ante and not denies_ante and not ante_declared:
+        return False, "description mentions an ante but TableN.ante is not declared"
+    return True, ""
+
+
 def _native_hint(folder: str) -> str:
     """A sentence about the solver's own files, for a folder that holds them and no export.
 
@@ -176,7 +247,7 @@ def _native_hint(folder: str) -> str:
     # against the folder they are looking at.
     total = native_count(folder)
     more = f", and {total - 1} more" if total > 1 else ""
-    return f" (it holds {natives[0]}{more}, which this application cannot read directly yet)"
+    return f" (it holds {natives[0]}{more}: point the entry at the .mkr file itself, as a {SOURCE_MKR} simulation)"
 
 
 def _tree_seats_match_files(parts: list[str], config: ConfigSource | None) -> bool:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A saved simulation, read through the strategy model. Experimental, and not wired in.
+"""A saved simulation, read through the strategy model.
 
 :mod:`preflop_advisor.mkr_format` takes a ``.mkr`` apart and checks its numbers against
 each other. This module is the other half of issue #24's Phase 2: it says what those
@@ -8,11 +8,12 @@ numbers *are* in the application's own words -- :class:`~preflop_advisor.strateg
 :class:`~preflop_advisor.strategy.SimulationMetadata` -- so that the question of whether a
 simulation file can replace an export is answered by code rather than by argument.
 
-It is deliberately **not** reachable from :func:`preflop_advisor.strategy.provider_for`.
-Phase 3 is what promotes a reader into the application, and its gates are listed in
-``docs/native-import.md``; two of them are not met. Until they are, this is a prototype
-that the suite exercises and a user can run over their own file with
-``scripts/mkr_report.py``, and the import paths go on pointing at an export.
+:func:`preflop_advisor.strategy.provider_for` reaches it for a tree entry of kind ``mkr``,
+whose folder field names the save itself; the import wizard writes such an entry from a
+``.mkr`` it has opened, and every consumer -- the Advisor, the Trainer, the catalog --
+then reads it as it reads an export. What it reads, and what it refuses by name, is set
+out in ``docs/native-import.md``, where each reading is checked against the solver's own
+export of the same simulation.
 
 ## What the model gets, and how each piece is arrived at
 

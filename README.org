@@ -103,6 +103,12 @@ Before you begin, ensure you have Python 3.x installed on your computer. You can
                 replace_all_monker_2_files('ranges/my-tree')"
      #+END_SRC
      this can take a few minutes
+   - Or skip the export: a MonkerSolver save (=.mkr=) can be imported directly.
+     In the import wizard, choose *Choose a save...* and pick the file; the wizard
+     reads the game, seats, depth and ante from the save itself. Saves written by
+     MonkerSolver 2.1.9 (for storage or for further calculation) and by 2.3.10-beta
+     (for storage) are read; anything else is refused with the reason, and the export
+     above still works for it. See =docs/native-import.md=.
 6. Configure the Tool:
     - Most of the configuration is done in the application, in the
       *Configuration* tab (next to Advisor and Trainer): sims, sizings, seats,
@@ -118,6 +124,9 @@ Before you begin, ensure you have Python 3.x installed on your computer. You can
           Name=Number of Players,Stacksize in BB, GAME, path to the range folder, Rake setting
           The path may be absolute or relative to the project root. A path that no longer
           exists still resolves if a folder of the same name sits under =ranges/=.
+        + A MonkerSolver save is an entry whose path names the =.mkr= file itself:
+          =Table13=4,5,PLO,ranges/ggpoker-aof-plo.mkr,AoF= with =Table13.kind=mkr=.
+          The player count, depth and game must be the save's own.
         + If the tree has an ante, say how big it is, in big blinds:
           =Table12.ante=0.125=
           The size is not in the export and nothing can guess it. A tree whose description

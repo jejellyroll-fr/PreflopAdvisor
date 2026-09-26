@@ -38,12 +38,16 @@ from .hand_classes import ranks_of
 from .hand_convert_helper import normalize_monker_hand
 from .native_format import describe_refusal, native_count, native_files, probe
 from .paths import (
+    MKR_ENDING,
     SOURCE_CSV,
+    SOURCE_MKR,
     SOURCE_MONKER,
     holds_csv_files,
     holds_range_files,
     inspect_range_folder,
+    names_simulation_file,
     resolve_range_folder,
+    resolve_simulation_file,
     validate_tree,
 )
 from .settings import ConfigSource, normalize, seats_for
@@ -139,6 +143,19 @@ class SimulationScan:
 
     def summary(self) -> str:
         """The confirmation block: one line per fact, in the order they are decided."""
+        if self.kind == SOURCE_MKR:
+            return "\n".join(
+                [
+                    f"Simulation: {self.name}",
+                    f"Players: {self.players} ({', '.join(self.seats)})",
+                    f"Decisions: {self.nodes:,}",
+                    f"Game: {self.game}",
+                    f"EV data: {'yes' if self.has_ev else 'no'}",
+                    f"Stack: {self.stack_bb}bb",
+                    f"Ante: {self.ante_bb or '0'}",
+                    f"Source: {self.export}",
+                ]
+            )
         lines = [
             f"Simulation: {self.name}",
             f"Players: {self.players} ({', '.join(self.seats)})",
@@ -274,7 +291,9 @@ def _duplicates(
         parts = [part.strip() for part in str(value).split(",")]
         if len(parts) < 4:
             continue
-        resolved = resolve_range_folder(parts[3])
+        # A save's entry names a file, which no folder resolution finds.
+        resolve = resolve_simulation_file if names_simulation_file(parts[3]) else resolve_range_folder
+        resolved = resolve(parts[3])
         if resolved is not None and Path(resolved).resolve() == Path(absolute).resolve():
             same_folder.append(str(key))
         elif tuple(parts[:3]) == signature:
@@ -553,8 +572,13 @@ def scan_simulation(
     :raises SimulationScanError: if the folder holds nothing that can be read at all --
         there is nothing to import and nowhere to say so but an error.
     """
+    if names_simulation_file(folder):
+        return scan_mkr_simulation(str(folder), tree_configs, tree_infos)
     if _scan_kind(folder) == SOURCE_CSV:
         return scan_csv_simulation(folder, tree_configs, tree_infos)
+    save = _single_save(folder)
+    if save is not None:
+        return scan_mkr_simulation(save, tree_configs, tree_infos)
 
     # Asked before the range files are, so a folder of the solver's own simulations gets the
     # answer that names them: without this, the scan reports "not a simulation" about a file
@@ -647,6 +671,97 @@ def scan_simulation(
     )
     logger.debug("Scanned %s: %s nodes, %s files", absolute, scan.nodes, scan.range_files)
     return scan
+
+
+def _single_save(folder: str | None) -> str | None:
+    """The one ``.mkr`` a folder holds in place of an export, or ``None``.
+
+    A folder of range files is an export whatever else lies in it, and is read as one. A
+    folder of several saves -- one per board, as a sweep writes them -- is a choice the user
+    has to make, since a tree entry reads one simulation: it is refused with the names, so
+    the next thing typed is a file.
+    """
+    absolute = resolve_range_folder(folder)
+    if absolute is None or holds_range_files(absolute):
+        return None
+    saves = [name for name in native_files(absolute) if name.lower().endswith(MKR_ENDING)]
+    if not saves:
+        return None
+    total = sum(1 for entry in Path(absolute).iterdir() if entry.is_file() and entry.name.lower().endswith(MKR_ENDING))
+    if total > 1:
+        more = f", and {total - len(saves)} more" if total > len(saves) else ""
+        raise SimulationScanError(
+            f"{absolute} holds {total} saved simulations ({', '.join(saves)}{more}). A tree reads one: "
+            "choose the .mkr file to import."
+        )
+    return str(Path(absolute) / saves[0])
+
+
+def scan_mkr_simulation(
+    path: str,
+    tree_configs: ConfigSource,
+    tree_infos: ConfigSource | None = None,
+) -> SimulationScan:
+    """Open one ``.mkr`` save, and report it the way a scanned folder is reported.
+
+    The save states its game, its seats, its depth and its ante itself, so none of them is
+    assumed and nothing is asked for that the file already answered. What it refuses to
+    read -- a format it has not read, a postflop tree, a store whose own numbers disagree --
+    is refused here, in the reader's own words, before anything is written.
+
+    :raises SimulationScanError: if the file cannot be found or read as a simulation.
+    """
+    # Imported here: the reader is only needed by an import that names a save.
+    from .mkr_provider import MkrStrategyProvider, writer_name
+
+    resolved = resolve_simulation_file(path)
+    if resolved is None:
+        raise SimulationScanError(f"Simulation file not found: {path}")
+    try:
+        provider = MkrStrategyProvider(resolved, tree_configs)
+    except NativeFormatError as error:
+        raise SimulationScanError(
+            f"{Path(resolved).name} cannot be read directly: {error} Select the folder the solver exported its "
+            "ranges to, or a folder of CSV tables, and the import will read that."
+        ) from error
+    metadata = provider.metadata()
+    structure = provider.structure
+    decisions = structure.tree.decisions
+    stack = round(metadata.stack_bb)
+    has_ev = any(any(ev is not None for ev in structure.evs(node, 0) or ()) for node in decisions)
+    notes: list[str] = ["Read directly from the solver's save: no export is needed."]
+    if not has_ev:
+        notes.append("No EV data in this save: the trainer can ask its nodes but cannot grade an answer.")
+    if metadata.stack_bb != stack:
+        notes.append(f"Stack depth: the save's {metadata.stack_bb:g}bb is entered as {stack}bb.")
+    same_folder, same_size = _duplicates(
+        str(resolved), (str(metadata.num_players), str(stack), metadata.game), tree_infos
+    )
+    if same_folder:
+        notes.append(f"Already configured as {', '.join(same_folder)}: importing again adds a second entry.")
+    if same_size:
+        notes.append(f"Likely duplicates of a simulation you already have: {', '.join(same_size)}.")
+    return SimulationScan(
+        folder=str(path),
+        absolute_folder=str(resolved),
+        name=Path(resolved).stem,
+        game=metadata.game,
+        players=metadata.num_players,
+        seats=tuple(metadata.seats),
+        stack_bb=stack,
+        ante_bb=f"{metadata.ante_bb:g}" if metadata.ante_bb else "",
+        range_files=0,
+        nodes=len(decisions),
+        action_codes=(),
+        names={},
+        sizings={},
+        unknown_codes=(),
+        has_ev=has_ev,
+        export=f"{writer_name(structure.tree.signature, structure.version)} save, for {structure.mode}",
+        duplicates=same_folder + same_size,
+        notes=tuple(notes),
+        kind=SOURCE_MKR,
+    )
 
 
 def inferred_mapping(overrides: Mapping[str, Any] | None = None) -> dict[str, str]:
@@ -827,8 +942,8 @@ def register_simulation(config: LayeredConfig, request: ImportRequest) -> str:
     # Which reader the folder needs, and which column of its tables carries what. Declared
     # beside the tree rather than guessed at every read, so a corrected column survives both
     # a restart and a re-import. A range folder declares neither, and is left as it was.
-    if request.kind == SOURCE_CSV:
-        config.set("TreeInfos", f"{key}.kind", SOURCE_CSV)
+    if request.kind in (SOURCE_CSV, SOURCE_MKR):
+        config.set("TreeInfos", f"{key}.kind", request.kind)
     else:
         config.reset("TreeInfos", f"{key}.kind")
     for role in ROLES:

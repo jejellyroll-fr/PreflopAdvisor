@@ -394,12 +394,12 @@ def test_a_folder_that_is_not_a_simulation_leaves_the_wizard_on_its_first_page(q
     assert "Folder not found" in wizard.folder_page.report.text()
 
 
-def test_a_folder_of_solver_simulations_is_refused_with_what_the_files_are(qapp, tmp_path):
-    """The dead end a user actually meets: their own saves, which have to be exported first.
+def test_a_save_the_reader_refuses_is_refused_with_why_and_what_works(qapp, tmp_path):
+    """A `.mkr` the reader cannot open: the reader's own reason, then the paths that work.
 
-    The message is the point. Before this, a folder of `.mkr` files was answered with "this
-    folder is not a simulation", which is wrong twice over: it is a simulation, and the user
-    read the refusal as their own mistake. See docs/native-import.md.
+    The message is the point. A folder of `.mkr` files was once answered with "this folder
+    is not a simulation", which is wrong twice over: it is a simulation, and the user read
+    the refusal as their own mistake. See docs/native-import.md.
     """
     from .test_native_format import write, zip_bytes
 
@@ -410,9 +410,8 @@ def test_a_folder_of_solver_simulations_is_refused_with_what_the_files_are(qapp,
 
     report = wizard.folder_page.report.text()
     assert wizard.folder_page.isComplete() is False
-    assert report.startswith("HUNL100.mkr:")
-    assert "ZIP archive" in report
-    assert "is read as a strategy source yet" in report
+    assert report.startswith("HUNL100.mkr cannot be read directly:")
+    assert "tree entry" in report, "the reader's own reason"
     assert "CSV tables" in report, "and the path that does work"
 
 

@@ -2,11 +2,12 @@
 """What a native simulation file is made of, as far as its own bytes can say.
 
 Issue #24 asks whether the application can read a solver's own simulation file directly --
-``.mkr`` first -- instead of requiring an export. The answer, at the time of writing, is
-**no, and this module is the reason we know**: nothing about the format is documented, no
-fixture of it is versioned in this repository, and a parser written from guesses would
-produce frequencies nobody could check. A wrong frequency is worse than a refusal, because
-a refusal is read and a wrong number is believed.
+``.mkr`` first -- instead of requiring an export. This module is where that started: nothing
+about the format was documented, and a parser written from guesses would produce frequencies
+nobody could check. A wrong frequency is worse than a refusal, because a refusal is read and
+a wrong number is believed. The reader that came out of it is :mod:`preflop_advisor.mkr_format`,
+checked against the solver's own exports; this probe is what is left for a file that reader
+does not open.
 
 So this is a *probe*, not a parser. It opens a file read-only, looks at its first few
 kilobytes, and says what those bytes are structurally -- a ZIP archive, a gzip stream, a
@@ -18,8 +19,8 @@ says so.
 Everything it returns is a :class:`NativeProbe`, whose whole point is the pair of fields a
 caller can act on: :attr:`NativeProbe.container` (what the bytes are) and
 :attr:`NativeProbe.supported` (whether the application can read the *strategy* out of them,
-which today is always ``False``, and is a field rather than a constant so that a future
-adapter changes one place). :func:`describe_refusal` turns that into the sentence the import
+which is always ``False`` here: a probe reads containers, and the strategy of a save is the
+reader's business). :func:`describe_refusal` turns that into the sentence the import
 wizard shows, and :data:`NATIVE_EXTENSIONS` is what makes a folder of ``.mkr`` files
 recognisable as "a simulation we cannot read yet" rather than as "not a simulation at all".
 
@@ -259,8 +260,9 @@ def probe(path: str | os.PathLike[str]) -> NativeProbe:
 
     diagnostics.insert(
         0,
-        f"No {NATIVE_EXTENSIONS[0]} file is read as a strategy source yet, so no strategy is read from "
-        "this file: export the simulation's ranges instead (Monker's own export, or a CSV table).",
+        "No strategy is read by this probe: a MonkerSolver save is imported through the .mkr reader, "
+        "which refuses what it has not checked against the solver's own export. For anything it does "
+        "not read, export the simulation's ranges instead (Monker's own export, or a CSV table).",
     )
     if found is not None and size <= len(found.magic):
         diagnostics.append(

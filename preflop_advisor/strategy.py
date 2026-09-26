@@ -207,19 +207,31 @@ class StrategyProvider(Protocol):
 def provider_for(tree: dict[str, Any], configs: ConfigSource) -> StrategyProvider:
     """The provider that reads one ``[TreeInfos]`` tree entry under one configuration.
 
-    The one place a consumer names a reader, and it names two: the Monker range folder, and
-    the folder of CSV tables a script or a converter wrote. Which one is the tree entry's own
-    declaration -- ``Table5.kind``, filled in by the import wizard and detected by
-    :func:`preflop_advisor.tree_selector.kind_of` -- so nothing downstream of this function
-    has to know that there is more than one source in the world. Both adapters are imported
-    lazily, so a module that only reads strategy imports this protocol and nothing else.
-    """
-    from .paths import SOURCE_CSV
+    The one place a consumer names a reader, and it names three: the Monker range folder,
+    the folder of CSV tables a script or a converter wrote, and MonkerSolver's own ``.mkr``
+    save. Which one is the tree entry's own declaration -- ``Table5.kind``, filled in by the
+    import wizard and detected by :func:`preflop_advisor.tree_selector.kind_of` -- so nothing
+    downstream of this function has to know that there is more than one source in the
+    world. Every adapter is imported lazily, so a module that only reads strategy imports
+    this protocol and nothing else.
 
-    if str(tree.get("kind", "")).strip().lower() == SOURCE_CSV:
+    :raises RangeFolderNotFound: for a save that cannot be located, as for a folder.
+    """
+    from .paths import SOURCE_CSV, SOURCE_MKR, names_simulation_file, resolve_simulation_file
+
+    kind = str(tree.get("kind", "")).strip().lower()
+    if kind == SOURCE_CSV:
         from .csv_provider import CsvStrategyProvider
 
         return CsvStrategyProvider(tree, configs)
+    if kind == SOURCE_MKR or (not kind and names_simulation_file(str(tree.get("folder", "")))):
+        from .errors import RangeFolderNotFound
+        from .mkr_provider import MkrStrategyProvider
+
+        path = resolve_simulation_file(str(tree.get("folder", "")))
+        if path is None:
+            raise RangeFolderNotFound(f"Simulation file not found: {tree.get('folder', '')}")
+        return MkrStrategyProvider(path, configs)
     from .monker_provider import MonkerRangeProvider
 
     return MonkerRangeProvider(tree, configs)

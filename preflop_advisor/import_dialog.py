@@ -68,12 +68,18 @@ class FolderPage(QWizardPage):
         layout = QVBoxLayout(self)
         row = QHBoxLayout()
         self.folder_edit = QLineEdit()
-        self.folder_edit.setPlaceholderText("Path to a folder of .rng range files, or of .csv strategy tables...")
+        self.folder_edit.setPlaceholderText(
+            "Path to a folder of .rng range files or .csv strategy tables, or to a MonkerSolver .mkr save..."
+        )
         self.folder_edit.textChanged.connect(self.rescan)
         browse = QPushButton("Browse...")
         browse.clicked.connect(self.browse)
+        browse_save = QPushButton("Choose a save...")
+        browse_save.setToolTip("Import one MonkerSolver .mkr save directly, without exporting its ranges.")
+        browse_save.clicked.connect(self.browse_save)
         row.addWidget(self.folder_edit, stretch=1)
         row.addWidget(browse)
+        row.addWidget(browse_save)
         layout.addLayout(row)
 
         self.report = QLabel("Choose a folder to inspect it.")
@@ -89,6 +95,11 @@ class FolderPage(QWizardPage):
 
     def browse(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Select a simulation folder")
+        if chosen:
+            self.folder_edit.setText(chosen)
+
+    def browse_save(self) -> None:
+        chosen, _ = QFileDialog.getOpenFileName(self, "Select a MonkerSolver save", "", "MonkerSolver saves (*.mkr)")
         if chosen:
             self.folder_edit.setText(chosen)
 
