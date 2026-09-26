@@ -11,7 +11,7 @@ undocumented guesses without fixture-based validation*.
 | --- | --- |
 | 1 — research / format characterization | **Complete.** The container, the tree, the scalars, both kinds of strategy store and the hand-class numbering are read from real saves and written down below, each row marked as measured, derived or `UNKNOWN`. |
 | 2 — feasibility prototype | **Delivered, behind a gate.** `preflop_advisor/mkr_format.py` reads the structure — the container through `mkr_archive.py`, the `tree` entry through `mkr_tree.py`, the Java-serialized entries through `mkr_java.py`, a save made for storage through `mkr_stored.py` and one made for further calculation through `mkr_calc.py`; `preflop_advisor/mkr_provider.py` answers the `StrategyProvider` questions of #15 from it, frequencies **and EVs**; `scripts/mkr_report.py` runs both over a file of your own. |
-| 3 — production integration | **Not met.** Two of the promotion gates below are open, the first of them being the one that matters: no `.mkr` and export of *the same* simulation exist side by side, so no extracted number has been checked against an independently produced one. |
+| 3 — production integration | **Not met.** The gate that matters now passes for a save made for storage: the AoF save and the solver's own export of that same simulation agree on all 460 096 frequencies and EVs. It passes only since that comparison exposed, and this reader corrected, a wrong hand-class numbering (see *The hand axis*). It does not pass yet for a save made for further calculation, and the second-version gate is still open. |
 
 The prototype is therefore **not reachable from `strategy.provider_for`**, no tree entry
 `kind` selects it, and the import wizard still answers a folder of `.mkr` files by naming
@@ -29,7 +29,8 @@ and a second implementation of the same format to disagree with.
 | One real save, `ggpoker-aof-plo.mkr`, 807 234 bytes, written by MonkerSolver 2.1.9, read 2026-09-22 and read through by this reader 2026-09-25 | A save made **for storage**: a four-handed all-in-or-fold PLO4 preflop tree with 29 nodes, 14 of them decisions, and a stored strategy of 230 048 hand rows. | Primary for the storage rows below. |
 | A second save, `validated-holdem.mkr`, 1 972 581 bytes, `game = 0`, `iscount = 2366`, read through by this reader 2026-09-25 | A save made **for further calculation**: `reg`/`iavg`/`hasEv` instead of `storedstrategy0`, a hold'em hand axis of 169 classes (2366 = 14 × 169), EV rows for groups 0, 4, 8 and 12 and nowhere else. | Primary for the calculation rows below. |
 | `mcp-monkersolver`'s `docs/MKR_FORMAT.md`, revised 2026-09-25 | A characterization of both kinds of save, checked on the two saves above: the stored strategy's layout (a node count, then a frequency array and an EV array per node), frequencies as signed bytes, the reversed action order, the calculation store's groups and EV formula, `evs` / `eviters` as a sum over its samples, the range block, the locks. | The description this reader now follows. Every part of it that the file can check is checked here — see the cross-checks — rather than taken on trust. |
-| `poker-eval`'s `pe_monker` reader (`include/poker_eval/solver/pe_monker*.h`, `src/solver/adapters/monker_*.c`) | An independent C implementation of the same container, tree, slot binding and class numbering. | Corroborating for those. The byte-sum histogram it quotes (229 887 / 74 / 87 over 230 048 rows) is the one measured here, and is now *explained* rather than taken as a property: see *Frequencies*. |
+| Same-run exports of both saves, `ggpoker-aof-plo.same-run-export/` and `validated-holdem.same-run-export/`, made 2026-09-26 by reopening each save in MonkerSolver 2.1.9 and exporting its preflop ranges | The solver's own reading of each save, hand by hand, in the `.rng` format this application already reads. | Primary for the values, the EVs and the class order. |
+| `poker-eval`'s `pe_monker` reader (`include/poker_eval/solver/pe_monker*.h`, `src/solver/adapters/monker_*.c`) | An independent C implementation of the same container, tree, slot binding and class numbering. | Corroborating for the container, the tree and the slot binding. **Not** for the class numbering: it was written from the same wrong rules as this reader's first one, so the two agreeing proved nothing. The byte-sum histogram it quotes (229 887 / 74 / 87 over 230 048 rows) is the one measured here, and is now *explained* rather than taken as a property: see *Frequencies*. |
 | MonkerSolver's own guide, <https://monkerware.com/guide.html> (read 2026-09-22) | Documents installing, building a tree, abstraction, solving and viewing. **No file format, anywhere.** | Primary, negative. The vendor still does not specify `.mkr`. |
 | Pokersolving.com FAQ, Monkerguy.com help, Two Plus Two *GTO MonkerSolver* thread | That `.mkr` files are distributed and opened in a viewer, and that exports exist beside them. | Secondary, unchanged from Phase 1. |
 
@@ -88,7 +89,7 @@ fact.
 | Ante | **`UNKNOWN` when non-zero** | The tree holds one dead-money figure, which an ante is one of and not the only one. Zero reads as zero; anything else reads as "numbers unknown". |
 | Tree / node representation | **Measured** | Preorder. Each node writes its child count as a Java `char` (two big-endian bytes); each *edge* writes its action code the same way, immediately before the child it leads to. The root has no edge into it and therefore no action code — reading one for it shifts the whole stream by two bytes and still parses. A boolean for an optional range block follows, and then the block: one fixed-point `int32` (over 2³¹ − 1) per player and starting combo, 1326 for hold'em and 270 725 for Omaha. The block states no length, so the combo count is the one that accounts for the rest of the entry **exactly**, and it must agree with the strategy's hand size. |
 | Action and sizing encoding | **Measured for three families, `UNKNOWN` otherwise** | `0` fold, `1` call, `3` all-in, and `40000 + percent` for a pot-fraction raise — which are the same families `preflop_advisor/sizings.py` already reads an *exported* folder's codes by, arrived at from the other side. `poker-eval` additionally reads `5` as a minimum raise; this reader does not name it, so a tree using it fails a check instead of being read. |
-| Hand / range encoding | **Measured and cross-checked** | A strategy is indexed by hand class: 16432 four-card classes, 169 two-card. The numbering is defined by three rules (suit-major deck `s h c d`, lexicographic enumeration of sorted card tuples, index minted on first appearance of a canonical form) and reproduced independently by `poker-eval`. Its bijection onto this application's own hand keys is asserted in the suite — see below. |
+| Hand / range encoding | **Measured against the solver's export** | A strategy is indexed by hand class: 16432 four-card classes, 169 two-card. The solver numbers classes block by block, one block per suit pattern (rainbow, one suited pair, two suited pairs, suited trips, monotone; offsuit then suited for two cards), with the largest suited rank sets varying slowest. The first numbering written here, a suit-major deck enumerated lexicographically, gave the same classes in another order, and a same-run export disproved it. See below. |
 | Frequencies | **Measured, and corrected** | For storage: one **signed** byte per (hand class, action), `q = round(200 f) − 100` — `−100` is never, `100` always, the resolution half a point — the hand's bytes adjacent and **in the reverse of the tree's child order**. The histogram measured on the AoF save (229 887 rows summing to 256, 74 to 257, 87 to 0, reading the bytes unsigned) is exactly what this encoding gives two actions: a 75/25 split is `50` and `−50`, read unsigned `50 + 206 = 256`; an even split is `0 + 0 = 0`. The earlier reading — "a byte over 256", with the 87 zero rows taken as classes stored as nothing — parsed cleanly and was wrong. For further calculation: accumulated action counts, a frequency being a count over its node's total. |
 | EV representation, and its unit | **Characterized, and checked** | Per action, in the tree's own chips, relative to the start of the hand. For storage: an `int` per (hand class, action) beside each frequency array — the EV rounded to the chip — or `null` when the run kept no EV for that node. For further calculation: `(R_a + V) / (W × scale)` out of `reg`'s long rows, for the groups `hasEv` marks. Folding forfeits what was put in whatever the cards, so **the fold EV must be the same for every hand of a node, and exactly minus the blind at a player's first action** — a check that fails if the EVs or the action order are misread. Per player, `evs` is an accumulated sum (`+4.183e11` …) and `eviters` its sample count: the ratio is each player's EV per hand, and the four sum to minus the rake. |
 | Buckets / abstraction | **Measured as numbers, `UNKNOWN` as meaning** | `flopBuckets` / `turnBuckets` / `riverBuckets` / `turnTextureBuckets` / `riverTextureBuckets` / `isoLevel` are boxed ints. Preflop they do not enter the hand axis — the strategy is indexed by class, not by bucket — so they are reported and not used. The `30` a stored strategy begins with, once read as a bucket count, is its **node count**: the AoF tree has 29 nodes, and the solver numbers them from one. |
@@ -201,14 +202,28 @@ argued here: **the 16432 Monker hand classes map one-to-one onto the keys
 its class's key.
 
 ```
-class 16431 -> "AAAA"          class 6681 -> "(3K)(4A)"      (four-card)
-class 168   -> "AA"            class 165  -> "AKs"           (two-card)
+class 0     -> "2222"          class 1819  -> "AAAA"          class 10357 -> "(3K)(4A)"
+class 16431 -> "(JQKA)"        class 90    -> "AA"            class 168   -> "AKs"
 ```
 
 16432 classes, 16432 distinct keys, no collisions. A frequency read out of a simulation
 file and a frequency read out of an exported range folder are therefore indexed by the same
-strings — which is what makes the two comparable at all, and what makes the cross-validation
-gate below a thing that can actually be run once a fixture pair exists.
+strings, which is what makes the two comparable at all.
+
+A bijection is necessary and not sufficient, and this is where the reader was first wrong.
+Any numbering of the same classes is a bijection onto the same keys. The first one written
+here (a suit-major deck, enumerated lexicographically, a class minted where its canonical
+form first appears) passed this test and every check the file can make about itself, and
+still read each hand under another hand's strategy: against a same-run export, 81 % of the
+AoF frequencies differed. Every node's values were the export's values as a multiset,
+though, so only the hand order was wrong. Matching each class's 28 stored frequencies to
+the export's hands recovered the solver's order: one block per suit pattern, in the order
+`1111`, `211`, `22`, `31`, `4`, of 1820, 7098, 3081, 3718 and 715 classes. Inside a
+block, the largest suited rank sets vary slowest, and the rank sets of one size are
+combinations of ranks `2` to `A`, taken as a multiset. Two-card hands follow the same rule:
+the 91 offsuit classes, pairs included, then the 78 suited ones. Under it the AoF save
+agrees with its export on every value and every EV. The positions the export fixed are
+pinned in `test_the_numbering_is_the_solver_s_block_by_suit_pattern`.
 
 ## The Strategy/Provider mapping
 
@@ -248,6 +263,7 @@ both — with the EV missing only for a player whose EV the run did not keep.
 | EVs can be exposed through the same model | **Supported**, from both kinds of save | `test_a_hand_is_answered_with_every_action_and_what_each_is_worth`, `test_both_kinds_of_save_answer_the_same_hand_the_same_way` |
 | EVs and the action order are read the way the solver wrote them | **Checked**: the fold EV | `test_folding_at_a_first_action_is_worth_minus_the_blind_posted` |
 | The hand axis matches the application's own | **Supported** | `test_four_card_classes_map_one_to_one_onto_the_application_s_hand_keys` |
+| Each class sits where the solver numbers it | **Supported**, measured against a same-run export | `test_the_numbering_is_the_solver_s_block_by_suit_pattern` |
 | A file whose own numbers contradict each other is refused | **Supported** | same file, one test per check |
 | A save made for further calculation is read | **Supported**, under the group checks | `test_a_save_for_further_calculation_is_read_and_agrees_with_itself` |
 | A `reg` or `iavg` layout no save has been seen with is refused by name | **Supported** | `test_a_reg_layout_no_save_has_been_seen_with_is_refused_by_name`, `test_an_iavg_layout_no_save_has_been_seen_with_is_refused_by_name` |
@@ -259,7 +275,7 @@ both — with the EV missing only for a player whose EV the run did not keep.
 | The source file is never written to | **Supported** | asserted by size, mtime and sha256, on the synthetic and real fixtures both |
 | A save's tree and hand axis match the solver's own export of that tree | **Supported** | `tests/test_mkr_crosscheck.py`, opt-in on a real pair |
 | A save from an unread build is refused rather than read | **Supported** | `tests/test_mkr_format.py` |
-| Values cross-validated against an export of the same simulation | **Not done**: needs a same-run export; the test is written and skipped | `test_a_real_export_of_the_same_run_agrees_hand_by_hand` |
+| Values cross-validated against an export of the same simulation | **Supported for a save made for storage**: 460 096 frequencies and EVs, 0 differing. **Not for a save made for further calculation**: the Hold'em save agrees at the root and differs below it | `test_a_real_export_of_the_same_run_agrees_hand_by_hand`, opt-in on a real pair |
 | Parsing read through on a second solver version | **Not done**: one build read end to end | — |
 | Five- and six-card Omaha | **Refused**: no confirmed class count | `test_a_hand_size_with_no_confirmed_count_is_refused_rather_than_enumerated` |
 
@@ -285,13 +301,12 @@ Three layers, in the order they matter.
    must pass, `iscount` must equal decisions × classes, a hand of the file's own game must
    be answered with frequencies summing to one, and the file must be unchanged by hash and
    mtime afterwards. A real save is not this repository's to redistribute.
-3. **A pair, and the comparison that is waiting for it.** What a *validated* provider needs
-   is not a `.mkr` but a `.mkr` **and the export of the same simulation**, so every
-   extracted frequency can be compared with an independently produced one. The comparison
-   itself now exists (`mkr_crosscheck`, and `--export` on the report script), with two of
-   its four parts already agreeing against the solver's output; the test for the values
-   and the EVs is written and skipped until `PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN` names a
-   folder. `PREFLOP_ADVISOR_MKR_EXPORT` names the weaker case — an export of the same tree
+3. **A pair, and the comparison it allows.** What a *validated* provider needs is not a
+   `.mkr` but a `.mkr` **and the export of the same simulation**, so every extracted
+   frequency can be compared with an independently produced one. The comparison is
+   `mkr_crosscheck`, and `--export` on the report script. The test for the values and the
+   EVs runs when `PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN` names such a folder, and passes on
+   the AoF save and its export. `PREFLOP_ADVISOR_MKR_EXPORT` names the weaker case — an export of the same tree
    on any board — and asserts topology and hand axis. A contributed pair should come with
    the file's `sha256` and size, the solver version, the tree it was solved under, the
    export made from it, and a line on redistribution.
@@ -312,16 +327,24 @@ different runs and not a failure of the reader.
 | --- | --- | --- |
 | **Topology** — the export's `.rng` file stems against the save's edge paths | that the node stream was walked the way the solver walks it. An export names one file per action by the action codes from the root (`0.3.1.rng`); a save writes a preorder node stream. Nothing about the bytes forces those to agree. | **Agrees.** All 28 stems of an export of the AoF tree are exactly the 28 edge paths read out of the save's node stream — 0 on either side unmatched. |
 | **Hand axis** — the export's hand names against the class numbering's keys | that the numbering derived in `mkr_classes` is the solver's own, seen from the solver's side rather than from an enumeration of ours. | **Agrees.** 16432 keys, 0 unmatched in either direction, after the same `normalize_monker_hand` every other read path applies. |
-| **Values** — every hand of every action, the stored frequency against the exported one | that the frequencies are the solver's frequencies. Compared to half of the half point (1/400) a save for storage rounds to, which is the most that rounding can move a frequency. | **Open.** Needs an export of the *same simulation*. The export available is of the same tree on a given flop, so it differs on essentially every value, exactly as it should. |
-| **EVs** — every hand of every action where both sides hold one, in the same chips | that the EVs are the solver's EVs, in the unit the model reads. Compared to one chip, the rounding of a stored EV. | **Open**, with the values. |
+| **Values** — every hand of every action, the stored frequency against the exported one | that the frequencies are the solver's frequencies. Compared to half of the half point (1/400) a save for storage rounds to, which is the most that rounding can move a frequency. | **Agrees for the storage save**: 460 096 compared, 0 differing, largest difference 0. **Differs for the calculation save**: the 169 root frequencies agree, and the nodes below differ. |
+| **EVs** — every hand of every action where both sides hold one, in the same chips | that the EVs are the solver's EVs, in the unit the model reads. Compared to one chip, the rounding of a stored EV. | **Agrees for the storage save**: 460 096 compared, 0 differing. Differs for the calculation save, with its values. |
 
 The first two were run on 2026-09-22 against `~/MonkerSolver/savedRuns/ggpoker-aof-plo.mkr`
 and an export of the same tree. They are asserted by
 `test_a_real_export_of_the_same_tree_agrees_on_topology_and_on_the_hand_axis`, gated on
 `PREFLOP_ADVISOR_MKR` and `PREFLOP_ADVISOR_MKR_EXPORT`.
 
-To close the third: open the save in MonkerSolver, export its preflop ranges to a folder,
-and run
+The last two were run on 2026-09-26 against exports of each save made by the solver itself:
+MonkerSolver 2.1.9 reopened the save and exported its preflop ranges. The first run is how
+the class numbering was found wrong (see *The hand axis*). For the storage save, the
+comparison now agrees on every part.
+The calculation save agrees at the root, where the calculation store's reading and the
+class order are both exercised, and differs below it. That is a second, separate error,
+in how `mkr_calc` reads the nodes past the first, and it is open.
+
+To run the comparison on a pair of your own, export the save's preflop ranges from
+MonkerSolver to a folder and run
 
 ```
 PREFLOP_ADVISOR_MKR=<the save> PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN=<the folder> \
@@ -353,11 +376,14 @@ The provider stays out of the application until all of these hold. Current state
       the solver's own output.** `preflop_advisor/mkr_crosscheck.py` compares a save with an
       exported range folder on topology, hand axis, values and EVs; see below for what it
       established.
-- [ ] **the values match an export of the same simulation, node by node and hand by hand.**
-      This is the gate. Everything else checks a reading against *itself* or against the
-      shape of the solver's output; only an export of the same run checks the numbers.
-      `tests/test_mkr_crosscheck.py` holds the test, skipped until
-      `PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN` names one.
+- [x] **the values match an export of the same simulation, node by node and hand by hand,
+      for a save made for storage.** This is the gate. Everything else checks a reading
+      against *itself* or against the shape of the solver's output; only an export of the
+      same run checks the numbers. The AoF save and its export agree on all 460 096
+      frequencies and EVs; `test_a_real_export_of_the_same_run_agrees_hand_by_hand` asserts
+      it when `PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN` names the export.
+- [ ] **the same, for a save made for further calculation.** The Hold'em save agrees with
+      its export at the root and differs below it.
 - [ ] **parsing is deterministic across two solver versions.** The refusal above makes an
       unread build *safe*; it does not make it *read*. Two builds are installed on the
       machine this was written on (2.1.9 and 2.3.10-beta), so the gate needs one run

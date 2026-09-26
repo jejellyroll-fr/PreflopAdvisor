@@ -404,7 +404,7 @@ def test_a_real_export_of_the_same_tree_agrees_on_topology_and_on_the_hand_axis(
 
 @pytest.mark.slow
 def test_a_real_export_of_the_same_run_agrees_hand_by_hand(real_save):
-    """The outstanding gate of issue #24, as a test that runs the day the pair exists."""
+    """The value gate of issue #24: every frequency and EV of a save against its own export."""
     folder = os.environ.get(RUN_EXPORT_VARIABLE)
     if not folder or not os.path.isdir(folder):
         pytest.skip(f"set {RUN_EXPORT_VARIABLE} to an export of the same simulation to run this")

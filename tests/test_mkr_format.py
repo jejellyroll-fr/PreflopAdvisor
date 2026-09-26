@@ -33,6 +33,8 @@ from preflop_advisor.mkr_archive import MAX_ENTRY_BYTES, read_entries
 from preflop_advisor.mkr_calc import _clear_best
 from preflop_advisor.mkr_classes import (
     CLASS_COUNTS,
+    _solver_order,
+    _suit_patterns,
     canonical,
     card_index,
     card_name,
@@ -428,6 +430,51 @@ def test_four_card_classes_map_one_to_one_onto_the_application_s_hand_keys():
     assert table.key[class_of_hand("AhKs4h3s")] == "(3K)(4A)"
     for hand in ("AsAhKsKh", "2s3h4c5d", "AsKsQsJs", "Th9h8c7c"):
         assert convert_hand(hand) == table.key[class_of_hand(hand)]
+
+
+def test_the_numbering_is_the_solver_s_block_by_suit_pattern():
+    """Anchors read off the solver's own export of a save, not derived from our enumeration.
+
+    A wrong numbering is still a bijection onto the same keys, so the bijection test above
+    cannot catch one: only where a class *sits* can. These are positions a same-run export
+    of the AoF save put hands at, one per suit-pattern block and its edges.
+    """
+    four = class_table(4)
+    for index, key in {
+        0: "2222",
+        10: "222Q",
+        13: "2233",
+        1819: "AAAA",
+        3040: "56(35)",
+        16400: "(89TA)",
+        16431: "(JQKA)",
+    }.items():
+        assert four.key[index] == key
+    two = class_table(2)
+    for index, key in {0: "22", 90: "AA", 91: "32s", 168: "AKs"}.items():
+        assert two.key[index] == key
+
+
+def test_each_suit_pattern_block_holds_the_classes_its_pattern_counts():
+    assert _suit_patterns(4) == [(1, 1, 1, 1), (2, 1, 1), (2, 2), (3, 1), (4,)]
+    assert _suit_patterns(2) == [(1, 1), (2,)]
+    sizes = [
+        sum(1 for rank_sets in _solver_order(4) if tuple(sorted(map(len, rank_sets), reverse=True)) == pattern)
+        for pattern in _suit_patterns(4)
+    ]
+    assert sizes == [1820, 7098, 3081, 3718, 715]
+
+
+def test_a_numbering_that_names_one_class_twice_is_refused(monkeypatch):
+    import preflop_advisor.mkr_classes as classes
+
+    class_table.cache_clear()
+    monkeypatch.setattr(classes, "_solver_order", lambda cards: iter([((0,), (1,)), ((1,), (0,))]))
+    try:
+        with pytest.raises(NativeFormatError, match="names one class twice"):
+            class_table(2)
+    finally:
+        class_table.cache_clear()
 
 
 # --------------------------------------------------------------------------------------
