@@ -162,13 +162,19 @@ def class_table(cards_per_hand: int) -> ClassTable:
         )
 
     keys = tuple(convert_hand("".join(card_name(card) for card in hand)) for hand in representative)
+    index_of_key = {key: index for index, key in enumerate(keys)}
+    if len(index_of_key) != len(keys):
+        raise NativeFormatError(
+            f"The application's hand keys name {len(index_of_key)} of the {len(keys)} {cards_per_hand}-card "
+            "classes: two classes share a key, so a hand could be read under another class's strategy."
+        )
     logger.debug("Built the %d-card class table: %d classes", cards_per_hand, len(keys))
     return ClassTable(
         cards_per_hand=cards_per_hand,
         index_of=index_of,
         representative=tuple(representative),
         key=keys,
-        index_of_key={key: index for index, key in enumerate(keys)},
+        index_of_key=index_of_key,
     )
 
 

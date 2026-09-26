@@ -196,10 +196,13 @@ def _groups(value: object, entry: str, typecode: str) -> list[list[Sequence[int]
 
 
 def _clear_best(values: Sequence[float | None], margin: float) -> int | None:
-    """Which value is largest by more than ``margin``, or ``None`` when none clearly is."""
-    numbers = [value for value in values if value is not None]
-    if len(numbers) < 2 or len(numbers) != len(values):
+    """Which value is largest by more than ``margin``, or ``None`` when none clearly is.
+
+    The index is into ``values`` itself: a row with any value missing has no clear best.
+    """
+    if len(values) < 2 or any(value is None for value in values):
         return None
+    numbers = [float(value) for value in values if value is not None]
     order = sorted(range(len(numbers)), key=numbers.__getitem__, reverse=True)
     return order[0] if numbers[order[0]] - numbers[order[1]] > margin else None
 

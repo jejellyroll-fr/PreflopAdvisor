@@ -30,6 +30,7 @@ import pytest
 from preflop_advisor.errors import NativeFormatError
 from preflop_advisor.hand_convert_helper import convert_hand
 from preflop_advisor.mkr_archive import MAX_ENTRY_BYTES, read_entries
+from preflop_advisor.mkr_calc import _clear_best
 from preflop_advisor.mkr_classes import (
     CLASS_COUNTS,
     canonical,
@@ -746,6 +747,35 @@ def test_a_tree_whose_street_has_no_stored_strategy_entry_is_refused(tmp_path):
     path = write_mkr(tmp_path / "street2.mkr", saved_run(tree=tree_entry(street=2)))
     with pytest.raises(NativeFormatError, match="no stored-strategy entry for that street"):
         read_structure(path)
+
+
+def test_a_member_that_moved_since_the_index_was_taken_is_refused(tmp_path):
+    path = write_mkr(tmp_path / "moving.mkr", saved_run())
+    archive = read_entries(path)
+    entries = saved_run()
+    reordered = {"game": entries.pop("game"), **entries}
+    write_mkr(tmp_path / "moving.mkr", reordered)
+    with pytest.raises(NativeFormatError, match="no longer where the archive's index put it"):
+        archive.read("tree")
+
+
+def test_two_classes_sharing_a_key_are_refused(monkeypatch):
+    import preflop_advisor.mkr_classes as classes
+
+    class_table.cache_clear()
+    monkeypatch.setattr(classes, "convert_hand", lambda hand: "AA")
+    try:
+        with pytest.raises(NativeFormatError, match="two classes share a key"):
+            class_table(2)
+    finally:
+        class_table.cache_clear()
+
+
+def test_the_clear_best_is_an_index_into_the_values_themselves():
+    assert _clear_best([1.0, 5.0, 2.0], 1.0) == 1
+    assert _clear_best([1.0, 5.0, 4.5], 1.0) is None
+    assert _clear_best([None, 5.0, 2.0], 1.0) is None
+    assert _clear_best([5.0], 1.0) is None
 
 
 def test_a_member_declaring_more_than_the_reader_holds_is_refused(run_path, monkeypatch):

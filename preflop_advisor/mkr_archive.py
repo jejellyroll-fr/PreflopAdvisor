@@ -113,7 +113,16 @@ class MkrArchive:
                 f"{MAX_ENTRY_BYTES} a saved simulation's entry is read up to."
             )
         try:
-            with archive.open(archive.infolist()[found.position]) as member:
+            info = archive.infolist()[found.position]
+            # The archive is opened again for every read, and the file could have been
+            # replaced since its index was taken: the member at that place must still be
+            # the one the index named.
+            if decode_entry_name(info)[0] != name or info.file_size != found.size:
+                raise NativeFormatError(
+                    f"The {name} entry of {self.path} is no longer where the archive's index put it: "
+                    "the file changed while it was being read."
+                )
+            with archive.open(info) as member:
                 data = member.read(MAX_ENTRY_BYTES + 1)
         except (zipfile.BadZipFile, OSError, ValueError, RuntimeError, IndexError) as error:
             raise NativeFormatError(f"The {name} entry of {self.path} could not be read ({error}).") from error
@@ -168,7 +177,7 @@ def decode_entry_name(info: zipfile.ZipInfo) -> tuple[str, bool]:
     if raw[:2] != UTF16BE_BOM:
         return declared, False
     try:
-        return raw.decode("utf-16"), True
+        return raw[len(UTF16BE_BOM) :].decode("utf-16-be"), True
     except UnicodeDecodeError:
         return declared, False
 
