@@ -338,7 +338,10 @@ def read_tree(data: bytes) -> MkrTree:
         has_ranges=has_ranges,
         range_combos=combos,
         ranges=ranges,
-        game=None if game == NO_GAME else game,
+        # A negative game is "none stated" in 33490 as well: the solver's own reader
+        # (c.a.n) applies the field only when it is at least zero, so a tree carrying -1
+        # is one whose game the archive's ``game`` alone says, exactly as before 33490.
+        game=None if game < 0 else game,
         seat_names=seat_names,
     )
 
