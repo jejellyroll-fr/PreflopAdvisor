@@ -115,12 +115,13 @@ def group_layout(tree: MkrTree) -> tuple[dict[int, GroupLayout], dict[int, tuple
     # ``members`` is in the stored strategy's walk already; each group is held to the two
     # walks the measured tree could not tell it from.
     breadth = {node: position for position, node in enumerate(_breadth_first_last_to_first(tree))}
-    alternatives = (
-        lambda nodes: sorted(nodes, key=breadth.__getitem__),
+    established = all(
+        # Breadth first, children last to first.
+        nodes == sorted(nodes, key=breadth.__getitem__)
         # Node indices are the tree's preorder, so a reverse sort is its order reversed.
-        lambda nodes: sorted(nodes, reverse=True),
+        and nodes == sorted(nodes, reverse=True)
+        for nodes in members.values()
     )
-    established = all(nodes == walk(nodes) for nodes in members.values() for walk in alternatives)
     layout: dict[int, GroupLayout] = {}
     for group, nodes in members.items():
         average = ev = 0
