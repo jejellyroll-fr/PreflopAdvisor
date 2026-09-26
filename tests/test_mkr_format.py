@@ -744,6 +744,9 @@ def test_a_beta_save_for_storage_is_read_and_checks_the_tree_s_game(tmp_path):
     assert "tree game" in {check.name for check in structure.checks}
     mismatch = write_mkr(tmp_path / "beta-omaha.mkr", saved_run(tree=beta_tree_entry(game=1)))
     assert {check.name for check in read_structure(mismatch).failures} == {"tree game"}
+    # -1 is the solver's own "no game stated", which its reader skips rather than applies.
+    unstated = read_structure(write_mkr(tmp_path / "beta-unstated.mkr", saved_run(tree=beta_tree_entry(game=-1))))
+    assert unstated.tree.game is None and not unstated.failures
 
 
 def test_a_tree_whose_fields_do_not_account_for_its_entry_is_refused():
