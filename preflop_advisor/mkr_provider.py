@@ -258,8 +258,11 @@ class MkrStrategyProvider:
                 return None
             walked.append((spelled_seat, name))
             index = chosen
+        # A line that ends on a fold, a call that closes the action or an all-in ends the
+        # hand: nobody acts there, whoever would have been next.
         hero = self._spelling.get(node.hero.lower(), node.hero)
-        if hero != self.seats[tree.actor_of(tree.nodes[index])]:
+        final = tree.nodes[index]
+        if not final.decision or hero != self.seats[tree.actor_of(final)]:
             return None
         return Node(hero=hero, path=tuple(walked))
 

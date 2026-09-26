@@ -1579,6 +1579,13 @@ def test_a_line_this_tree_does_not_hold_resolves_to_nothing(provider):
     assert provider.children(Node(hero="BB", path=(("SB", "Call"),))) == []
 
 
+def test_a_line_that_ends_the_hand_resolves_to_no_decision(provider):
+    ended = Node(hero="BB", path=(("SB", "Fold"),))
+    assert provider.resolve(ended) is None
+    assert not provider.has_node(ended)
+    assert provider.resolve(Node(hero="BB", path=(("SB", "Allin"),))) is not None
+
+
 def test_a_postflop_run_is_refused_because_its_nodes_have_no_seats(tmp_path):
     stored = saved_run()
     entries = saved_run(
