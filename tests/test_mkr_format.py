@@ -631,6 +631,12 @@ def test_a_tree_that_ends_mid_field_is_refused():
         read_tree(tree_entry()[:20])
 
 
+def test_a_tree_solved_from_no_street_a_hand_has_is_refused():
+    for street in (-100, 4):
+        with pytest.raises(NativeFormatError, match=f"solved from street {street}"):
+            read_tree(tree_entry(street=street))
+
+
 def test_a_tree_stating_a_negative_amount_is_refused():
     for fields in ({"stacks": (-10000, 10000)}, {"committed": (-1000, 2000)}, {"dead_money": -1}):
         with pytest.raises(NativeFormatError, match="negative amount"):

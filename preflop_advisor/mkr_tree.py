@@ -42,6 +42,8 @@ MAX_NODES = 100_000
 #: How many starting combos a range block holds per player, by hand size: every two-card
 #: and every four-card combination of a deck.
 RANGE_COMBOS: dict[int, int] = {1326: 2, 270725: 4}
+#: How many betting rounds a hand has: preflop, flop, turn and river, numbered from zero.
+STREETS = 4
 #: A range block's weights are fixed point: this is a weight of one.
 RANGE_ONE = 2_147_483_647
 
@@ -268,6 +270,8 @@ def read_tree(data: bytes) -> MkrTree:
             raise NativeFormatError(f"The tree entry declares {num_players} players, which is not a table.")
         first_to_act = cursor.i32()
         street = cursor.i32()
+        if not 0 <= street < STREETS:
+            raise NativeFormatError(f"The tree entry is solved from street {street}, and a hand has {STREETS}.")
         committed = tuple(cursor.i32() for _ in range(num_players)) if street == 0 else ()
         dead_money = cursor.i32()
         stacks = tuple(cursor.i32() for _ in range(num_players))
