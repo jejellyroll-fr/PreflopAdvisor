@@ -348,13 +348,15 @@ def _read_seat_names(cursor: _TreeCursor, players: int) -> tuple[tuple[int, str]
     count = cursor.i32()
     if not 0 <= count <= players:
         raise NativeFormatError(f"The tree entry names {count} seats at a table of {players}.")
-    names = []
+    names: dict[int, str] = {}
     for _ in range(count):
         player = cursor.i32()
         if not 0 <= player < players:
             raise NativeFormatError(f"The tree entry names seat {player} at a table of {players}.")
-        names.append((player, cursor.utf()))
-    return tuple(names)
+        if player in names:
+            raise NativeFormatError(f"The tree entry names seat {player} twice, so which name it has is not stated.")
+        names[player] = cursor.utf()
+    return tuple(names.items())
 
 
 def _require_empty(cursor: _TreeCursor, what: str) -> None:
@@ -391,9 +393,10 @@ class _TreeCursor:
     def utf(self) -> str:
         """A ``DataOutputStream.writeUTF`` string: a 16-bit byte length, then the bytes.
 
-        Java writes a *modified* UTF-8, which differs from UTF-8 only for the NUL character
-        and for characters outside the Basic Multilingual Plane -- neither of which a seat
-        name holds -- so a name that is not UTF-8 is refused rather than guessed at.
+        Java writes a *modified* UTF-8, which differs from UTF-8 in two places: NUL is the
+        two bytes ``C0 80``, and a character past the Basic Multilingual Plane is its UTF-16
+        surrogate pair, each half encoded on its own. Both are undone here, and only bytes
+        that are not modified UTF-8 either -- or a surrogate left unpaired -- are refused.
         """
         length = self.u16()
         raw = self.data[self.offset : self.offset + length]
@@ -401,9 +404,12 @@ class _TreeCursor:
             raise NativeFormatError("The tree entry ends in the middle of a seat name.")
         self.offset += length
         try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise NativeFormatError(f"The tree entry holds a seat name that is not UTF-8 ({error}).") from error
+            halves = raw.replace(b"\xc0\x80", b"\x00").decode("utf-8", "surrogatepass")
+            return halves.encode("utf-16-le", "surrogatepass").decode("utf-16-le")
+        except UnicodeError as error:
+            raise NativeFormatError(
+                f"The tree entry holds a seat name that is not modified UTF-8 ({error})."
+            ) from error
 
     def byte(self) -> int:
         if self.offset >= len(self.data):

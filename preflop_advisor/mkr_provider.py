@@ -386,15 +386,16 @@ def writer_name(signature: int, version: int | None) -> str:
     Both builds read so far state format version 20109, so the version alone would name
     every save 2.1.9. A signature no real save has been read with falls back to it.
     """
-    return TREE_WRITERS.get(signature, f"MonkerSolver format {version_name(version)}")
+    return TREE_WRITERS.get(signature, f"a MonkerSolver build writing save format {version_name(version)}")
 
 
 def version_name(version: int | None) -> str:
-    """A packed build number as a version string: 20109 reads as ``2.1.9``.
+    """A save's packed format version as a version string: 20109 reads as ``2.1.9``.
 
-    Stated as a reading of the one value observed, not as a documented encoding: the save
-    at hand was written by 2.1.9 and carries 20109. A number that does not fit the shape is
-    shown as itself rather than forced into it.
+    It is the save format's version, not the build that wrote the save: 2.1.9 and
+    2.3.10-beta both state 20109, which is the version 2.1.9 introduced. The ``major.minor
+    .patch`` reading is stated as a reading of the one value observed, not as a documented
+    encoding, and a number that does not fit the shape is shown as itself.
     """
     if version is None:
         return "of an unstated version"

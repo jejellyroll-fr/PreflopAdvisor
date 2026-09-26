@@ -674,7 +674,7 @@ def beta_tree_entry(
     signature: int = 33490,
     mask: int = 0,
     game: int = 0,
-    names: tuple[tuple[int, str], ...] = (),
+    names: tuple[tuple[int, str | bytes], ...] = (),
     node_groups: int = 0,
     weight_arrays: int = 0,
 ) -> bytes:
@@ -687,7 +687,7 @@ def beta_tree_entry(
     body = struct.pack(">qiiii", signature, mask, game, 0, 2)
     body += struct.pack(">i", len(names))
     for player, name in names:
-        encoded = name.encode("utf-8")
+        encoded = name if isinstance(name, bytes) else name.encode("utf-8")
         body += struct.pack(">iH", player, len(encoded)) + encoded
     body += struct.pack(">ii", 0, 0)
     body += struct.pack(">2i", 1000, 2000) + struct.pack(">i", 0) + struct.pack(">2i", 10000, 10000)
@@ -714,6 +714,21 @@ def test_a_33490_tree_with_what_this_reader_does_not_interpret_is_refused():
         read_tree(beta_tree_entry(weight_arrays=3))
     with pytest.raises(NativeFormatError, match="names seat 5 at a table of 2"):
         read_tree(beta_tree_entry(names=((5, "UTG"),)))
+    with pytest.raises(NativeFormatError, match="names seat 1 twice"):
+        read_tree(beta_tree_entry(names=((1, "BB"), (1, "SB"))))
+
+
+def test_a_seat_name_is_read_as_the_modified_utf_8_java_writes():
+    """NUL as ``C0 80``, and a character past the BMP as two separately encoded surrogates."""
+    nul = b"A\xc0\x80B"
+    card = "🂡".encode("utf-16-be")
+    high, low = int.from_bytes(card[:2], "big"), int.from_bytes(card[2:], "big")
+    pair = chr(high).encode("utf-8", "surrogatepass") + chr(low).encode("utf-8", "surrogatepass")
+    for raw, expected in ((nul, "A\x00B"), (pair, "🂡"), ("Hôte".encode(), "Hôte")):
+        assert read_tree(beta_tree_entry(names=((1, raw),))).seat_names == ((1, expected),)
+    lone = chr(high).encode("utf-8", "surrogatepass")
+    with pytest.raises(NativeFormatError, match="not modified UTF-8"):
+        read_tree(beta_tree_entry(names=((1, lone),)))
 
 
 def test_the_signatures_between_the_two_read_builds_are_refused():
@@ -2219,7 +2234,7 @@ def test_a_build_number_is_named_by_the_shape_the_one_observed_build_has():
 def test_the_writer_is_named_by_the_tree_signature_not_the_format_version():
     assert writer_name(33487, 20109) == "MonkerSolver 2.1.9"
     assert writer_name(33490, 20109) == "MonkerSolver 2.3.10-beta"
-    assert writer_name(33486, 20109) == "MonkerSolver format 2.1.9"
+    assert writer_name(33486, 20109) == "a MonkerSolver build writing save format 2.1.9"
 
 
 def test_a_preflop_save_with_no_identifiable_blind_is_refused(tmp_path):
