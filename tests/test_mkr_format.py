@@ -1614,7 +1614,7 @@ def test_the_report_exits_nonzero_when_the_model_cannot_be_built(tmp_path, monke
 
 def test_the_report_names_the_seats_of_a_full_ring_table():
     report = _mkr_report()
-    for players in (8, 9):
+    for players in (8, 9, 10):
         assert len(seats_for(report.SEATS, players, [])) == players
 
 
@@ -1796,6 +1796,17 @@ def test_an_object_array_longer_than_any_save_writes_is_refused():
     stream = MAGIC + array_body("[Ljava.lang.Object;", struct.pack(">i", 2_000_000) + b"\x70" * 16)
     with pytest.raises(NativeFormatError, match="array of 2000000 elements"):
         read_java_value(stream, "reg")
+
+
+def test_many_arrays_each_under_the_limit_are_held_to_one_budget(monkeypatch):
+    """Three arrays of three nulls pass a per-array limit of five and not a stream's."""
+    monkeypatch.setattr("preflop_advisor.mkr_java.MAX_OBJECT_ELEMENTS", 5)
+    inner = array_body("[Ljava.lang.Object;", struct.pack(">i", 3) + b"\x70" * 3)
+    stream = MAGIC + array_body("[[Ljava.lang.Object;", struct.pack(">i", 1) + inner)
+    assert read_java_value(stream, "reg") == [[None, None, None]]
+    outer = MAGIC + array_body("[[Ljava.lang.Object;", struct.pack(">i", 3) + inner * 3)
+    with pytest.raises(NativeFormatError, match="more than 5 elements across its arrays and maps"):
+        read_java_value(outer, "reg")
 
 
 def test_a_boolean_array_longer_than_any_save_writes_is_refused():

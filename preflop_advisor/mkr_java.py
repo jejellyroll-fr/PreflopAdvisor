@@ -38,10 +38,12 @@ _BASE_HANDLE = 0x7E0000
 #: ``TC_ENDBLOCKDATA``; without it the field values simply stop.
 _SC_WRITE_METHOD = 0x01
 
-#: How many elements an array of objects or of booleans -- the two kept as lists -- or pairs
-#: a map may declare. The largest a save writes is one row
-#: per hand class, 16432; a count far past that is a crafted stream, and every element --
-#: even a one-byte null -- would cost a list slot before anything else could be checked.
+#: How many elements the arrays of objects and of booleans -- the two kept as lists -- and
+#: the pairs of the maps of one stream may declare *between them*. The most a save writes is
+#: one row per hand class and group: 16432 x 40 for a ten-handed four-card game. A count
+#: past that is a crafted stream, and every element -- even a one-byte null -- would cost a
+#: list slot before anything else could be checked, so the budget is the stream's and not
+#: each array's: many arrays each under a per-array limit would add up all the same.
 MAX_OBJECT_ELEMENTS = 1_000_000
 
 #: The ``java.util.HashMap`` class, whose contents are written by its own method.
@@ -93,6 +95,7 @@ class _JavaStream:
         self._offset = 0
         self._handles: list[object] = []
         self._depth = 0
+        self._elements = 0
         if not data.startswith(JAVA_STREAM_MAGIC):
             raise NativeFormatError(
                 f"The {entry} entry does not begin with the Java serialization stream magic "
@@ -247,6 +250,7 @@ class _JavaStream:
         # past the element limit, is a crafted count rather than a map.
         if not 0 <= size <= min(MAX_OBJECT_ELEMENTS, (len(self._data) - self._offset) // 2):
             raise NativeFormatError(f"The {self._entry} entry holds a map of {size} entries.")
+        self._spend(size)
         contents: dict[object, object] = {}
         for _ in range(size):
             key = self.read_value()
@@ -268,7 +272,9 @@ class _JavaStream:
         elif element == "Z":
             if length > MAX_OBJECT_ELEMENTS:
                 raise NativeFormatError(f"The {self._entry} entry declares an array of {length} elements.")
-            values = [bool(flag) for flag in self._take(length)]
+            flags = self._take(length)
+            self._spend(length)
+            values = [bool(flag) for flag in flags]
         elif element in _ARRAY_TYPES:
             values = self._numbers(element, length)
         elif element[:1] in ("[", "L"):
@@ -293,7 +299,17 @@ class _JavaStream:
         """An array of objects or of arrays: each element a value of its own."""
         if not 0 <= length <= min(MAX_OBJECT_ELEMENTS, len(self._data) - self._offset):
             raise NativeFormatError(f"The {self._entry} entry declares an array of {length} elements.")
+        self._spend(length)
         return [self.read_value() for _ in range(length)]
+
+    def _spend(self, count: int) -> None:
+        """Charge elements about to be kept as list slots against the stream's budget."""
+        self._elements += count
+        if self._elements > MAX_OBJECT_ELEMENTS:
+            raise NativeFormatError(
+                f"The {self._entry} entry declares more than {MAX_OBJECT_ELEMENTS} elements across its arrays "
+                "and maps, which no save writes."
+            )
 
     def read_value(self) -> object:
         """The next value of the stream.

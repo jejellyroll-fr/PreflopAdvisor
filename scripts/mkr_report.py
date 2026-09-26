@@ -47,6 +47,7 @@ SEATS = {
     "positions7": "BB,SB,BU,CO,HJ,MP,UTG",
     "positions8": "BB,SB,BU,CO,HJ,LJ,MP,UTG",
     "positions9": "BB,SB,BU,CO,HJ,LJ,MP,UTG1,UTG",
+    "positions10": "BB,SB,BU,CO,HJ,LJ,MP,UTG2,UTG1,UTG",
 }
 
 
