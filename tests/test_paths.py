@@ -114,7 +114,7 @@ def test_validate_tree_names_the_solver_files_it_cannot_read(tmp_path):
     assert not ok
     assert "no .rng" in reason
     assert "HUNL100.mkr, and 1 more" in reason
-    assert "cannot read directly yet" in reason
+    assert "point the entry at the .mkr file itself" in reason
 
 
 def test_validate_tree_gives_no_hint_about_a_folder_that_holds_nothing(tmp_path):

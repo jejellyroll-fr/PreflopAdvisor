@@ -1,4 +1,4 @@
-# Native simulation files (`.mkr`): what they hold, and why there is still no provider
+# Native simulation files (`.mkr`): what they hold, and how they are read
 
 Issue #24 asks whether PreflopAdvisor can read a solver's own simulation file directly,
 starting with `.mkr`, and is explicit about the condition: *implement a provider only if
@@ -10,14 +10,19 @@ undocumented guesses without fixture-based validation*.
 | Phase | State |
 | --- | --- |
 | 1 — research / format characterization | **Complete.** The container, the tree, the scalars, both kinds of strategy store and the hand-class numbering are read from real saves and written down below, each row marked as measured, derived or `UNKNOWN`. |
-| 2 — feasibility prototype | **Delivered, behind a gate.** `preflop_advisor/mkr_format.py` reads the structure — the container through `mkr_archive.py`, the `tree` entry through `mkr_tree.py`, the Java-serialized entries through `mkr_java.py`, a save made for storage through `mkr_stored.py` and one made for further calculation through `mkr_calc.py`; `preflop_advisor/mkr_provider.py` answers the `StrategyProvider` questions of #15 from it, frequencies **and EVs**; `scripts/mkr_report.py` runs both over a file of your own. |
-| 3 — production integration | **Not met.** The gate that matters now passes for a save made for storage: the AoF save and the solver's own export of that same simulation agree on all 460 096 frequencies and EVs. It passes only since that comparison exposed, and this reader corrected, a wrong hand-class numbering (see *The hand axis*). It passes for a save made for further calculation too, since the same comparison exposed a wrong node order in that store. A second solver version is read for saves made for storage: MonkerSolver 2.3.10-beta writes a new tree format, 33490, which is now read and agrees with the beta's own export. The beta's calculation store is refused by name. |
+| 2 — feasibility prototype | **Delivered.** `preflop_advisor/mkr_format.py` reads the structure — the container through `mkr_archive.py`, the `tree` entry through `mkr_tree.py`, the Java-serialized entries through `mkr_java.py`, a save made for storage through `mkr_stored.py` and one made for further calculation through `mkr_calc.py`; `preflop_advisor/mkr_provider.py` answers the `StrategyProvider` questions of #15 from it, frequencies **and EVs**; `scripts/mkr_report.py` runs both over a file of your own. |
+| 3 — production integration | **Wired in.** A tree entry of kind `mkr` names a save, and `strategy.provider_for` reads it through `mkr_provider.py`; the import wizard turns a `.mkr` into such an entry, and the Advisor, the Trainer, the node explorer and the catalog read it as they read an export. What is read has passed the gate that matters: each kind of save agrees with the solver's own export of the same simulation on every frequency and EV (460 096 for the AoF storage save, 4 732 for a hold'em calculation save), after that comparison exposed, and this reader corrected, a wrong hand-class numbering and a wrong node order. A second solver version is read for saves made for storage: MonkerSolver 2.3.10-beta writes a new tree format, 33490, which agrees with the beta's own export. What is not read is refused by name: the beta's calculation store, a postflop tree, a format no save has been read in. |
 
-The prototype is therefore **not reachable from `strategy.provider_for`**, no tree entry
-`kind` selects it, and the import wizard still answers a folder of `.mkr` files by naming
-the file and asking for an export. No strategy path in the application reaches the reader:
-the only code outside it that does is the Phase 1 probe, which borrows one function to
-decode an archive's member names.
+**How an entry names a save.** `TableN = plrs,bb,game,<path>.mkr,description` with
+`TableN.kind = mkr`: the folder field names the file itself, since a folder of saves -- one
+per board, as a sweep writes them -- holds several simulations and an entry reads one. The
+path is resolved like a range folder's (as given, then under each search root, then under
+`ranges/` by its name), and an entry whose field ends in `.mkr` is read as a save even with
+no `kind` declared. Saving the entry opens the save and holds the entry to it: the player
+count, the depth and the game must be the save's, since the Advisor seats its grid by what
+the entry says. The ante is the one thing a save may not say: a tree with no dead money has
+none, but dead money is not necessarily an ante, so a save carrying some is imported only
+with `TableN.ante` declared, and that declaration is what the reader then reports.
 
 What changed since Phase 1 is not an opinion, it is two artefacts: a real save to read,
 and a second implementation of the same format to disagree with.
@@ -365,16 +370,16 @@ PREFLOP_ADVISOR_MKR=<the save> PREFLOP_ADVISOR_MKR_EXPORT_SAME_RUN=<the folder> 
 
 ## Promotion gates
 
-The provider stays out of the application until all of these hold. Current state:
+The provider was kept out of the application until these held. Current state:
 
 - [x] the format's structure is read from a real save, and every reading is cross-checked
       against another number the same file states;
 - [x] unsupported and corrupt files are *detected*, not guessed at: the refusal names what
       was found and what was expected;
 - [x] the source file is never written to — asserted by hash, size and modification time;
-- [x] the reader lives entirely behind the #15 protocol: no strategy path reaches it, the
-      one borrowed function decodes archive names rather than strategies, and nothing
-      selects it as a source;
+- [x] the reader lives entirely behind the #15 protocol: `strategy.provider_for` is the one
+      place that selects it, for an entry of kind `mkr`, and every consumer reads it through
+      the protocol it reads an export through;
 - [x] `docs/native-import.md` states, per property, what is supported and what is not;
 - [x] **a save in a format nothing has read end to end is refused.** `KNOWN_VERSIONS`
       lists the format versions a save has been read through — one, 20109, which both
@@ -409,19 +414,23 @@ The provider stays out of the application until all of these hold. Current state
 
 ## What this means for the workflow today
 
-Unchanged, and deliberately: bring-your-own-simulation is served by two paths, and the
-ticket's own scope says they stay the fallback even if direct import arrives.
+Bring-your-own-simulation is served by three paths, the first of them new; the other two
+stay, as the ticket's own scope asks, for what the first does not read.
+
+- **a MonkerSolver save** — the `.mkr` itself, chosen in the import wizard ("Choose a
+  save...", or the path typed into the box, or a folder holding that one save), read by
+  `mkr_provider` behind #15. The wizard reports what the save states -- game, seats, depth,
+  ante, whether it kept EVs, which build wrote it -- and asks for none of it;
 
 - **exported preflop ranges** — Monker's own export, imported through the wizard (#16),
   read by the Monker provider behind #15;
 - **CSV strategy tables** — any script, converter or spreadsheet, read by the CSV provider
   (#21), which is the path a `.mkr`-to-`.csv` tool would feed.
 
-A folder of `.mkr` files is answered, in both places a user can point the application at
-one, with a sentence that names the file, its container and its size, says no `.mkr` is read
-as a strategy source yet, and points at those two paths. What is new is that the sentence
-can now also name the archive as a saved simulation, because the probe reads its member
-names correctly.
+A save the reader refuses is answered with the reader's own reason -- the format version,
+the tree signature, the check that failed -- followed by those two paths. A folder of
+several saves is answered by naming them, since an entry reads one: the next thing to type
+is the file.
 
 To look at a save of your own:
 

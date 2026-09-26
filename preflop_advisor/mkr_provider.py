@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A saved simulation, read through the strategy model. Experimental, and not wired in.
+"""A saved simulation, read through the strategy model.
 
 :mod:`preflop_advisor.mkr_format` takes a ``.mkr`` apart and checks its numbers against
 each other. This module is the other half of issue #24's Phase 2: it says what those
@@ -8,11 +8,12 @@ numbers *are* in the application's own words -- :class:`~preflop_advisor.strateg
 :class:`~preflop_advisor.strategy.SimulationMetadata` -- so that the question of whether a
 simulation file can replace an export is answered by code rather than by argument.
 
-It is deliberately **not** reachable from :func:`preflop_advisor.strategy.provider_for`.
-Phase 3 is what promotes a reader into the application, and its gates are listed in
-``docs/native-import.md``; two of them are not met. Until they are, this is a prototype
-that the suite exercises and a user can run over their own file with
-``scripts/mkr_report.py``, and the import paths go on pointing at an export.
+:func:`preflop_advisor.strategy.provider_for` reaches it for a tree entry of kind ``mkr``,
+whose folder field names the save itself; the import wizard writes such an entry from a
+``.mkr`` it has opened, and every consumer -- the Advisor, the Trainer, the catalog --
+then reads it as it reads an export. What it reads, and what it refuses by name, is set
+out in ``docs/native-import.md``, where each reading is checked against the solver's own
+export of the same simulation.
 
 ## What the model gets, and how each piece is arrived at
 
@@ -86,8 +87,10 @@ class MkrStrategyProvider:
         a node whose seat or sizing is guessed is a node that cannot be keyed on.
     """
 
-    def __init__(self, path: str, configs: ConfigSource) -> None:
+    def __init__(self, path: str, configs: ConfigSource, declared_ante: float | None = None) -> None:
         self.path = path
+        #: The ante the tree entry declares, used only where the save cannot say its own.
+        self.declared_ante = declared_ante
         self.structure = read_structure(path)
         self._require_readable(self.structure)
         # Checked here rather than on the first metadata() call, so a file whose game is
@@ -211,13 +214,16 @@ class MkrStrategyProvider:
 
         A preflop tree keeps its posted blinds in the committed array and everything else
         in one dead-money figure, which an ante is one of and is not the only one. Zero is
-        reported as zero; anything else is reported as *unknown* rather than as an ante,
-        because the table arithmetic reads ``None`` as "numbers unknown" and an ante of the
-        wrong size is worse than no ante at all.
+        reported as zero. Anything else is the ante the tree entry declares, when it
+        declares one -- the user knows what the dead money was, and the file does not --
+        and *unknown* otherwise rather than a guess, because the table arithmetic reads
+        ``None`` as "numbers unknown" and an ante of the wrong size is worse than no ante.
         """
         dead = self.structure.tree.dead_money
         if dead == 0:
             return 0.0
+        if self.declared_ante:
+            return self.declared_ante
         logger.debug("%s carries %d in dead money, which is not necessarily an ante", self.path, dead)
         return None
 

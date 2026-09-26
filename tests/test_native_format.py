@@ -182,7 +182,7 @@ def test_no_container_is_claimed_to_hold_a_readable_strategy(request, fixture):
     found = probe(request.getfixturevalue(fixture))
 
     assert found.supported is False
-    assert "is read as a strategy source yet" in found.diagnostics[0]
+    assert "No strategy is read by this probe" in found.diagnostics[0]
 
 
 def test_the_refusal_says_what_the_file_is_and_what_to_do_instead(archive):
@@ -199,7 +199,7 @@ def test_opening_a_native_file_raises_with_its_diagnostics(archive):
         open_native(archive)
 
     assert "ZIP archive" in str(raised.value)
-    assert "is read as a strategy source yet" in str(raised.value)
+    assert "No strategy is read by this probe" in str(raised.value)
     assert "50 4b 03 04" in str(raised.value), "the magic goes into the message, for a bug report"
 
 
@@ -314,7 +314,8 @@ def test_a_folder_of_more_files_than_are_named_counts_them_all(tmp_path, tree_co
     with pytest.raises(SimulationScanError) as raised:
         scan_simulation(str(tmp_path), tree_configs)
 
-    assert f"00.mkr, and {MEMBER_LIMIT + 4} more" in str(raised.value)
+    assert f"holds {MEMBER_LIMIT + 5} saved simulations (00.mkr," in str(raised.value)
+    assert "and 5 more)" in str(raised.value)
 
 
 def test_the_ignored_files_of_a_folder_are_counted_whole(tmp_path, tree_configs):
@@ -349,9 +350,8 @@ def test_a_folder_of_native_files_is_refused_with_what_the_file_is(tmp_path, tre
         scan_simulation(str(tmp_path), tree_configs)
 
     message = str(raised.value)
-    assert message.startswith("HUNL100.mkr:")
-    assert "ZIP archive" in message
-    assert "is read as a strategy source yet" in message, "the reason comes before the advice"
+    assert message.startswith("HUNL100.mkr cannot be read directly:")
+    assert "tree entry" in message, "the reader's reason comes before the advice"
     assert "CSV tables" in message
 
 
@@ -362,8 +362,8 @@ def test_several_native_files_are_counted_in_the_refusal(tmp_path, tree_configs)
     with pytest.raises(SimulationScanError) as raised:
         scan_simulation(str(tmp_path), tree_configs)
 
-    assert "one.mkr, and 2 more" in str(raised.value)
-    assert "Java serialized object stream" in str(raised.value)
+    assert "holds 3 saved simulations (one.mkr, three.mkr, two.mkr)" in str(raised.value)
+    assert "choose the .mkr file to import" in str(raised.value)
 
 
 def test_a_native_file_that_cannot_be_read_still_leaves_the_way_out(tmp_path, tree_configs, monkeypatch):
