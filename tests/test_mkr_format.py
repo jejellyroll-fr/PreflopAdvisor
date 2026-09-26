@@ -1553,8 +1553,34 @@ def test_a_group_whose_nodes_a_breadth_first_walk_would_reorder_is_not_establish
     tree = read_tree(tree_entry(nodes=nodes))
     layout, members, established = group_layout(tree)
     assert not established
-    assert [tree.nodes[node].depth for node in members[4]] == [1, 3, 1]
+    # The stored strategy's walk takes the shove before the raise, and the raise's subtree
+    # after it; the tree's order reversed would put the depth-3 node second instead.
+    assert [tree.nodes[node].depth for node in members[4]] == [1, 1, 3]
     assert layout[members[4][1]].ev_offset == 3
+
+
+def test_a_group_s_nodes_are_stored_last_node_first():
+    """The big blind acts after a limp and after a shove: two nodes of one group.
+
+    The store keeps them in the stored strategy's walk -- children last to first -- so the
+    node after the shove takes the first block and the node after the limp the second. Read
+    in the tree's own order, each node gets the other's numbers and every width still fits.
+    """
+    from preflop_advisor.mkr_calc import CalcSource
+
+    # SB limps (1) or shoves (3); BB checks (1) or shoves (3) after a limp, folds (0) or calls (1) a shove.
+    nodes = struct.pack(">13H", 2, 1, 2, 1, 0, 3, 0, 3, 2, 0, 0, 1, 0)
+    tree = read_tree(tree_entry(nodes=nodes))
+    after_limp, after_shove = 1, 4
+    assert tree.line_to(after_limp) == (1,) and tree.line_to(after_shove) == (3,)
+    average = [None] * 8
+    average[0] = [array("i", [1, 3]) for _ in range(HOLDEM_CLASSES)]
+    # Solver order: the shove's block (call, fold) first, then the limp's (shove, check).
+    average[4] = [array("i", [9, 1, 2, 6]) for _ in range(HOLDEM_CLASSES)]
+    source = CalcSource(tree, SCALE, [None] * 8, average, [False] * 8, 1)
+    assert source.ordered
+    assert source.frequencies(after_shove, 0) == pytest.approx((0.1, 0.9))
+    assert source.frequencies(after_limp, 0) == pytest.approx((0.75, 0.25))
 
 
 def test_a_run_saved_before_it_had_a_strategy_is_refused(tmp_path):
