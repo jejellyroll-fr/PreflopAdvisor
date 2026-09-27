@@ -7,12 +7,13 @@ entry numbers them -- then by hand class, then by a flat run of numbers in which
 of the group takes a block, the group's nodes one after another:
 
 ``reg``
-    one layout byte, then a Java stream. Layout 3 -- the only one a save has been seen with
-    -- is ``Object[]{Double scale, int[][][] a, long[][][] b}``. The groups whose EV the run
-    kept (``hasEv``) have a row in ``b``; there each node takes ``n + 2`` longs,
+    one layout byte, then a Java stream. Layout 3 -- what MonkerSolver 2.1.9 writes -- is
+    ``Object[]{Double scale, int[][][] a, long[][][] b}``. The groups whose EV the run kept
+    (``hasEv``) have a row in ``b``; there each node takes ``n + 2`` longs,
     ``[R_0 .. R_n-1, W, V]``, and the EV of action ``a`` is ``(R_a + V) / (W x scale)``: its
     average counterfactual value, in the tree's money, relative to the start of the hand.
-    The other groups keep their regrets in ``a`` and no EV.
+    The other groups keep their regrets in ``a`` and no EV. Layout 4 -- what 2.3.10-beta
+    writes -- is the same object with ``W`` kept in hundredths.
 ``iavg``
     one layout byte -- 1, the only one seen -- then an ``int[][][]`` of accumulated action
     counts: the average strategy, allocated for the groups whose average is kept. Each node
@@ -20,7 +21,7 @@ of the group takes a block, the group's nodes one after another:
     frequency is a count over its hand's block, and a block of zeros -- a hand never
     reached -- is worth ``1/n`` for every action, as the solver reads it.
 ``hasEv``
-    one boolean per group.
+    one boolean per group under layout 3, one per street under layout 4.
 
 Every block is in the solver's action order, the reverse of the tree's child order (see
 :func:`~preflop_advisor.mkr_tree.stored_action`).
@@ -63,12 +64,16 @@ REG_LAYOUT = 3
 #: The layouts the format also defines -- a ``double`` store and a ``short``/``int`` one --
 #: which no save has been seen with. Refused by name rather than guessed at.
 UNSEEN_REG_LAYOUTS: tuple[int, ...] = (0, 2)
-#: The tag MonkerSolver 2.3.10-beta writes on every ``reg``. Its rows parse as layout 3's,
-#: but its ``hasEv`` is one flag per street rather than per group, and read with layout 3's
-#: formula its fold EVs come out a hundredth of the blind, so its EV rows are not what
-#: layout 3's are. Refused by name until a calculation save of that build and its export of
-#: the same simulation settle how it reads.
+#: The tag MonkerSolver 2.3.10-beta writes on every ``reg``, from all five of its store
+#: classes alike. Its rows are layout 3's -- a scale, ``int`` rows, ``long`` rows -- and read
+#: the same way but for two things, both taken from the beta's own classes: a node's weight
+#: is kept in hundredths (``c.bc.b(IIII)`` divides by ``W x 0.01 x scale``), and ``hasEv``
+#: is one flag per street (``c.E.w`` is a ``boolean[4]``) rather than one per group.
 BETA_REG_LAYOUT = 4
+#: The layouts read, and the unit each keeps a node's weight in.
+WEIGHT_UNITS: dict[int, float] = {REG_LAYOUT: 1.0, BETA_REG_LAYOUT: 0.01}
+#: How many ``hasEv`` flags a store keeps when it keeps one per street.
+STREETS = 4
 #: The one ``iavg`` layout this reads: accumulated ``int`` action counts.
 IAVG_LAYOUT = 1
 #: The ``iavg`` layout the format also defines and no save has been seen with.
@@ -154,15 +159,38 @@ def read_calculation(archive: MkrArchive, tree: MkrTree) -> CalcSource:
             f"{archive.path} holds no stored strategy and is missing {', '.join(missing)}, so it is neither "
             "kind of save: there is no strategy to read."
         )
-    scale, ev_rows = _read_reg(archive)
+    reg_tag, scale, ev_rows = _read_reg(archive)
     average_tag, average_rows = _read_tagged(archive, IAVG_ENTRY)
-    _require_layout(archive, IAVG_ENTRY, average_tag, IAVG_LAYOUT, UNSEEN_IAVG_LAYOUTS)
+    _require_layout(archive, IAVG_ENTRY, average_tag, (IAVG_LAYOUT,), UNSEEN_IAVG_LAYOUTS)
     has_ev = read_java_value(archive.read(HAS_EV_ENTRY), HAS_EV_ENTRY)
     if not isinstance(has_ev, list) or not all(isinstance(flag, bool) for flag in has_ev):
-        raise NativeFormatError(f"The {HAS_EV_ENTRY} entry of {archive.path} is not one boolean per group.")
+        raise NativeFormatError(f"The {HAS_EV_ENTRY} entry of {archive.path} is not a list of flags.")
+    ev_groups = _groups(ev_rows, REG_ENTRY, "q")
+    _require_flags(archive, has_ev, reg_tag, len(ev_groups))
     return CalcSource(
-        tree, scale, _groups(ev_rows, REG_ENTRY, "q"), _groups(average_rows, IAVG_ENTRY, "i"), has_ev, average_tag
+        tree,
+        scale,
+        ev_groups,
+        _groups(average_rows, IAVG_ENTRY, "i"),
+        has_ev,
+        average_tag,
+        reg_tag=reg_tag,
     )
+
+
+def _require_flags(archive: MkrArchive, has_ev: list[bool], reg_tag: int, groups: int) -> None:
+    """Refuse a ``hasEv`` that is not one flag per group (layout 3) or per street (layout 4).
+
+    Checked here, as a format error, rather than left to the ``EV groups`` check: a list of
+    the wrong length is not a disagreement about which groups keep EVs, it is a store laid
+    out some other way.
+    """
+    expected, per = (STREETS, "street") if reg_tag == BETA_REG_LAYOUT else (groups, "group")
+    if len(has_ev) != expected:
+        raise NativeFormatError(
+            f"The {HAS_EV_ENTRY} entry of {archive.path} holds {len(has_ev)} flags, and a layout {reg_tag} "
+            f"store keeps one per {per} ({expected})."
+        )
 
 
 def _read_tagged(archive: MkrArchive, entry: str) -> tuple[int, object]:
@@ -173,9 +201,9 @@ def _read_tagged(archive: MkrArchive, entry: str) -> tuple[int, object]:
     return raw[0], read_java_value(raw[1:], entry)
 
 
-def _read_reg(archive: MkrArchive) -> tuple[float, object]:
+def _read_reg(archive: MkrArchive) -> tuple[int, float, object]:
     layout, value = _read_tagged(archive, REG_ENTRY)
-    _require_layout(archive, REG_ENTRY, layout, REG_LAYOUT, UNSEEN_REG_LAYOUTS)
+    _require_layout(archive, REG_ENTRY, layout, tuple(WEIGHT_UNITS), UNSEEN_REG_LAYOUTS)
     # ``a`` holds regrets, which neither a frequency nor an EV is computed from, so only its
     # shape is required: one entry per group, as ``b`` has.
     if (
@@ -185,7 +213,7 @@ def _read_reg(archive: MkrArchive) -> tuple[float, object]:
         or not isinstance(value[1], list)
     ):
         raise NativeFormatError(
-            f"The {REG_ENTRY} entry of {archive.path} is not the scale and two arrays its layout {REG_LAYOUT} holds."
+            f"The {REG_ENTRY} entry of {archive.path} is not the scale and two arrays its layout {layout} holds."
         )
     scale = float(value[0])
     # A subnormal scale is finite and positive and still turns a finite EV into an infinity.
@@ -193,23 +221,20 @@ def _read_reg(archive: MkrArchive) -> tuple[float, object]:
         raise NativeFormatError(
             f"The {REG_ENTRY} entry of {archive.path} scales its EVs by {scale}, which no EV can be divided by."
         )
-    return scale, value[2]
+    return layout, scale, value[2]
 
 
-def _require_layout(archive: MkrArchive, entry: str, layout: int, read: int, unseen: tuple[int, ...]) -> None:
-    """Refuse an entry laid out in any way but the one read, naming the ones never seen."""
-    if entry == REG_ENTRY and layout == BETA_REG_LAYOUT:
-        raise NativeFormatError(
-            f"The {entry} entry of {archive.path} uses layout {layout}, the calculation store MonkerSolver "
-            "2.3.10-beta writes, which is not read yet: its EVs and its hasEv differ from layout "
-            f"{read}'s. A save of it made for storage is read."
-        )
+def _require_layout(
+    archive: MkrArchive, entry: str, layout: int, read: tuple[int, ...], unseen: tuple[int, ...]
+) -> None:
+    """Refuse an entry laid out in any way but the ones read, naming the ones never seen."""
     if layout in unseen:
         raise NativeFormatError(
             f"The {entry} entry of {archive.path} uses layout {layout}, which the format defines and no save "
-            f"has been seen with; only layout {read} is read, rather than guessing at another."
+            f"has been seen with; only layout {' or '.join(map(str, sorted(read)))} is read, rather than guessing at "
+            "another."
         )
-    if layout != read:
+    if layout not in read:
         raise NativeFormatError(f"The {entry} entry of {archive.path} uses layout {layout}, which is unknown.")
 
 
@@ -257,6 +282,7 @@ class CalcSource:
         average_rows: list[list[Sequence[int]] | None],
         has_ev: list[bool],
         average_tag: int,
+        reg_tag: int = REG_LAYOUT,
     ) -> None:
         self.tree = tree
         self.scale = scale
@@ -264,6 +290,14 @@ class CalcSource:
         self.average_rows = average_rows
         self.has_ev = has_ev
         self.average_tag = average_tag
+        self.reg_tag = reg_tag
+        #: What one unit of a stored weight is worth: a layout 4 store keeps hundredths.
+        self.weight_unit = WEIGHT_UNITS[reg_tag]
+        #: ``hasEv`` as one flag per group, whichever way the store keeps it: a layout 4
+        #: store flags streets, and a group is ``4 x player + street``.
+        self.ev_kept = (
+            [has_ev[group % STREETS] for group in range(len(ev_rows))] if reg_tag == BETA_REG_LAYOUT else has_ev
+        )
         self.layout, self.members, self.ordered = group_layout(tree)
         self.class_count = self._class_count()
         self.widths_agree = self._widths_agree()
@@ -333,7 +367,7 @@ class CalcSource:
         """One node's EVs out of its ``[R_0 .. R_n-1, W, V]`` block, in child order."""
         start, actions = place.ev_offset, place.actions
         weight, value = row[start + actions], row[start + actions + 1]
-        denominator = weight * self.scale
+        denominator = weight * self.weight_unit * self.scale
         # Zero is a hand never weighted and below zero no weight at all, which the "EV
         # weights" check reports; a weight times a large scale can overflow, and dividing
         # by the infinity would turn every EV into a plausible zero.
@@ -345,7 +379,7 @@ class CalcSource:
     def describe(self) -> str:
         kept = [group for group, rows in enumerate(self.ev_rows) if rows is not None]
         return (
-            f"calculation store: {REG_ENTRY} layout {REG_LAYOUT}, scale {self.scale:g}, {IAVG_ENTRY} layout "
+            f"calculation store: {REG_ENTRY} layout {self.reg_tag}, scale {self.scale:g}, {IAVG_ENTRY} layout "
             f"{self.average_tag}, {len(self.members)} groups with nodes, EV kept for groups {kept}"
         )
 
@@ -439,9 +473,9 @@ class CalcSource:
         kept = [rows is not None for rows in self.ev_rows]
         return MkrCheck(
             name="EV groups",
-            passed=kept == self.has_ev,
+            passed=kept == self.ev_kept,
             detail=f"{REG_ENTRY} holds EV rows for exactly the groups {HAS_EV_ENTRY} marks "
-            f"({[group for group, flag in enumerate(self.has_ev) if flag]})",
+            f"({[group for group, flag in enumerate(self.ev_kept) if flag]})",
         )
 
     def _order_check(self) -> MkrCheck:

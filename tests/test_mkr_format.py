@@ -1503,10 +1503,62 @@ def test_an_iavg_layout_no_save_has_been_seen_with_is_refused_by_name(tmp_path):
         read_structure(path)
 
 
-def test_the_beta_s_calculation_store_is_refused_by_name(tmp_path):
-    path = write_mkr(tmp_path / "reg-4.mkr", calc_run(reg=b"\x04" + calc_run()["reg"][1:]))
-    with pytest.raises(NativeFormatError, match="layout 4, the calculation store MonkerSolver 2.3.10-beta writes"):
-        read_structure(path)
+def beta_calc_run() -> dict[str, bytes]:
+    """The calculation run as 2.3.10-beta saves it: ``reg`` tagged 4, weights in hundredths,
+    and ``hasEv`` one flag per street -- preflop only, as the heads-up tree is.
+    """
+    entries = calc_run()
+    ev_groups = [None] * 8
+    for group, (default, rows) in {
+        0: (
+            _ev_block(ROOT_EVS, 10, 2000),
+            {"AsAd": _ev_block((-1000, 1500), 10, 2000), "2s3d": _ev_block((-1000, -1500), 10, 2000)},
+        ),
+        4: (_ev_block(FACED_EVS, 5, 0), {"AsAd": _ev_block((-2000, 2600), 5, 0)}),
+    }.items():
+        ev_groups[group] = [_in_hundredths(row) for row in _hand_rows(default, rows)]
+    entries["reg"] = reg_entry(SCALE, [None] * 8, ev_groups, layout=4)
+    entries["hasEv"] = MAGIC + nested("[Z", [True, False, False, False])
+    return entries
+
+
+def _in_hundredths(block: list[int]) -> list[int]:
+    """One node's EV cells with its weight written in hundredths, as the beta keeps it."""
+    return [*block[:-2], block[-2] * 100, block[-1]]
+
+
+def test_the_beta_s_calculation_store_is_read_as_the_storage_save_reads(tmp_path, run_path):
+    """Weights in hundredths and per-street flags, read to the same frequencies and EVs."""
+    path = write_mkr(tmp_path / "beta-calc.mkr", beta_calc_run())
+    structure = read_structure(path)
+    assert not structure.failures, structure.summary()
+    assert "reg layout 4" in structure.source.describe()
+    stored, calculated = MkrStrategyProvider(run_path, SEATS), MkrStrategyProvider(str(path), SEATS)
+    for node in (Node(hero="SB", path=()), Node(hero="BB", path=(("SB", "Allin"),))):
+        for hand in ("AsAd", "2s3d"):
+            left, right = stored.strategy(node, hand), calculated.strategy(node, hand)
+            assert [result.ev for result in left] == pytest.approx([result.ev for result in right])
+
+
+def test_a_beta_store_read_with_layout_3_weights_fails_its_fold_ev_check(tmp_path):
+    """The hundredths are what the fold EV check measures: tagged 3, the same rows fail it."""
+    entries = beta_calc_run()
+    entries["reg"] = b"\x03" + entries["reg"][1:]
+    entries["hasEv"] = MAGIC + nested("[Z", [True, False, False, False, True, False, False, False])
+    assert "fold EV" in {check.name for check in read_structure(write_mkr(tmp_path / "x.mkr", entries)).failures}
+
+
+def test_a_layout_3_store_s_flags_are_one_per_group(tmp_path):
+    entries = calc_run(hasEv=MAGIC + nested("[Z", [True, False, False, False]))
+    with pytest.raises(NativeFormatError, match=r"holds 4 flags, and a layout 3 store keeps one per group \(8\)"):
+        read_structure(write_mkr(tmp_path / "short-flags.mkr", entries))
+
+
+def test_a_beta_store_s_flags_are_one_per_street(tmp_path):
+    entries = beta_calc_run()
+    entries["hasEv"] = MAGIC + nested("[Z", [True, False, False, False, True, False, False, False])
+    with pytest.raises(NativeFormatError, match="keeps one per street"):
+        read_structure(write_mkr(tmp_path / "flags.mkr", entries))
 
 
 def test_a_reg_entry_that_is_not_a_scale_and_two_arrays_is_refused(tmp_path):
@@ -1566,7 +1618,7 @@ def test_a_calculation_store_says_what_it_holds(calc_path, run_path):
 
 def test_a_has_ev_entry_that_is_not_booleans_is_refused(tmp_path):
     path = write_mkr(tmp_path / "has-ev-ints.mkr", calc_run(hasEv=java_array("[I", [1, 0])))
-    with pytest.raises(NativeFormatError, match="is not one boolean per group"):
+    with pytest.raises(NativeFormatError, match="is not a list of flags"):
         read_structure(path)
 
 
