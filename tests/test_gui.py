@@ -2020,6 +2020,17 @@ ANALYTICS_OPEN = "SB:"
 ANALYTICS_DEFEND = "BB:SB Raise75"
 
 
+def test_the_dashboard_reads_as_three_sub_tabs(analytics):
+    """One section per sub-tab, so each table has the tab's height instead of a third of it."""
+    from preflop_advisor.analytics_panel import ANALYSIS_TAB, OVERVIEW_TAB, TRAINING_TAB
+
+    tabs = analytics.sections
+    assert [tabs.tabText(index) for index in range(tabs.count())] == [OVERVIEW_TAB, ANALYSIS_TAB, TRAINING_TAB]
+    for index, table in enumerate((analytics.action_table, analytics.table, analytics.breakdown_table)):
+        assert tabs.widget(index).isAncestorOf(table)
+    assert analytics.action_table.maximumHeight() > 150, "no longer capped to leave room for the others"
+
+
 def test_the_dashboard_surveys_the_selected_simulation(analytics):
     assert "PLO 2-max 100bb" in analytics.heading.text()
     assert analytics.survey is not None
