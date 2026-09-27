@@ -10,7 +10,7 @@ import json
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShowEvent
-from PySide6.QtWidgets import QApplication, QDialog, QTableWidgetItem
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QTableWidgetItem
 
 from preflop_advisor import gui as gui_module
 from preflop_advisor.analytics_panel import EMPTY_STATE as ANALYTICS_EMPTY_STATE
@@ -2274,6 +2274,11 @@ def test_the_catalog_s_declarations_read_across_one_line_per_theme(catalog):
         (catalog.solver_edit, catalog.version_edit, catalog.tags_edit, catalog.notes_edit),
     ]
     assert [{row_of(field) for field in line} for line in lines] == [{0}, {1}, {2}, {3}]
+    # Every label still names its field, as QFormLayout made it: a screen reader reads the pair.
+    buddies = {label.buddy(): label.text() for label in catalog.findChildren(QLabel) if label.buddy() is not None}
+    assert buddies[catalog.rake_percent_edit] == "Rake (%):"
+    assert buddies[catalog.context_combo] == "Context:"
+    assert all(field in buddies for line in lines for field in line if field is not catalog.enabled_check)
 
 
 def test_the_catalog_lists_what_the_simulation_states_and_what_nobody_declared(catalog):

@@ -535,7 +535,8 @@ def metadata_grid(rows: Sequence[tuple[str, Sequence[tuple[str | None, QWidget]]
 
     Each line starts with its theme's name, then a label and a field per declaration, so the
     same column holds the same position on every line and the labels line up down the grid.
-    A field with no label -- a checkbox that names itself -- takes its label's cell too.
+    A field with no label -- a checkbox that names itself -- takes its label's cell too. Each
+    label is its field's buddy, as the form layout this replaced made it.
     """
     grid = QGridLayout()
     grid.setHorizontalSpacing(8)
@@ -552,7 +553,11 @@ def metadata_grid(rows: Sequence[tuple[str, Sequence[tuple[str | None, QWidget]]
             if label is None:
                 grid.addWidget(field, row, column, 1, 2)
                 continue
-            grid.addWidget(QLabel(label), row, column, alignment=Qt.AlignmentFlag.AlignRight)
+            caption = QLabel(label)
+            # What QFormLayout.addRow did on its own: the label names its field for a screen
+            # reader, and focuses it when clicked or given a mnemonic.
+            caption.setBuddy(field)
+            grid.addWidget(caption, row, column, alignment=Qt.AlignmentFlag.AlignRight)
             grid.addWidget(field, row, column + 1)
     for position in range(widest):
         grid.setColumnStretch(2 + 2 * position, 1)
