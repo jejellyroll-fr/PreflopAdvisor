@@ -10,7 +10,7 @@ import json
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShowEvent
-from PySide6.QtWidgets import QApplication, QDialog, QTableWidgetItem
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QTableWidgetItem
 
 from preflop_advisor import gui as gui_module
 from preflop_advisor.analytics_panel import EMPTY_STATE as ANALYTICS_EMPTY_STATE
@@ -2258,6 +2258,27 @@ def catalog(qtbot, tmp_path, tree_configs):
     qtbot.addWidget(panel)
     panel.refresh()
     return panel
+
+
+def test_the_catalog_s_declarations_read_across_one_line_per_theme(catalog):
+    """Rake, stakes and solver each on a line of their own, their fields side by side."""
+
+    def row_of(widget):
+        index = catalog.form.indexOf(widget)
+        return catalog.form.getItemPosition(index)[0]
+
+    lines = [
+        (catalog.enabled_check, catalog.context_combo),
+        (catalog.rake_percent_edit, catalog.rake_cap_edit, catalog.rake_cap_unit_combo, catalog.rake_profile_edit),
+        (catalog.sb_edit, catalog.bb_edit, catalog.aliases_edit),
+        (catalog.solver_edit, catalog.version_edit, catalog.tags_edit, catalog.notes_edit),
+    ]
+    assert [{row_of(field) for field in line} for line in lines] == [{0}, {1}, {2}, {3}]
+    # Every label still names its field, as QFormLayout made it: a screen reader reads the pair.
+    buddies = {label.buddy(): label.text() for label in catalog.findChildren(QLabel) if label.buddy() is not None}
+    assert buddies[catalog.rake_percent_edit] == "Rake (%):"
+    assert buddies[catalog.context_combo] == "Context:"
+    assert all(field in buddies for line in lines for field in line if field is not catalog.enabled_check)
 
 
 def test_the_catalog_lists_what_the_simulation_states_and_what_nobody_declared(catalog):
