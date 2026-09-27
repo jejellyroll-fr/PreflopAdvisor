@@ -633,7 +633,7 @@ class SizingsPanel(_Panel):
         can be cleared by hand; either goes back to what the preset says, which for a
         user-declared name is that it does not exist.
         """
-        self._require_raise_order(config)
+        self._require_unreferenced(config)
         for field in self._fields:
             value = field.value()
             if field.section == "TreeReader" and not value.strip():
@@ -641,23 +641,30 @@ class SizingsPanel(_Panel):
             else:
                 config.set(field.section, field.key, value)
 
-    def _require_raise_order(self, config: LayeredConfig) -> None:
-        """Refuse to remove a code the raise order still names, before anything is staged.
+    def _require_unreferenced(self, config: LayeredConfig) -> None:
+        """Refuse to remove a code a reader setting still names, before anything is staged.
 
-        The reader refuses a raise order naming an unknown sizing, so removing a code it
-        names would stop every simulation loading. Editing the order for the user would
-        change which sizing a tree is read with; saying so lets them choose.
+        Two settings name action codes: the raise order, which the reader refuses outright
+        when it names an unknown sizing -- no simulation loads -- and ``ValidActions``, whose
+        unknown name silently drops that action from every node. Editing either for the user
+        would change how a tree is read; saying so lets them choose.
 
-        :raises ValueError: naming the codes and the order that still uses them.
+        :raises ValueError: naming the codes and the setting that still uses them.
         """
         removed = self._codes_to_remove(config)
-        order = next((field.value() for field in self._fields if field.key.lower() == "raisesizelist"), "")
-        named = [entry.strip() for entry in order.split(",") if entry.strip().lower() in removed]
-        if named:
-            raise ValueError(
-                f"{', '.join(named)} is still in the raise order ({order}). Remove it from the raise order "
-                "before resetting its code, or keep the code."
-            )
+        for key, what in (("RaiseSizeList", "the raise order"), ("ValidActions", "ValidActions")):
+            listed = self._staged(config, key)
+            named = [entry.strip() for entry in listed.split(",") if entry.strip().lower() in removed]
+            if named:
+                raise ValueError(
+                    f"{', '.join(named)} is still in {what} ({listed}). Remove it from {what} before "
+                    "resetting its code, or keep the code."
+                )
+
+    def _staged(self, config: LayeredConfig, key: str) -> str:
+        """A ``[TreeReader]`` setting as this save would leave it: the panel's field, else the config's."""
+        field = next((field for field in self._fields if field.key.lower() == key.lower()), None)
+        return field.value() if field is not None else str(config.get("TreeReader", key, "") or "")
 
     def _codes_to_remove(self, config: LayeredConfig) -> set[str]:
         """The user-declared codes emptied in the panel, which :meth:`collect` will remove."""

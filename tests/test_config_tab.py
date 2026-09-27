@@ -601,3 +601,25 @@ def test_a_configuration_snapshot_keeps_a_hand_written_default_section(tmp_path)
 
     assert config.user.defaults() == {"shared": "1"}, "[DEFAULT] is restored as a default section"
     assert config.user.get("Output", "ChipsPerBB") == "3000"
+
+
+def test_a_code_valid_actions_names_is_not_removed(tmp_path, qtbot, monkeypatch):
+    """Removing it would silently drop the action from every node: the save says so instead."""
+    from PySide6.QtWidgets import QMessageBox
+
+    config = _temp_config(tmp_path)
+    config.set("TreeReader", "Muck", "0")
+    config.set("TreeReader", "ValidActions", "Muck, Call, Raise")
+    config.save()
+    warnings: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda _parent, _title, text: warnings.append(text))
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    muck = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "muck")
+    assert muck._reset is not None
+
+    muck._reset.click()
+    tab.save()
+
+    assert warnings and "Muck is still in ValidActions" in warnings[0]
+    assert config.get("TreeReader", "Muck") == "0", "nothing was removed"
