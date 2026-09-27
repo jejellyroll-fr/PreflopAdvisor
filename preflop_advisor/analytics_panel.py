@@ -196,6 +196,30 @@ class AnalyticsPanel(QWidget):
         box = QWidget()
         layout = QVBoxLayout(box)
 
+        layout.addLayout(self.filter_bar())
+
+        self.problems = QLabel("")
+        self.problems.setWordWrap(True)
+        self.problems.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+        layout.addWidget(self.problems)
+
+        self.table = QTableWidget(0, len(COLUMNS))
+        self.table.setHorizontalHeaderLabels(list(COLUMNS))
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        # Double-clicking a row is the same as selecting it and asking to walk it: the two
+        # things a user does with a decision they have just found.
+        self.table.itemDoubleClicked.connect(lambda _item: self.open_selected())
+        self.table.itemSelectionChanged.connect(self.update_buttons)
+        layout.addWidget(self.table, stretch=1)
+
+        layout.addLayout(self.action_buttons())
+        return box
+
+    def filter_bar(self) -> QHBoxLayout:
+        """The Node analysis filters: seat, line family, ranking, and what to keep."""
         filters = QHBoxLayout()
         filters.setSpacing(6)
         self.seat_choice = combo(((None, ANY_SEAT),), width=130)
@@ -222,25 +246,10 @@ class AnalyticsPanel(QWidget):
         filters.addStretch(1)
         self.graded_only.stateChanged.connect(self.refill)
         self.mixed_only.stateChanged.connect(self.refill)
-        layout.addLayout(filters)
+        return filters
 
-        self.problems = QLabel("")
-        self.problems.setWordWrap(True)
-        self.problems.setStyleSheet(f"color: {theme.TEXT_MUTED};")
-        layout.addWidget(self.problems)
-
-        self.table = QTableWidget(0, len(COLUMNS))
-        self.table.setHorizontalHeaderLabels(list(COLUMNS))
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        # Double-clicking a row is the same as selecting it and asking to walk it: the two
-        # things a user does with a decision they have just found.
-        self.table.itemDoubleClicked.connect(lambda _item: self.open_selected())
-        self.table.itemSelectionChanged.connect(self.update_buttons)
-        layout.addWidget(self.table, stretch=1)
-
+    def action_buttons(self) -> QHBoxLayout:
+        """What can be started from the selected decisions: a drill, or a walk in the Explorer."""
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.train_button = QPushButton("Train selected decisions")
@@ -253,8 +262,7 @@ class AnalyticsPanel(QWidget):
         self.open_button.setToolTip("Walk the exact decision in the Node Explorer, as the tree holds it.")
         self.open_button.clicked.connect(self.open_selected)
         buttons.addWidget(self.open_button)
-        layout.addLayout(buttons)
-        return box
+        return buttons
 
     def training_section(self) -> QWidget:
         """What the history says, and what the dashboard can therefore recommend."""
