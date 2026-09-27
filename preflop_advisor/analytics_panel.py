@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """The Analytics tab: what a simulation is doing, and what the training record says.
 
-Three sections in one view, in the order a study session reads them: what the strategy is
--- its seats, its lines, its sizings, how mixed it is -- which of its decisions are worth
-drilling, and whether the drilling has done anything. Selecting a node opens it in the
+Three sub-tabs, in the order a study session reads them: what the strategy is -- its seats,
+its lines, its sizings, how mixed it is -- which of its decisions are worth drilling, and
+whether the drilling has done anything. Each has the height of the tab to itself, so its
+tables are read whole rather than squeezed three to a screen. Selecting a node opens it in the
 Explorer, and any number of them start one training session, which is how a dashboard stops
 being a report and becomes a way of studying.
 
@@ -31,15 +32,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
     QScrollArea,
-    QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -69,6 +69,10 @@ logger = logging.getLogger(__name__)
 
 #: What the tab says before a tree has been studied.
 EMPTY_STATE = "Pick a tree in the Advisor tab to study it."
+#: The three sub-tabs, in the order a study session reads them.
+OVERVIEW_TAB = "Strategy overview"
+ANALYSIS_TAB = "Node analysis"
+TRAINING_TAB = "Training performance"
 #: The node list, in the order a study session reads it: what the decision is, what the
 #: solver does there, and -- last -- what it has already cost.
 COLUMNS = (
@@ -157,30 +161,23 @@ class AnalyticsPanel(QWidget):
         heading.addWidget(self.survey_button)
         layout.addLayout(heading)
 
-        self.sections = QSplitter(Qt.Orientation.Vertical)
-        self.sections.addWidget(self.overview_section())
-        self.sections.addWidget(self.analysis_section())
-        self.sections.addWidget(self.training_section())
-        self.sections.setStretchFactor(1, 1)
-        # The three sections are taller than the room a short screen leaves, and the window's
-        # floor must not follow them: a scroll area keeps the panel's own minimum small -- the
-        # sections scroll instead of the window's minimum growing to fit them, which is what
-        # would otherwise push this application past the bottom of a laptop.
-        # Named for the section holder rather than "scroll": QWidget already has a
-        # `scroll()` of its own, and shadowing it with a widget is a trap for the next reader.
-        self.scroller = QScrollArea()
-        self.scroller.setWidget(self.sections)
-        self.scroller.setWidgetResizable(True)
-        self.scroller.setFrameShape(QFrame.Shape.NoFrame)
-        layout.addWidget(self.scroller, stretch=1)
+        self.sections = QTabWidget()
+        self.sections.setDocumentMode(True)
+        for title, section in (
+            (OVERVIEW_TAB, self.overview_section()),
+            (ANALYSIS_TAB, self.analysis_section()),
+            (TRAINING_TAB, self.training_section()),
+        ):
+            self.sections.addTab(scrolled(section), title)
+        layout.addWidget(self.sections, stretch=1)
 
     # ------------------------------------------------------------------
-    # The three sections
+    # The three sections, one sub-tab each
     # ------------------------------------------------------------------
 
-    def overview_section(self) -> QGroupBox:
+    def overview_section(self) -> QWidget:
         """What the strategy is, before any decision of it is looked at."""
-        box = QGroupBox("Strategy overview")
+        box = QWidget()
         layout = QVBoxLayout(box)
         self.overview = QLabel("")
         self.overview.setWordWrap(True)
@@ -189,16 +186,40 @@ class AnalyticsPanel(QWidget):
         self.action_table = QTableWidget(0, 4)
         self.action_table.setHorizontalHeaderLabels(["Action", "Costs", "Decisions", "Taken on average"])
         self.action_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.action_table.horizontalHeader().setStretchLastSection(True)
         self.action_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self.action_table.setMaximumHeight(150)
-        layout.addWidget(self.action_table)
+        layout.addWidget(self.action_table, stretch=1)
         return box
 
-    def analysis_section(self) -> QGroupBox:
+    def analysis_section(self) -> QWidget:
         """The decisions of the survey, narrowed and ranked, and what can be started from them."""
-        box = QGroupBox("Node analysis")
+        box = QWidget()
         layout = QVBoxLayout(box)
 
+        layout.addLayout(self.filter_bar())
+
+        self.problems = QLabel("")
+        self.problems.setWordWrap(True)
+        self.problems.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+        layout.addWidget(self.problems)
+
+        self.table = QTableWidget(0, len(COLUMNS))
+        self.table.setHorizontalHeaderLabels(list(COLUMNS))
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        # Double-clicking a row is the same as selecting it and asking to walk it: the two
+        # things a user does with a decision they have just found.
+        self.table.itemDoubleClicked.connect(lambda _item: self.open_selected())
+        self.table.itemSelectionChanged.connect(self.update_buttons)
+        layout.addWidget(self.table, stretch=1)
+
+        layout.addLayout(self.action_buttons())
+        return box
+
+    def filter_bar(self) -> QHBoxLayout:
+        """The Node analysis filters: seat, line family, ranking, and what to keep."""
         filters = QHBoxLayout()
         filters.setSpacing(6)
         self.seat_choice = combo(((None, ANY_SEAT),), width=130)
@@ -225,24 +246,10 @@ class AnalyticsPanel(QWidget):
         filters.addStretch(1)
         self.graded_only.stateChanged.connect(self.refill)
         self.mixed_only.stateChanged.connect(self.refill)
-        layout.addLayout(filters)
+        return filters
 
-        self.problems = QLabel("")
-        self.problems.setWordWrap(True)
-        self.problems.setStyleSheet(f"color: {theme.TEXT_MUTED};")
-        layout.addWidget(self.problems)
-
-        self.table = QTableWidget(0, len(COLUMNS))
-        self.table.setHorizontalHeaderLabels(list(COLUMNS))
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        # Double-clicking a row is the same as selecting it and asking to walk it: the two
-        # things a user does with a decision they have just found.
-        self.table.itemDoubleClicked.connect(lambda _item: self.open_selected())
-        self.table.itemSelectionChanged.connect(self.update_buttons)
-        layout.addWidget(self.table, stretch=1)
-
+    def action_buttons(self) -> QHBoxLayout:
+        """What can be started from the selected decisions: a drill, or a walk in the Explorer."""
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.train_button = QPushButton("Train selected decisions")
@@ -255,12 +262,11 @@ class AnalyticsPanel(QWidget):
         self.open_button.setToolTip("Walk the exact decision in the Node Explorer, as the tree holds it.")
         self.open_button.clicked.connect(self.open_selected)
         buttons.addWidget(self.open_button)
-        layout.addLayout(buttons)
-        return box
+        return buttons
 
-    def training_section(self) -> QGroupBox:
+    def training_section(self) -> QWidget:
         """What the history says, and what the dashboard can therefore recommend."""
-        box = QGroupBox("Training performance")
+        box = QWidget()
         layout = QVBoxLayout(box)
 
         controls = QHBoxLayout()
@@ -288,7 +294,7 @@ class AnalyticsPanel(QWidget):
         self.trend_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.trend_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         tables.addWidget(self.trend_table)
-        layout.addLayout(tables)
+        layout.addLayout(tables, stretch=1)
         return box
 
     # ------------------------------------------------------------------
@@ -580,6 +586,21 @@ class AnalyticsPanel(QWidget):
                 for leak in self.training_record.worst(str(value_of(self.grouping_choice) or "position"))
             ],
         )
+
+
+def scrolled(section: QWidget) -> QScrollArea:
+    """A sub-tab's content in a scroll area of its own.
+
+    A section can be taller than the room a short screen leaves, and the window's floor must
+    not follow it: the scroll area keeps the panel's own minimum small -- the section scrolls
+    instead of the window's minimum growing to fit it, which is what would otherwise push this
+    application past the bottom of a laptop.
+    """
+    area = QScrollArea()
+    area.setWidget(section)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    return area
 
 
 def fill_rows(table: QTableWidget, rows: Sequence[tuple[str, ...]]) -> None:
