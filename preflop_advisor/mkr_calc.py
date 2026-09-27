@@ -165,20 +165,32 @@ def read_calculation(archive: MkrArchive, tree: MkrTree) -> CalcSource:
     has_ev = read_java_value(archive.read(HAS_EV_ENTRY), HAS_EV_ENTRY)
     if not isinstance(has_ev, list) or not all(isinstance(flag, bool) for flag in has_ev):
         raise NativeFormatError(f"The {HAS_EV_ENTRY} entry of {archive.path} is not a list of flags.")
-    if reg_tag == BETA_REG_LAYOUT and len(has_ev) != STREETS:
-        raise NativeFormatError(
-            f"The {HAS_EV_ENTRY} entry of {archive.path} holds {len(has_ev)} flags, and a layout "
-            f"{BETA_REG_LAYOUT} store keeps one per street ({STREETS})."
-        )
+    ev_groups = _groups(ev_rows, REG_ENTRY, "q")
+    _require_flags(archive, has_ev, reg_tag, len(ev_groups))
     return CalcSource(
         tree,
         scale,
-        _groups(ev_rows, REG_ENTRY, "q"),
+        ev_groups,
         _groups(average_rows, IAVG_ENTRY, "i"),
         has_ev,
         average_tag,
         reg_tag=reg_tag,
     )
+
+
+def _require_flags(archive: MkrArchive, has_ev: list[bool], reg_tag: int, groups: int) -> None:
+    """Refuse a ``hasEv`` that is not one flag per group (layout 3) or per street (layout 4).
+
+    Checked here, as a format error, rather than left to the ``EV groups`` check: a list of
+    the wrong length is not a disagreement about which groups keep EVs, it is a store laid
+    out some other way.
+    """
+    expected, per = (STREETS, "street") if reg_tag == BETA_REG_LAYOUT else (groups, "group")
+    if len(has_ev) != expected:
+        raise NativeFormatError(
+            f"The {HAS_EV_ENTRY} entry of {archive.path} holds {len(has_ev)} flags, and a layout {reg_tag} "
+            f"store keeps one per {per} ({expected})."
+        )
 
 
 def _read_tagged(archive: MkrArchive, entry: str) -> tuple[int, object]:
@@ -219,7 +231,7 @@ def _require_layout(
     if layout in unseen:
         raise NativeFormatError(
             f"The {entry} entry of {archive.path} uses layout {layout}, which the format defines and no save "
-            f"has been seen with; only layout {' or '.join(map(str, read))} is read, rather than guessing at "
+            f"has been seen with; only layout {' or '.join(map(str, sorted(read)))} is read, rather than guessing at "
             "another."
         )
     if layout not in read:

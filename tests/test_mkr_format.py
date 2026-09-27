@@ -1548,6 +1548,12 @@ def test_a_beta_store_read_with_layout_3_weights_fails_its_fold_ev_check(tmp_pat
     assert "fold EV" in {check.name for check in read_structure(write_mkr(tmp_path / "x.mkr", entries)).failures}
 
 
+def test_a_layout_3_store_s_flags_are_one_per_group(tmp_path):
+    entries = calc_run(hasEv=MAGIC + nested("[Z", [True, False, False, False]))
+    with pytest.raises(NativeFormatError, match=r"holds 4 flags, and a layout 3 store keeps one per group \(8\)"):
+        read_structure(write_mkr(tmp_path / "short-flags.mkr", entries))
+
+
 def test_a_beta_store_s_flags_are_one_per_street(tmp_path):
     entries = beta_calc_run()
     entries["hasEv"] = MAGIC + nested("[Z", [True, False, False, False, True, False, False, False])
