@@ -638,20 +638,31 @@ class SizingsPanel(_Panel):
         label.setBuddy(field._edit)
         field._reset = QPushButton("Reset")
         field._reset.setFixedWidth(65)
-        field._reset.setEnabled(self.config.is_overridden("TreeReader", key))
         field._reset.clicked.connect(lambda _checked=False, f=field: self._reset_field(f))
+        field._edit.textChanged.connect(lambda _text, f=field: self._update_code_reset(f))
+        self._update_code_reset(field)
         grid.addWidget(label, row, column, alignment=Qt.AlignmentFlag.AlignRight)
         grid.addWidget(field._edit, row, column + 1)
         grid.addWidget(field._reset, row, column + 2, alignment=Qt.AlignmentFlag.AlignLeft)
 
     def _reset_field(self, field: _Field) -> None:
-        try:
-            if isinstance(field._edit, QLineEdit):
-                field._edit.clear()
-            if field._reset is not None:
-                field._reset.setEnabled(False)
-        except RuntimeError:
-            pass
+        """Put a code back to the preset's value, which Save then drops from the user file.
+
+        Not to an empty field: an empty override would be saved, and an action code of
+        nothing names no range file, so every line through that action would stop reading.
+        """
+        if not isinstance(field._edit, QLineEdit):
+            return
+        field._edit.setText(self._preset_code(field.key))
+        self._update_code_reset(field)
+
+    def _preset_code(self, key: str) -> str:
+        return str(self.config.preset.get("TreeReader", key, fallback="") or "")
+
+    def _update_code_reset(self, field: _Field) -> None:
+        """Offer Reset exactly while a code differs from the preset's."""
+        if field._reset is not None and isinstance(field._edit, QLineEdit):
+            field._reset.setEnabled(field._edit.text() != self._preset_code(field.key))
 
     def scan(self) -> None:
 

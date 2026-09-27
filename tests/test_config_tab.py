@@ -500,4 +500,14 @@ def test_the_action_codes_read_across_several_per_line(tmp_path, qtbot):
     assert isinstance(fold._edit, QLineEdit) and fold._edit.text() == "7"
     assert fold._reset is not None and fold._reset.isEnabled()
     fold._reset.click()
-    assert fold._edit.text() == "", "the clicked Reset clears its own field"
+    assert fold._edit.text() == "0", "Reset puts the preset's code back, not an empty one"
+    assert not fold._reset.isEnabled()
+
+    tab.save()
+    assert not config.user.has_option("TreeReader", "Fold"), "the override is dropped, not saved empty"
+    assert config.get("TreeReader", "Fold") == "0"
+
+    fold = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "fold")
+    assert isinstance(fold._edit, QLineEdit) and fold._reset is not None
+    fold._edit.setText("11")
+    assert fold._reset.isEnabled(), "an edit away from the preset offers Reset at once"
