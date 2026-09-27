@@ -633,12 +633,41 @@ class SizingsPanel(_Panel):
         can be cleared by hand; either goes back to what the preset says, which for a
         user-declared name is that it does not exist.
         """
+        self._require_raise_order(config)
         for field in self._fields:
             value = field.value()
             if field.section == "TreeReader" and not value.strip():
                 config.reset(field.section, field.key)
             else:
                 config.set(field.section, field.key, value)
+
+    def _require_raise_order(self, config: LayeredConfig) -> None:
+        """Refuse to remove a code the raise order still names, before anything is staged.
+
+        The reader refuses a raise order naming an unknown sizing, so removing a code it
+        names would stop every simulation loading. Editing the order for the user would
+        change which sizing a tree is read with; saying so lets them choose.
+
+        :raises ValueError: naming the codes and the order that still uses them.
+        """
+        removed = self._codes_to_remove(config)
+        order = next((field.value() for field in self._fields if field.key.lower() == "raisesizelist"), "")
+        named = [entry.strip() for entry in order.split(",") if entry.strip().lower() in removed]
+        if named:
+            raise ValueError(
+                f"{', '.join(named)} is still in the raise order ({order}). Remove it from the raise order "
+                "before resetting its code, or keep the code."
+            )
+
+    def _codes_to_remove(self, config: LayeredConfig) -> set[str]:
+        """The user-declared codes emptied in the panel, which :meth:`collect` will remove."""
+        return {
+            field.key.lower()
+            for field in self._fields
+            if field.section == "TreeReader"
+            and not field.value().strip()
+            and config.preset.get(field.section, field.key, fallback=None) is None
+        }
 
     def _code_keys(self) -> list[str]:
         """The ``[TreeReader]`` keys that name an action code, as opposed to reader settings."""

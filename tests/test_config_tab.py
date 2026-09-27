@@ -546,3 +546,25 @@ def test_a_shipped_code_cleared_by_hand_goes_back_to_the_preset(tmp_path, qtbot)
 
     assert not config.user.has_option("TreeReader", "Call")
     assert config.get("TreeReader", "Call") == "1"
+
+
+def test_a_code_the_raise_order_names_is_not_removed(tmp_path, qtbot, monkeypatch):
+    """Removing it would make the reader refuse the raise order: the save says so instead."""
+    from PySide6.QtWidgets import QLineEdit, QMessageBox
+
+    config = _temp_config(tmp_path)
+    config.set("TreeReader", "Raise33", "40033")
+    config.set("TreeReader", "RaiseSizeList", "Raise75, RaisePot, Raise100, All_In, Raise33")
+    config.save()
+    warnings: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda _parent, _title, text: warnings.append(text))
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    custom = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "raise33")
+    assert isinstance(custom._edit, QLineEdit) and custom._reset is not None
+
+    custom._reset.click()
+    tab.save()
+
+    assert warnings and "Raise33 is still in the raise order" in warnings[0]
+    assert config.get("TreeReader", "Raise33") == "40033", "nothing was removed"
