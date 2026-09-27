@@ -34,8 +34,8 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -150,42 +150,7 @@ class CatalogPanel(QWidget):
         self.facts.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
         layout.addWidget(self.facts)
 
-        self.form = QFormLayout()
-        self.enabled_check = QCheckBox("Enabled for matching")
-        self.form.addRow("", self.enabled_check)
-        self.context_combo = QComboBox()
-        for value, label in CONTEXTS:
-            self.context_combo.addItem(label, value)
-        self.form.addRow("Context:", self.context_combo)
-        self.rake_percent_edit = QLineEdit()
-        self.rake_percent_edit.setPlaceholderText("e.g. 4.5")
-        self.form.addRow("Rake (%):", self.rake_percent_edit)
-        self.rake_cap_edit = QLineEdit()
-        self.rake_cap_edit.setPlaceholderText("e.g. 3")
-        self.form.addRow("Rake cap:", self.rake_cap_edit)
-        self.rake_cap_unit_combo = QComboBox()
-        self.rake_cap_unit_combo.addItems(list(CAP_UNITS))
-        self.form.addRow("Cap unit:", self.rake_cap_unit_combo)
-        self.rake_profile_edit = QLineEdit()
-        self.rake_profile_edit.setPlaceholderText("e.g. PS_PLO50, from the profiles below")
-        self.form.addRow("Rake profile:", self.rake_profile_edit)
-        self.sb_edit = QLineEdit()
-        self.sb_edit.setPlaceholderText("Leave empty when the stakes are not known")
-        self.form.addRow("Small blind (bb):", self.sb_edit)
-        self.bb_edit = QLineEdit()
-        self.form.addRow("Big blind (bb):", self.bb_edit)
-        self.aliases_edit = QLineEdit()
-        self.aliases_edit.setPlaceholderText("e.g. PokerStars PLO50, ps_plo_6max_midstakes")
-        self.form.addRow("Room / stake aliases:", self.aliases_edit)
-        self.solver_edit = QLineEdit()
-        self.form.addRow("Solver:", self.solver_edit)
-        self.version_edit = QLineEdit()
-        self.form.addRow("Version:", self.version_edit)
-        self.tags_edit = QLineEdit()
-        self.tags_edit.setPlaceholderText("Optional, comma separated")
-        self.form.addRow("Tags:", self.tags_edit)
-        self.notes_edit = QLineEdit()
-        self.form.addRow("Notes:", self.notes_edit)
+        self.form = self.metadata_form()
         layout.addLayout(self.form)
 
         buttons = QHBoxLayout()
@@ -239,6 +204,68 @@ class CatalogPanel(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.scroller)
+
+    def metadata_form(self) -> QGridLayout:
+        """The editable declarations of one simulation, as a grid of one line per theme."""
+        self.create_metadata_fields()
+        # One line per theme, its fields side by side: a simulation's declarations read across
+        # the width of the tab rather than down a single narrow column of thirteen rows.
+        return metadata_grid(
+            (
+                ("", ((None, self.enabled_check), ("Context:", self.context_combo))),
+                (
+                    "Rake",
+                    (
+                        ("Rake (%):", self.rake_percent_edit),
+                        ("Rake cap:", self.rake_cap_edit),
+                        ("Cap unit:", self.rake_cap_unit_combo),
+                        ("Rake profile:", self.rake_profile_edit),
+                    ),
+                ),
+                (
+                    "Stakes",
+                    (
+                        ("Small blind (bb):", self.sb_edit),
+                        ("Big blind (bb):", self.bb_edit),
+                        ("Room / stake aliases:", self.aliases_edit),
+                    ),
+                ),
+                (
+                    "Solver",
+                    (
+                        ("Solver:", self.solver_edit),
+                        ("Version:", self.version_edit),
+                        ("Tags:", self.tags_edit),
+                        ("Notes:", self.notes_edit),
+                    ),
+                ),
+            )
+        )
+
+    def create_metadata_fields(self) -> None:
+        """The editable declarations' widgets, before :meth:`metadata_form` lays them out."""
+        self.enabled_check = QCheckBox("Enabled for matching")
+        self.context_combo = QComboBox()
+        for value, label in CONTEXTS:
+            self.context_combo.addItem(label, value)
+        self.rake_percent_edit = QLineEdit()
+        self.rake_percent_edit.setPlaceholderText("e.g. 4.5")
+        self.rake_cap_edit = QLineEdit()
+        self.rake_cap_edit.setPlaceholderText("e.g. 3")
+        self.rake_cap_unit_combo = QComboBox()
+        self.rake_cap_unit_combo.addItems(list(CAP_UNITS))
+        self.rake_profile_edit = QLineEdit()
+        self.rake_profile_edit.setPlaceholderText("e.g. PS_PLO50, from the profiles below")
+        self.sb_edit = QLineEdit()
+        self.sb_edit.setPlaceholderText("Leave empty when the stakes are not known")
+        self.bb_edit = QLineEdit()
+        self.aliases_edit = QLineEdit()
+        self.aliases_edit.setPlaceholderText("e.g. PokerStars PLO50, ps_plo_6max_midstakes")
+        self.solver_edit = QLineEdit()
+        self.version_edit = QLineEdit()
+        self.tags_edit = QLineEdit()
+        self.tags_edit.setPlaceholderText("Optional, comma separated")
+        self.notes_edit = QLineEdit()
 
     # ------------------------------------------------------------------
     # Reading the configured simulations
@@ -501,6 +528,35 @@ class CatalogPanel(QWidget):
         """Drop the selected profile rows, which the save then removes from the configuration."""
         for row in sorted({index.row() for index in self.profiles.selectedIndexes()}, reverse=True):
             self.profiles.removeRow(row)
+
+
+def metadata_grid(rows: Sequence[tuple[str, Sequence[tuple[str | None, QWidget]]]]) -> QGridLayout:
+    """The declared metadata as a grid: one line per theme, its fields side by side.
+
+    Each line starts with its theme's name, then a label and a field per declaration, so the
+    same column holds the same position on every line and the labels line up down the grid.
+    A field with no label -- a checkbox that names itself -- takes its label's cell too.
+    """
+    grid = QGridLayout()
+    grid.setHorizontalSpacing(8)
+    grid.setVerticalSpacing(6)
+    widest = max(len(fields) for _, fields in rows)
+    for row, (theme_name, fields) in enumerate(rows):
+        title = QLabel(theme_name)
+        bold = title.font()
+        bold.setBold(True)
+        title.setFont(bold)
+        grid.addWidget(title, row, 0)
+        for position, (label, field) in enumerate(fields):
+            column = 1 + 2 * position
+            if label is None:
+                grid.addWidget(field, row, column, 1, 2)
+                continue
+            grid.addWidget(QLabel(label), row, column, alignment=Qt.AlignmentFlag.AlignRight)
+            grid.addWidget(field, row, column + 1)
+    for position in range(widest):
+        grid.setColumnStretch(2 + 2 * position, 1)
+    return grid
 
 
 def _cell(table: QTableWidget, row: int, column: int) -> str:
