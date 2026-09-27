@@ -473,3 +473,153 @@ def test_switching_rows_preserves_pending_meta_edits(tmp_path, qtbot):
     # Save and verify persisted
     tab.save()
     assert config.get("TreeInfos", "table12.ante") == "0.333"
+
+
+def test_the_action_codes_read_across_several_per_line(tmp_path, qtbot):
+    """Four codes a line, each with its label as buddy and a Reset that clears its own field."""
+    from PySide6.QtWidgets import QGridLayout, QLineEdit
+
+    from preflop_advisor.config_tab import CELLS_PER_CODE, CODES_PER_LINE
+
+    config = _temp_config(tmp_path)
+    config.set("TreeReader", "Fold", "7")
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    sizings = tab.panels["Sizings"]
+    codes = [field for field in sizings._fields if field.section == "TreeReader" and field.key != "RaiseSizeList"]
+    grid = sizings.findChild(QGridLayout)
+    positions = [grid.getItemPosition(grid.indexOf(field._edit))[:2] for field in codes]
+
+    assert positions == [
+        (index // CODES_PER_LINE, CELLS_PER_CODE * (index % CODES_PER_LINE) + 1) for index in range(len(codes))
+    ]
+    labels = {label.buddy(): label.text() for label in sizings.findChildren(QLabel) if label.buddy() is not None}
+    assert all(labels[field._edit] == f"{field.key}:" for field in codes)
+
+    fold = next(field for field in codes if field.key.lower() == "fold")
+    assert isinstance(fold._edit, QLineEdit) and fold._edit.text() == "7"
+    assert fold._reset is not None and fold._reset.isEnabled()
+    fold._reset.click()
+    assert fold._edit.text() == "0", "Reset puts the preset's code back, not an empty one"
+    assert not fold._reset.isEnabled()
+
+    tab.save()
+    assert not config.user.has_option("TreeReader", "Fold"), "the override is dropped, not saved empty"
+    assert config.get("TreeReader", "Fold") == "0"
+
+    fold = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "fold")
+    assert isinstance(fold._edit, QLineEdit) and fold._reset is not None
+    fold._edit.setText("11")
+    assert fold._reset.isEnabled(), "an edit away from the preset offers Reset at once"
+
+
+def test_resetting_a_code_the_preset_lacks_removes_it(tmp_path, qtbot):
+    """A name the import wizard declared has no preset to return to: Reset removes it."""
+    from PySide6.QtWidgets import QLineEdit
+
+    config = _temp_config(tmp_path)
+    config.set("TreeReader", "Raise33", "40033")
+    config.save()
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    custom = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "raise33")
+    assert isinstance(custom._edit, QLineEdit) and custom._edit.text() == "40033"
+    assert custom._reset is not None and custom._reset.isEnabled()
+
+    custom._reset.click()
+    tab.save()
+
+    assert not config.user.has_option("TreeReader", "Raise33"), "removed, not saved empty"
+    assert config.get("TreeReader", "Raise33") is None
+
+
+def test_a_shipped_code_cleared_by_hand_goes_back_to_the_preset(tmp_path, qtbot):
+    from PySide6.QtWidgets import QLineEdit
+
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    call = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "call")
+    assert isinstance(call._edit, QLineEdit)
+    call._edit.setText("")
+    tab.save()
+
+    assert not config.user.has_option("TreeReader", "Call")
+    assert config.get("TreeReader", "Call") == "1"
+
+
+def test_a_code_the_raise_order_names_is_not_removed(tmp_path, qtbot, monkeypatch):
+    """Removing it would make the reader refuse the raise order: the save says so instead."""
+    from PySide6.QtWidgets import QLineEdit, QMessageBox
+
+    config = _temp_config(tmp_path)
+    config.set("TreeReader", "Raise33", "40033")
+    config.set("TreeReader", "RaiseSizeList", "Raise75, RaisePot, Raise100, All_In, Raise33")
+    config.save()
+    warnings: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda _parent, _title, text: warnings.append(text))
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    custom = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "raise33")
+    assert isinstance(custom._edit, QLineEdit) and custom._reset is not None
+
+    custom._reset.click()
+    tab.save()
+
+    assert warnings and "Raise33 is still in the raise order" in warnings[0]
+    assert config.get("TreeReader", "Raise33") == "40033", "nothing was removed"
+
+
+def test_a_refused_save_stages_nothing_from_the_panels_before_it(tmp_path, qtbot, monkeypatch):
+    """An edit collected before a later panel refuses is not left staged for Revert or a later Save."""
+    from PySide6.QtWidgets import QLineEdit, QMessageBox
+
+    config = _temp_config(tmp_path)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_args: None)
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    call = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "call")
+    assert isinstance(call._edit, QLineEdit)
+    call._edit.setText("11")
+
+    def refuse(_config):
+        raise ValueError("a later panel refuses")
+
+    monkeypatch.setattr(tab.panels["Display"], "collect", refuse)
+    tab.save()
+
+    assert not config.user.has_option("TreeReader", "Call"), "the Sizings edit was not left staged"
+    assert config.get("TreeReader", "Call") == "1"
+
+
+def test_a_configuration_snapshot_keeps_a_hand_written_default_section(tmp_path):
+    config = _temp_config(tmp_path)
+    config.user.read_string("[DEFAULT]\nshared = 1\n[Output]\nChipsPerBB = 3000\n")
+    before = config.snapshot()
+    config.set("Output", "ChipsPerBB", "4000")
+    config.restore(before)
+
+    assert config.user.defaults() == {"shared": "1"}, "[DEFAULT] is restored as a default section"
+    assert config.user.get("Output", "ChipsPerBB") == "3000"
+
+
+def test_a_code_valid_actions_names_is_not_removed(tmp_path, qtbot, monkeypatch):
+    """Removing it would silently drop the action from every node: the save says so instead."""
+    from PySide6.QtWidgets import QMessageBox
+
+    config = _temp_config(tmp_path)
+    config.set("TreeReader", "Muck", "0")
+    config.set("TreeReader", "ValidActions", "Muck, Call, Raise")
+    config.save()
+    warnings: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda _parent, _title, text: warnings.append(text))
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    muck = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "muck")
+    assert muck._reset is not None
+
+    muck._reset.click()
+    tab.save()
+
+    assert warnings and "Muck is still in ValidActions" in warnings[0]
+    assert config.get("TreeReader", "Muck") == "0", "nothing was removed"

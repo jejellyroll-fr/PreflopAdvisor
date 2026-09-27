@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -553,6 +554,24 @@ class SeatsPanel(_Panel):
         self.body.addStretch(1)
 
 
+#: How many action codes the Sizings panel lays out per line, and the grid cells each takes:
+#: its label, its field and its Reset button.
+CODES_PER_LINE = 4
+CELLS_PER_CODE = 3
+#: The ``[TreeReader]`` keys that configure the reader rather than name an action code.
+READER_SETTINGS = (
+    "positions",
+    "positions7",
+    "positions8",
+    "positions9",
+    "raisesizelist",
+    "validactions",
+    "cachesize",
+    "usedatabase",
+    "ending",
+)
+
+
 class SizingsPanel(_Panel):
     """Action name -> Monker code, the order they are tried, and .pot/.blinds."""
 
@@ -562,43 +581,19 @@ class SizingsPanel(_Panel):
 
     def build(self) -> None:
         self._fields = []
-        code_keys = [
-            key
-            for key in self.config.keys("TreeReader")
-            if key
-            not in (
-                "positions",
-                "positions7",
-                "positions8",
-                "positions9",
-                "raisesizelist",
-                "validactions",
-                "cachesize",
-                "usedatabase",
-                "ending",
-            )
-        ]
+        code_keys = self._code_keys()
 
         grid = QGroupBox("Standard Action Codes (Name → Monker Code)")
-        grid_layout = QFormLayout(grid)
-        grid_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        for key in code_keys:
-            field = _Field("TreeReader", key, key)
-            self._fields.append(field)
-            current = str(self.config.get("TreeReader", key, ""))
-            field._edit = QLineEdit(current)
-            field._edit.setFixedWidth(120)
-
-            row = QHBoxLayout()
-            row.addWidget(field._edit)
-            field._reset = QPushButton("Reset")
-            field._reset.setFixedWidth(65)
-            field._reset.setEnabled(self.config.is_overridden("TreeReader", key))
-            field._reset.clicked.connect(lambda f=field: self._reset_field(f))
-            row.addWidget(field._reset)
-            row.addStretch(1)
-
-            grid_layout.addRow(QLabel(f"{key}:"), row)
+        grid_layout = QGridLayout(grid)
+        grid_layout.setHorizontalSpacing(8)
+        grid_layout.setVerticalSpacing(6)
+        # Several codes per line, read across: a column of one code per line ran the section
+        # past the bottom of the screen, and the raise order and the scan below it with it.
+        for index, key in enumerate(code_keys):
+            row, column = divmod(index, CODES_PER_LINE)
+            self._add_code(grid_layout, key, row, CELLS_PER_CODE * column)
+        for column in range(CODES_PER_LINE):
+            grid_layout.setColumnStretch(CELLS_PER_CODE * column + CELLS_PER_CODE - 1, 1)
         self.body.addWidget(grid)
 
         order_card = QGroupBox("Raise Order Resolution")
@@ -629,14 +624,99 @@ class SizingsPanel(_Panel):
 
         self.body.addStretch(1)
 
+    def collect(self, config: LayeredConfig) -> None:
+        """Stage every field, returning an emptied one to the preset instead of saving it empty.
+
+        An empty action code names no range file, so every tree reading through that action
+        would stop: it is never a value worth keeping. Reset empties a code the user declared
+        -- a name the import wizard added, with no preset value to return to -- and a field
+        can be cleared by hand; either goes back to what the preset says, which for a
+        user-declared name is that it does not exist.
+        """
+        self._require_unreferenced(config)
+        for field in self._fields:
+            value = field.value()
+            if field.section == "TreeReader" and not value.strip():
+                config.reset(field.section, field.key)
+            else:
+                config.set(field.section, field.key, value)
+
+    def _require_unreferenced(self, config: LayeredConfig) -> None:
+        """Refuse to remove a code a reader setting still names, before anything is staged.
+
+        Two settings name action codes: the raise order, which the reader refuses outright
+        when it names an unknown sizing -- no simulation loads -- and ``ValidActions``, whose
+        unknown name silently drops that action from every node. Editing either for the user
+        would change how a tree is read; saying so lets them choose.
+
+        :raises ValueError: naming the codes and the setting that still uses them.
+        """
+        removed = self._codes_to_remove(config)
+        for key, what in (("RaiseSizeList", "the raise order"), ("ValidActions", "ValidActions")):
+            listed = self._staged(config, key)
+            named = [entry.strip() for entry in listed.split(",") if entry.strip().lower() in removed]
+            if named:
+                raise ValueError(
+                    f"{', '.join(named)} is still in {what} ({listed}). Remove it from {what} before "
+                    "resetting its code, or keep the code."
+                )
+
+    def _staged(self, config: LayeredConfig, key: str) -> str:
+        """A ``[TreeReader]`` setting as this save would leave it: the panel's field, else the config's."""
+        field = next((field for field in self._fields if field.key.lower() == key.lower()), None)
+        return field.value() if field is not None else str(config.get("TreeReader", key, "") or "")
+
+    def _codes_to_remove(self, config: LayeredConfig) -> set[str]:
+        """The user-declared codes emptied in the panel, which :meth:`collect` will remove."""
+        return {
+            field.key.lower()
+            for field in self._fields
+            if field.section == "TreeReader"
+            and not field.value().strip()
+            and config.preset.get(field.section, field.key, fallback=None) is None
+        }
+
+    def _code_keys(self) -> list[str]:
+        """The ``[TreeReader]`` keys that name an action code, as opposed to reader settings."""
+        return [key for key in self.config.keys("TreeReader") if key not in READER_SETTINGS]
+
+    def _add_code(self, grid: QGridLayout, key: str, row: int, column: int) -> None:
+        """One action code's label, field and Reset button, from ``column`` on."""
+        field = _Field("TreeReader", key, key)
+        self._fields.append(field)
+        field._edit = QLineEdit(str(self.config.get("TreeReader", key, "")))
+        field._edit.setFixedWidth(90)
+        label = QLabel(f"{key}:")
+        label.setBuddy(field._edit)
+        field._reset = QPushButton("Reset")
+        field._reset.setFixedWidth(65)
+        field._reset.clicked.connect(lambda _checked=False, f=field: self._reset_field(f))
+        field._edit.textChanged.connect(lambda _text, f=field: self._update_code_reset(f))
+        self._update_code_reset(field)
+        grid.addWidget(label, row, column, alignment=Qt.AlignmentFlag.AlignRight)
+        grid.addWidget(field._edit, row, column + 1)
+        grid.addWidget(field._reset, row, column + 2, alignment=Qt.AlignmentFlag.AlignLeft)
+
     def _reset_field(self, field: _Field) -> None:
-        try:
-            if isinstance(field._edit, QLineEdit):
-                field._edit.clear()
-            if field._reset is not None:
-                field._reset.setEnabled(False)
-        except RuntimeError:
-            pass
+        """Put a code back to the preset's value, which Save then drops from the user file.
+
+        Not to an empty field: an empty override would be saved, and an action code of
+        nothing names no range file, so every line through that action would stop reading.
+        A code the preset does not ship has no value to go back to, and is emptied for
+        :meth:`collect` to remove.
+        """
+        if not isinstance(field._edit, QLineEdit):
+            return
+        field._edit.setText(self._preset_code(field.key))
+        self._update_code_reset(field)
+
+    def _preset_code(self, key: str) -> str:
+        return str(self.config.preset.get("TreeReader", key, fallback="") or "")
+
+    def _update_code_reset(self, field: _Field) -> None:
+        """Offer Reset exactly while a code differs from the preset's."""
+        if field._reset is not None and isinstance(field._edit, QLineEdit):
+            field._reset.setEnabled(field._edit.text() != self._preset_code(field.key))
 
     def scan(self) -> None:
 
@@ -960,10 +1040,16 @@ class ConfigTab(QWidget):
         root_layout.addLayout(footer)
 
     def save(self) -> None:
+        # Panels stage into one shared configuration, one after another, so a refusal from a
+        # later panel would otherwise leave an earlier one's edits staged in memory: Revert
+        # rebuilds from that memory and could no longer discard them, and the next Save would
+        # write them. A refused save stages nothing.
+        before = self.config.snapshot()
         try:
             for panel in self.panels.values():
                 panel.collect(self.config)
         except ValueError as error:
+            self.config.restore(before)
             QMessageBox.critical(self, "Cannot save", str(error))
             return
         self.config.save()
