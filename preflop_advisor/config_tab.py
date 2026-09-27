@@ -624,6 +624,22 @@ class SizingsPanel(_Panel):
 
         self.body.addStretch(1)
 
+    def collect(self, config: LayeredConfig) -> None:
+        """Stage every field, returning an emptied one to the preset instead of saving it empty.
+
+        An empty action code names no range file, so every tree reading through that action
+        would stop: it is never a value worth keeping. Reset empties a code the user declared
+        -- a name the import wizard added, with no preset value to return to -- and a field
+        can be cleared by hand; either goes back to what the preset says, which for a
+        user-declared name is that it does not exist.
+        """
+        for field in self._fields:
+            value = field.value()
+            if field.section == "TreeReader" and not value.strip():
+                config.reset(field.section, field.key)
+            else:
+                config.set(field.section, field.key, value)
+
     def _code_keys(self) -> list[str]:
         """The ``[TreeReader]`` keys that name an action code, as opposed to reader settings."""
         return [key for key in self.config.keys("TreeReader") if key not in READER_SETTINGS]
@@ -650,6 +666,8 @@ class SizingsPanel(_Panel):
 
         Not to an empty field: an empty override would be saved, and an action code of
         nothing names no range file, so every line through that action would stop reading.
+        A code the preset does not ship has no value to go back to, and is emptied for
+        :meth:`collect` to remove.
         """
         if not isinstance(field._edit, QLineEdit):
             return

@@ -511,3 +511,38 @@ def test_the_action_codes_read_across_several_per_line(tmp_path, qtbot):
     assert isinstance(fold._edit, QLineEdit) and fold._reset is not None
     fold._edit.setText("11")
     assert fold._reset.isEnabled(), "an edit away from the preset offers Reset at once"
+
+
+def test_resetting_a_code_the_preset_lacks_removes_it(tmp_path, qtbot):
+    """A name the import wizard declared has no preset to return to: Reset removes it."""
+    from PySide6.QtWidgets import QLineEdit
+
+    config = _temp_config(tmp_path)
+    config.set("TreeReader", "Raise33", "40033")
+    config.save()
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    custom = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "raise33")
+    assert isinstance(custom._edit, QLineEdit) and custom._edit.text() == "40033"
+    assert custom._reset is not None and custom._reset.isEnabled()
+
+    custom._reset.click()
+    tab.save()
+
+    assert not config.user.has_option("TreeReader", "Raise33"), "removed, not saved empty"
+    assert config.get("TreeReader", "Raise33") is None
+
+
+def test_a_shipped_code_cleared_by_hand_goes_back_to_the_preset(tmp_path, qtbot):
+    from PySide6.QtWidgets import QLineEdit
+
+    config = _temp_config(tmp_path)
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    call = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "call")
+    assert isinstance(call._edit, QLineEdit)
+    call._edit.setText("")
+    tab.save()
+
+    assert not config.user.has_option("TreeReader", "Call")
+    assert config.get("TreeReader", "Call") == "1"
