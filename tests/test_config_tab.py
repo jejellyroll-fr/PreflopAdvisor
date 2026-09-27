@@ -590,3 +590,14 @@ def test_a_refused_save_stages_nothing_from_the_panels_before_it(tmp_path, qtbot
 
     assert not config.user.has_option("TreeReader", "Call"), "the Sizings edit was not left staged"
     assert config.get("TreeReader", "Call") == "1"
+
+
+def test_a_configuration_snapshot_keeps_a_hand_written_default_section(tmp_path):
+    config = _temp_config(tmp_path)
+    config.user.read_string("[DEFAULT]\nshared = 1\n[Output]\nChipsPerBB = 3000\n")
+    before = config.snapshot()
+    config.set("Output", "ChipsPerBB", "4000")
+    config.restore(before)
+
+    assert config.user.defaults() == {"shared": "1"}, "[DEFAULT] is restored as a default section"
+    assert config.user.get("Output", "ChipsPerBB") == "3000"

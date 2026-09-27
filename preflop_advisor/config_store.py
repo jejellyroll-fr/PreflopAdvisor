@@ -20,6 +20,7 @@ examples. Any test that writes a user override and then asserts the shipped
 """
 
 import configparser
+import io
 import logging
 import os
 import re
@@ -143,14 +144,21 @@ class LayeredConfig:
         self.user = _read_layer(user_path or user_config_path())
         self.user_path = user_path or user_config_path()
 
-    def snapshot(self) -> dict[str, dict[str, str]]:
-        """The user layer as plain data, for :meth:`restore` to put back."""
-        return {section: dict(self.user.items(section, raw=True)) for section in self.user.sections()}
+    def snapshot(self) -> str:
+        """The user layer exactly as it would be written, for :meth:`restore` to put back.
 
-    def restore(self, snapshot: dict[str, dict[str, str]]) -> None:
+        Serialized whole rather than read section by section: ``sections()`` leaves a
+        hand-written ``[DEFAULT]`` out and ``items()`` folds its values into every section,
+        so a copy built from them would restore a different configuration.
+        """
+        text = io.StringIO()
+        self.user.write(text)
+        return text.getvalue()
+
+    def restore(self, snapshot: str) -> None:
         """Put the user layer back as :meth:`snapshot` found it, discarding what was staged since."""
         self.user = configparser.ConfigParser(interpolation=None)
-        self.user.read_dict(snapshot)
+        self.user.read_string(snapshot)
 
     # ------------------------------------------------------------------
     # Reading
