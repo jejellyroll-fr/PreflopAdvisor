@@ -473,3 +473,31 @@ def test_switching_rows_preserves_pending_meta_edits(tmp_path, qtbot):
     # Save and verify persisted
     tab.save()
     assert config.get("TreeInfos", "table12.ante") == "0.333"
+
+
+def test_the_action_codes_read_across_several_per_line(tmp_path, qtbot):
+    """Four codes a line, each with its label as buddy and a Reset that clears its own field."""
+    from PySide6.QtWidgets import QGridLayout, QLineEdit
+
+    from preflop_advisor.config_tab import CELLS_PER_CODE, CODES_PER_LINE
+
+    config = _temp_config(tmp_path)
+    config.set("TreeReader", "Fold", "7")
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    sizings = tab.panels["Sizings"]
+    codes = [field for field in sizings._fields if field.section == "TreeReader" and field.key != "RaiseSizeList"]
+    grid = sizings.findChild(QGridLayout)
+    positions = [grid.getItemPosition(grid.indexOf(field._edit))[:2] for field in codes]
+
+    assert positions == [
+        (index // CODES_PER_LINE, CELLS_PER_CODE * (index % CODES_PER_LINE) + 1) for index in range(len(codes))
+    ]
+    labels = {label.buddy(): label.text() for label in sizings.findChildren(QLabel) if label.buddy() is not None}
+    assert all(labels[field._edit] == f"{field.key}:" for field in codes)
+
+    fold = next(field for field in codes if field.key.lower() == "fold")
+    assert isinstance(fold._edit, QLineEdit) and fold._edit.text() == "7"
+    assert fold._reset is not None and fold._reset.isEnabled()
+    fold._reset.click()
+    assert fold._edit.text() == "", "the clicked Reset clears its own field"

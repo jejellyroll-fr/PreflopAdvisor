@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -553,6 +554,24 @@ class SeatsPanel(_Panel):
         self.body.addStretch(1)
 
 
+#: How many action codes the Sizings panel lays out per line, and the grid cells each takes:
+#: its label, its field and its Reset button.
+CODES_PER_LINE = 4
+CELLS_PER_CODE = 3
+#: The ``[TreeReader]`` keys that configure the reader rather than name an action code.
+READER_SETTINGS = (
+    "positions",
+    "positions7",
+    "positions8",
+    "positions9",
+    "raisesizelist",
+    "validactions",
+    "cachesize",
+    "usedatabase",
+    "ending",
+)
+
+
 class SizingsPanel(_Panel):
     """Action name -> Monker code, the order they are tried, and .pot/.blinds."""
 
@@ -562,43 +581,19 @@ class SizingsPanel(_Panel):
 
     def build(self) -> None:
         self._fields = []
-        code_keys = [
-            key
-            for key in self.config.keys("TreeReader")
-            if key
-            not in (
-                "positions",
-                "positions7",
-                "positions8",
-                "positions9",
-                "raisesizelist",
-                "validactions",
-                "cachesize",
-                "usedatabase",
-                "ending",
-            )
-        ]
+        code_keys = self._code_keys()
 
         grid = QGroupBox("Standard Action Codes (Name → Monker Code)")
-        grid_layout = QFormLayout(grid)
-        grid_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        for key in code_keys:
-            field = _Field("TreeReader", key, key)
-            self._fields.append(field)
-            current = str(self.config.get("TreeReader", key, ""))
-            field._edit = QLineEdit(current)
-            field._edit.setFixedWidth(120)
-
-            row = QHBoxLayout()
-            row.addWidget(field._edit)
-            field._reset = QPushButton("Reset")
-            field._reset.setFixedWidth(65)
-            field._reset.setEnabled(self.config.is_overridden("TreeReader", key))
-            field._reset.clicked.connect(lambda f=field: self._reset_field(f))
-            row.addWidget(field._reset)
-            row.addStretch(1)
-
-            grid_layout.addRow(QLabel(f"{key}:"), row)
+        grid_layout = QGridLayout(grid)
+        grid_layout.setHorizontalSpacing(8)
+        grid_layout.setVerticalSpacing(6)
+        # Several codes per line, read across: a column of one code per line ran the section
+        # past the bottom of the screen, and the raise order and the scan below it with it.
+        for index, key in enumerate(code_keys):
+            row, column = divmod(index, CODES_PER_LINE)
+            self._add_code(grid_layout, key, row, CELLS_PER_CODE * column)
+        for column in range(CODES_PER_LINE):
+            grid_layout.setColumnStretch(CELLS_PER_CODE * column + CELLS_PER_CODE - 1, 1)
         self.body.addWidget(grid)
 
         order_card = QGroupBox("Raise Order Resolution")
@@ -628,6 +623,26 @@ class SizingsPanel(_Panel):
         self.body.addWidget(scan_card)
 
         self.body.addStretch(1)
+
+    def _code_keys(self) -> list[str]:
+        """The ``[TreeReader]`` keys that name an action code, as opposed to reader settings."""
+        return [key for key in self.config.keys("TreeReader") if key not in READER_SETTINGS]
+
+    def _add_code(self, grid: QGridLayout, key: str, row: int, column: int) -> None:
+        """One action code's label, field and Reset button, from ``column`` on."""
+        field = _Field("TreeReader", key, key)
+        self._fields.append(field)
+        field._edit = QLineEdit(str(self.config.get("TreeReader", key, "")))
+        field._edit.setFixedWidth(90)
+        label = QLabel(f"{key}:")
+        label.setBuddy(field._edit)
+        field._reset = QPushButton("Reset")
+        field._reset.setFixedWidth(65)
+        field._reset.setEnabled(self.config.is_overridden("TreeReader", key))
+        field._reset.clicked.connect(lambda _checked=False, f=field: self._reset_field(f))
+        grid.addWidget(label, row, column, alignment=Qt.AlignmentFlag.AlignRight)
+        grid.addWidget(field._edit, row, column + 1)
+        grid.addWidget(field._reset, row, column + 2, alignment=Qt.AlignmentFlag.AlignLeft)
 
     def _reset_field(self, field: _Field) -> None:
         try:
