@@ -143,6 +143,15 @@ class LayeredConfig:
         self.user = _read_layer(user_path or user_config_path())
         self.user_path = user_path or user_config_path()
 
+    def snapshot(self) -> dict[str, dict[str, str]]:
+        """The user layer as plain data, for :meth:`restore` to put back."""
+        return {section: dict(self.user.items(section, raw=True)) for section in self.user.sections()}
+
+    def restore(self, snapshot: dict[str, dict[str, str]]) -> None:
+        """Put the user layer back as :meth:`snapshot` found it, discarding what was staged since."""
+        self.user = configparser.ConfigParser(interpolation=None)
+        self.user.read_dict(snapshot)
+
     # ------------------------------------------------------------------
     # Reading
     # ------------------------------------------------------------------

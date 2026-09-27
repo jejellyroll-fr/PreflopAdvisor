@@ -568,3 +568,25 @@ def test_a_code_the_raise_order_names_is_not_removed(tmp_path, qtbot, monkeypatc
 
     assert warnings and "Raise33 is still in the raise order" in warnings[0]
     assert config.get("TreeReader", "Raise33") == "40033", "nothing was removed"
+
+
+def test_a_refused_save_stages_nothing_from_the_panels_before_it(tmp_path, qtbot, monkeypatch):
+    """An edit collected before a later panel refuses is not left staged for Revert or a later Save."""
+    from PySide6.QtWidgets import QLineEdit, QMessageBox
+
+    config = _temp_config(tmp_path)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_args: None)
+    tab = ConfigTab(config)
+    qtbot.addWidget(tab)
+    call = next(field for field in tab.panels["Sizings"]._fields if field.key.lower() == "call")
+    assert isinstance(call._edit, QLineEdit)
+    call._edit.setText("11")
+
+    def refuse(_config):
+        raise ValueError("a later panel refuses")
+
+    monkeypatch.setattr(tab.panels["Display"], "collect", refuse)
+    tab.save()
+
+    assert not config.user.has_option("TreeReader", "Call"), "the Sizings edit was not left staged"
+    assert config.get("TreeReader", "Call") == "1"

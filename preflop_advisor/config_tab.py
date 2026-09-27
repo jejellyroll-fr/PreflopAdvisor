@@ -1033,10 +1033,16 @@ class ConfigTab(QWidget):
         root_layout.addLayout(footer)
 
     def save(self) -> None:
+        # Panels stage into one shared configuration, one after another, so a refusal from a
+        # later panel would otherwise leave an earlier one's edits staged in memory: Revert
+        # rebuilds from that memory and could no longer discard them, and the next Save would
+        # write them. A refused save stages nothing.
+        before = self.config.snapshot()
         try:
             for panel in self.panels.values():
                 panel.collect(self.config)
         except ValueError as error:
+            self.config.restore(before)
             QMessageBox.critical(self, "Cannot save", str(error))
             return
         self.config.save()
