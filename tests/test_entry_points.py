@@ -56,6 +56,59 @@ def test_unknown_arguments_are_passed_through_to_qt():
     assert qt_args == ["-platform", "offscreen"]
 
 
+def test_review_takes_a_file_and_does_not_reach_qt():
+    from preflop_advisor.__main__ import parse_args
+
+    args, qt_args = parse_args(["--review", "hands.json", "-platform", "offscreen"])
+
+    assert args.review == "hands.json"
+    assert qt_args == ["-platform", "offscreen"]
+    assert parse_args([])[0].review is None
+
+
+@pytest.mark.parametrize("argv", [[], ["--review", "hands.json"]])
+def test_main_opens_the_review_it_is_given(monkeypatch, argv):
+    """``main`` hands ``--review`` to the window once it is shown, and nothing otherwise."""
+    from preflop_advisor import __main__ as entry
+
+    calls = []
+
+    class Window:
+        def show(self):
+            calls.append("show")
+
+        def open_review(self, path):
+            calls.append(("open_review", path))
+
+    class Application:
+        def __init__(self, arguments):
+            calls.append(("qt", arguments[1:]))
+
+        def setOrganizationName(self, name):
+            pass
+
+        def setApplicationName(self, name):
+            pass
+
+        def setStyleSheet(self, sheet):
+            pass
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(entry, "QApplication", Application)
+    monkeypatch.setattr(entry, "MainWindow", Window)
+    monkeypatch.setattr(sys, "argv", ["preflop_advisor", *argv])
+
+    with pytest.raises(SystemExit):
+        entry.main()
+
+    expected = [("qt", []), "show"]
+    if argv:
+        expected.append(("open_review", "hands.json"))
+    assert calls == expected
+
+
 def test_the_package_imports_without_touching_sys_path():
     """Modules used to append the project root to sys.path at import time."""
     before = list(sys.path)

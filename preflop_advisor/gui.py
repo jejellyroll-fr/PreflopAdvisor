@@ -369,6 +369,16 @@ class MainWindow(QMainWindow):
         self.trainer.train_spot(spot, source=source)
         self.tabs.setCurrentWidget(self.trainer)
 
+    def open_review(self, path: str) -> None:
+        """Show the Review Hands tab with the document at *path* loaded.
+
+        What ``--review`` does, so another application -- fpdb-3's replayer -- can hand a
+        document over by starting the app on it. A file that cannot be read is reported in
+        the panel, as a document picked by hand would be: the window still opens.
+        """
+        self.tabs.setCurrentWidget(self.review)
+        self.review.load(path)
+
     def open_node(self, node: object) -> None:
         """Walk one exact decision in the Explorer, from wherever it was found.
 

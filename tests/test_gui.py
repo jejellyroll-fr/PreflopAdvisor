@@ -1970,6 +1970,24 @@ def test_an_unreadable_document_is_reported_rather_than_raised(review, tmp_path)
     assert "could not be read" in review.heading.text()
 
 
+def test_open_review_shows_the_tab_with_the_document_loaded(main_window, review):
+    # What ``--review`` does at startup: another tab may be on screen when it is asked.
+    main_window.tabs.setCurrentWidget(main_window.advisor)
+
+    main_window.open_review(review.review.path)
+
+    assert main_window.tabs.currentWidget() is main_window.review
+    assert review.table.rowCount() == 3
+
+
+def test_open_review_reports_a_missing_file_in_the_panel(main_window, tmp_path):
+    main_window.open_review(str(tmp_path / "missing.json"))
+
+    assert main_window.tabs.currentWidget() is main_window.review
+    assert main_window.review.review is None
+    assert "could not be read" in main_window.review.heading.text()
+
+
 # --------------------------------------------------------------------------------------
 # Analytics
 
