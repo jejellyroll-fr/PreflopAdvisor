@@ -32,6 +32,11 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list[
         action="store_true",
         help="log every range lookup (very chatty)",
     )
+    parser.add_argument(
+        "--review",
+        metavar="FILE",
+        help="open on Review Hands with this hand-review document loaded (as fpdb-3 writes it)",
+    )
     return parser.parse_known_args(argv)
 
 
@@ -47,6 +52,8 @@ def main() -> None:
     app.setStyleSheet(theme.APPLICATION_QSS)
     ui = MainWindow()
     ui.show()
+    if args.review:
+        ui.open_review(args.review)
     sys.exit(app.exec())
 
 

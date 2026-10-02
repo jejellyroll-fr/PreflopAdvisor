@@ -307,6 +307,16 @@ uv run preflop_advisor
 python standalone.py
 #+end_src
 
+To open straight on a hand review -- the JSON document fpdb-3's Replayer and Hand Viewer
+save under /Solver review/ -- pass it with =--review=:
+
+#+begin_src sh
+uv run preflop_advisor --review fpdb-hand-review-1234.json
+#+end_src
+
+The window opens on /Review Hands/ with that document loaded, exactly as /Load a hand
+review/ would; a file that cannot be read is reported there rather than stopping the app.
+
 
 ** Development
 #+BEGIN_SRC sh
